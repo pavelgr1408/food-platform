@@ -1,0 +1,30 @@
+services:
+  auth-postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: restaurant_auth
+      POSTGRES_USER: restaurant_auth
+      POSTGRES_PASSWORD: restaurant_auth
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports: ["${POSTGRES_PORT:-5432}:5432"]
+    volumes: ["auth-postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U restaurant_auth -d restaurant_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  auth-service:
+    build: ../../Documents/auth
+    environment:
+      HTTP_PORT: 8081
+      DATABASE_URL: postgres://restaurant_auth:restaurant_auth@auth-postgres:5432/restaurant_auth?sslmode=disable
+      JWT_PRIVATE_KEY_PATH: /run/keys/private.pem
+      JWT_PUBLIC_KEY_PATH: /run/keys/public.pem
+    ports: ["${AUTH_PORT:-8081}:8081"]
+    volumes:
+      - ./config/keys:/run/keys:ro
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+volumes:
+  auth-postgres-data:
