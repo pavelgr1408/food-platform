@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 	"github.com/google/uuid"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 )
 
 func TestIssueValidateAndJWKS(t *testing.T) {

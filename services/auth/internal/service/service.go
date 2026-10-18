@@ -8,11 +8,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/store"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/token"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 

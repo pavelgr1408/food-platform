@@ -10,9 +10,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 )
 
 type Manager struct {
