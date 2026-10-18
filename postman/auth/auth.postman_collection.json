@@ -1,0 +1,1387 @@
+{
+  "info": {
+    "_postman_id": "2d85a86b-4fd0-5233-8b92-f5453456e6f8",
+    "name": "auth-service",
+    "description": "Food Platform / auth-service. Контракт: contracts/openapi/auth.yaml. baseUrl: локально http://localhost:8081, для сдачи ДЗ http://arch.homework.\nЗапуск: make newman SERVICE=auth [BASE_URL=http://arch.homework]",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "password",
+      "value": "Str0ng-Pass-123"
+    },
+    {
+      "key": "phone",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "oldRefreshToken",
+      "value": ""
+    },
+    {
+      "key": "jwksKid",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Служебные",
+      "item": [
+        {
+          "name": "GET /actuator/health (readiness, проверяет БД)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Готовность: сервис + ping Postgres. Это же использует compose/k8s readiness."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 UP', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /auth/.well-known/jwks.json (публичный ключ RS256)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/.well-known/jwks.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                ".well-known",
+                "jwks.json"
+              ]
+            },
+            "description": "Gateway (ADR-11) и сервисы проверяют JWT локально по этому набору ключей."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const k = pm.response.json().keys;",
+                  "pm.test('один RSA/RS256 ключ с kid, n, e', () => {",
+                  "  pm.expect(k).to.be.an('array').with.lengthOf.at.least(1);",
+                  "  pm.expect(k[0].kty).to.eql('RSA'); pm.expect(k[0].alg).to.eql('RS256'); pm.expect(k[0].use).to.eql('sig');",
+                  "  pm.expect(k[0].kid).to.be.a('string').and.not.empty; pm.expect(k[0].n).to.be.a('string').and.not.empty; pm.expect(k[0].e).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('в JWKS нет приватных полей', () => ['d','p','q','dp','dq','qi'].forEach(f => pm.expect(k[0]).to.not.have.property(f)));",
+                  "pm.collectionVariables.set('jwksKid', k[0].kid);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Сценарий: регистрация → вход → me → refresh → logout",
+      "item": [
+        {
+          "name": "1.1 POST /auth/register — регистрация",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Телефон в формате E.164 (+79991234567), пароль 6–72 символа. Новому пользователю выдаётся роль CUSTOMER."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Уникальный телефон на каждый прогон (E.164): +7999 + 7 цифр. Повторный запуск не упирается в 409.",
+                  "if (!pm.collectionVariables.get('phone') || pm.collectionVariables.get('phoneFixed') !== 'true') {",
+                  "  const n = String(Math.floor(Math.random() * 1e7)).padStart(7, '0');",
+                  "  pm.collectionVariables.set('phone', '+7999' + n);",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('userId (uuid), phone, status=ACTIVE', () => {",
+                  "  pm.expect(b.userId).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(b.phone).to.eql(pm.collectionVariables.get('phone'));",
+                  "  pm.expect(b.status).to.eql('ACTIVE');",
+                  "});",
+                  "pm.test('пароль/хэш не возвращаются', () => pm.expect(JSON.stringify(b)).to.not.match(/password/i));",
+                  "pm.collectionVariables.set('userId', b.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 POST /auth/login — вход по телефону и паролю",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json();",
+                  "pm.test('пара токенов', () => {",
+                  "  pm.expect(t.accessToken).to.be.a('string').and.not.empty;",
+                  "  pm.expect(t.refreshToken).to.be.a('string').and.not.empty;",
+                  "  pm.expect(t.tokenType).to.match(/^bearer$/i);",
+                  "  pm.expect(t.expiresIn).to.be.a('number').and.above(0);",
+                  "});",
+                  "pm.test('access — JWT RS256 с kid из JWKS, sub = userId', () => {",
+                  "  const parts = t.accessToken.split('.'); pm.expect(parts).to.have.lengthOf(3);",
+                  "  const h = JSON.parse(atob(parts[0].replace(/-/g,'+').replace(/_/g,'/')));",
+                  "  let p = parts[1].replace(/-/g,'+').replace(/_/g,'/'); while (p.length % 4) p += '=';",
+                  "  const c = JSON.parse(atob(p));",
+                  "  pm.expect(h.alg).to.eql('RS256');",
+                  "  const kid = pm.collectionVariables.get('jwksKid'); if (kid) pm.expect(h.kid).to.eql(kid);",
+                  "  pm.expect(c.sub).to.eql(pm.collectionVariables.get('userId'));",
+                  "  pm.expect(c.roles).to.include('CUSTOMER');",
+                  "});",
+                  "pm.collectionVariables.set('accessToken', t.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', t.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.3 GET /auth/me — текущий пользователь",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('userId/phone/roles/status', () => {",
+                  "  pm.expect(b.userId).to.eql(pm.collectionVariables.get('userId'));",
+                  "  pm.expect(b.phone).to.eql(pm.collectionVariables.get('phone'));",
+                  "  pm.expect(b.roles).to.include('CUSTOMER'); pm.expect(b.status).to.eql('ACTIVE');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.4 POST /auth/introspect — access-токен активен",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/introspect",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "introspect"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{accessToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Для сервисов, которым нужна онлайн-проверка (в отличие от локальной проверки по JWKS)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('active=true, userId, roles', () => {",
+                  "  pm.expect(b.active).to.eql(true);",
+                  "  pm.expect(b.userId).to.eql(pm.collectionVariables.get('userId'));",
+                  "  pm.expect(b.roles).to.include('CUSTOMER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.5 POST /auth/refresh — ротация refresh-токена",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Одноразовый refresh: старый токен отзывается, выдаётся новая пара."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json();",
+                  "pm.test('выданы новые токены', () => {",
+                  "  pm.expect(t.accessToken).to.be.a('string').and.not.empty;",
+                  "  pm.expect(t.refreshToken).to.be.a('string').and.not.empty;",
+                  "  pm.expect(t.refreshToken).to.not.eql(pm.collectionVariables.get('refreshToken'));",
+                  "});",
+                  "pm.collectionVariables.set('oldRefreshToken', pm.collectionVariables.get('refreshToken'));",
+                  "pm.collectionVariables.set('accessToken', t.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', t.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.6 POST /auth/refresh — повтор старого токена отклонён",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{oldRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Защита от повторного использования: старый refresh после ротации недействителен."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.7 POST /auth/logout — выход (отзыв refresh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('message', () => pm.expect(pm.response.json().message).to.eql('Logged out successfully'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.8 POST /auth/refresh — после logout отклонён",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Запускать подряд (Run collection / newman): запросы передают друг другу телефон, userId и токены через переменные коллекции."
+    },
+    {
+      "name": "2. Негативные сценарии",
+      "item": [
+        {
+          "name": "2.1 register — повторный телефон → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(409);",
+                  "});",
+                  "pm.test('message: Phone is already registered', () => pm.expect(pm.response.json().message).to.include(\"Phone is already registered\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 register — телефон не E.164 → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"89991234567\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});",
+                  "pm.test('message: phone must be a valid E.164 number', () => pm.expect(pm.response.json().message).to.include(\"phone must be a valid E.164 number\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 register — короткий пароль → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990000001\",\n  \"password\": \"123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});",
+                  "pm.test('message: password size must be between 6 and 72', () => pm.expect(pm.response.json().message).to.include(\"password size must be between 6 and 72\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 register — битый JSON → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phone\": \"+79990000002\", ",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});",
+                  "pm.test('message: Malformed JSON request', () => pm.expect(pm.response.json().message).to.include(\"Malformed JSON request\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 login — неверный пароль → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"password\": \"wrong-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid phone or password', () => pm.expect(pm.response.json().message).to.include(\"Invalid phone or password\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 login — несуществующий телефон → 401 (то же сообщение, нет user enumeration)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990009999\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid phone or password', () => pm.expect(pm.response.json().message).to.include(\"Invalid phone or password\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 login — невалидное тело → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"\",\n  \"password\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 me — без Authorization → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid access token', () => pm.expect(pm.response.json().message).to.include(\"Invalid access token\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.9 me — мусорный токен → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid access token', () => pm.expect(pm.response.json().message).to.include(\"Invalid access token\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.10 me — refresh вместо access → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.11 introspect — мусорный токен → active=false (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/introspect",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "introspect"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"garbage\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('active=false, без данных пользователя', () => pm.expect(pm.response.json()).to.eql({active: false}));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.12 introspect — пустой токен → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/introspect",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "introspect"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.13 refresh — неизвестный токен → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"unknown-token\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(401);",
+                  "});",
+                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.14 refresh — пустой токен → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.15 logout — пустой токен → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json();",
+                  "pm.test('error body: timestamp/status/error/message/path', () => {",
+                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "  pm.expect(e.status).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Контракт ошибок: {timestamp, status, error, message, path}. Запускать после папки 1 (нужны phone/refreshToken)."
+    },
+    {
+      "name": "3. Ручной прогон (фиксированный пользователь, без автотестов)",
+      "item": [
+        {
+          "name": "Регистрация (ручной прогон)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79991234567\",\n  \"password\": \"Str0ng-Pass-123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Те же запросы, что в шаге 5.4 руководства. Повторный вызов вернёт 409 — это нормально."
+          }
+        },
+        {
+          "name": "Вход (ручной прогон)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79991234567\",\n  \"password\": \"Str0ng-Pass-123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const t = pm.response.json(); pm.collectionVariables.set('accessToken', t.accessToken); pm.collectionVariables.set('refreshToken', t.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Вход dev-пользователем из seed (CUSTOMER)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990000000\",\n  \"password\": \"123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Seed-пользователи (миграция 002, только dev): customer +79990000000/123456, admin +79991111111/admin123, blocked +79992222222/blocked123 (ожидаем 403)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const t = pm.response.json(); pm.collectionVariables.set('accessToken', t.accessToken); pm.collectionVariables.set('refreshToken', t.refreshToken); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Вход заблокированным dev-пользователем → 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79992222222\",\n  \"password\": \"blocked123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Профиль (ручной прогон)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          }
+        }
+      ],
+      "description": "Не входит в newman-прогон по смыслу: это быстрые запросы для ручной проверки после make up."
+    }
+  ]
+}
