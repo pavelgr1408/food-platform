@@ -1,0 +1,26 @@
+# secrets — never commit (only *.example)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+**/config/keys/
+secrets/
+
+# build / tooling
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+vendor/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# local data
+.dev/
+*.bundle

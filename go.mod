@@ -1,4 +1,4 @@
-module github.com/example/restaurant-auth-service
+module github.com/pavelgr1408/food-platform
 
 go 1.24.0
 
