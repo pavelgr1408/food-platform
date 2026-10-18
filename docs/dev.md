@@ -32,3 +32,14 @@ DATABASE_URL='postgres://orders:orders@localhost:5432/orders?sslmode=disable' KA
 ## Что нельзя
 - Коммитить `.env`, `*.pem`, пароли и токены. Новые ключи — только через `make keys`. gitleaks в CI.
 - Менять настройки Docker Desktop (кроме лимитов ресурсов).
+
+## Каталог (S1): restaurant + menu
+```bash
+make up SLICE="restaurant menu"
+make newman SERVICE=restaurant
+make newman SERVICE=menu
+make newman SERVICE=catalog
+make contract-check
+```
+`SEED_ON_START=true` в срезе загружает демо-рестораны и меню (идемпотентно). `make contract-check` валидирует живые
+ответы обоих сервисов против `contracts/openapi/*.yaml`.

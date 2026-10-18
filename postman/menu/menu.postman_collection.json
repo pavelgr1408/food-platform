@@ -1,0 +1,677 @@
+{
+  "info": {
+    "name": "menu-service",
+    "description": "Меню и проверка позиций (S1). Требует SEED_ON_START=true. Запуск: make newman SERVICE=menu",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "etag",
+      "value": ""
+    },
+    {
+      "key": "burgerId",
+      "value": ""
+    },
+    {
+      "key": "baconId",
+      "value": ""
+    },
+    {
+      "key": "colaId",
+      "value": ""
+    },
+    {
+      "key": "brownieId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Probes",
+      "item": [
+        {
+          "name": "liveness",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health/",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status OK', () => pm.expect(pm.response.json().status).to.eql('OK'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "readiness (БД)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/health",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "metrics",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/metrics",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('RED-метрики', () => pm.expect(pm.response.text()).to.include('http_requests_total'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "getMenu",
+      "item": [
+        {
+          "name": "меню ресторана: схема, деньги — целые копейки, ETag",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json();",
+                  "pm.test('заголовки кэширования', () => {",
+                  "  pm.expect(pm.response.headers.get('ETag')).to.match(/^\"v\\d+\"$/);",
+                  "  pm.expect(pm.response.headers.get('Cache-Control')).to.eql('public, max-age=30');",
+                  "});",
+                  "pm.test('схема меню', () => {",
+                  "  pm.expect(m.restaurantId).to.eql(pm.collectionVariables.get('restaurantId'));",
+                  "  pm.expect(Number.isInteger(m.menuVersion)).to.be.true;",
+                  "  pm.expect(m.categories.map(c => c.name)).to.eql(['Бургеры', 'Сэндвичи', 'Напитки', 'Десерты']);",
+                  "});",
+                  "const all = m.categories.flatMap(c => c.items);",
+                  "pm.test('цены — integer-копейки + currency (ADR-13)', () => {",
+                  "  all.forEach(i => { pm.expect(Number.isInteger(i.price.amount) && i.price.amount >= 0).to.be.true; pm.expect(i.price.currency).to.eql('RUB');",
+                  "    i.modifiers.forEach(x => pm.expect(Number.isInteger(x.price.amount)).to.be.true); });",
+                  "  pm.expect(all.find(i => i.name === 'BLT Классик').price.amount).to.eql(34900);",
+                  "});",
+                  "pm.test('позиция в стоп-листе остаётся в меню с available=false', () => pm.expect(all.find(i => i.name === 'Брауни').available).to.be.false);",
+                  "const by = n => all.find(i => i.name === n);",
+                  "pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));",
+                  "pm.collectionVariables.set('burgerId', by('BLT Классик').id);",
+                  "pm.collectionVariables.set('baconId', by('BLT Классик').modifiers.find(x => x.name === 'Двойной бекон').id);",
+                  "pm.collectionVariables.set('colaId', by('Кола 0,5').id);",
+                  "pm.collectionVariables.set('brownieId', by('Брауни').id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "If-None-Match с текущим ETag → 304 без тела",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu",
+            "header": [
+              {
+                "key": "If-None-Match",
+                "value": "{{etag}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 304', () => pm.response.to.have.status(304));",
+                  "pm.test('тело пустое, ETag на месте', () => { pm.expect(pm.response.text()).to.eql(''); pm.expect(pm.response.headers.get('ETag')).to.eql(pm.collectionVariables.get('etag')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "устаревший ETag → 200",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu",
+            "header": [
+              {
+                "key": "If-None-Match",
+                "value": "\"v0\""
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ресторан без меню → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/restaurants/a1000000-0000-4000-8000-000000000006/menu",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json, code MENU_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('MENU_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "restaurantId не UUID → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/restaurants/xyz/menu",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "validateMenuItems",
+      "item": [
+        {
+          "name": "всё доступно: цены с модификаторами и итог в копейках",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":2,\"modifierIds\":[\"{{baconId}}\"]},{\"menuItemId\":\"{{colaId}}\",\"quantity\":3}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "const burger = 34900, bacon = 8900, cola = 12900;",
+                  "pm.test('valid, версия меню, итог = 2×(бургер+бекон) + 3×кола', () => {",
+                  "  pm.expect(r.valid).to.be.true; pm.expect(Number.isInteger(r.menuVersion)).to.be.true;",
+                  "  pm.expect(r.total).to.eql({amount: 2 * (burger + bacon) + 3 * cola, currency: 'RUB'});",
+                  "});",
+                  "pm.test('строки в порядке запроса, цена за единицу с модификаторами', () => {",
+                  "  pm.expect(r.lines.map(l => l.menuItemId)).to.eql([pm.collectionVariables.get('burgerId'), pm.collectionVariables.get('colaId')]);",
+                  "  pm.expect(r.lines[0].currentPrice.amount).to.eql(burger + bacon); pm.expect(r.lines[0].lineTotal.amount).to.eql(2 * (burger + bacon));",
+                  "  pm.expect(r.lines[1].currentPrice.amount).to.eql(cola); pm.expect(r.lines[1].lineTotal.amount).to.eql(3 * cola);",
+                  "  r.lines.forEach(l => { pm.expect(l.available).to.be.true; pm.expect(l).to.not.have.property('reasonCode'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E1: позиция в стоп-листе → 200, valid=false, причина",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{colaId}}\",\"quantity\":1},{\"menuItemId\":\"{{brownieId}}\",\"quantity\":1}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('valid=false, ITEM_UNAVAILABLE, недоступная строка не входит в итог', () => {",
+                  "  pm.expect(r.valid).to.be.false;",
+                  "  const bad = r.lines[1]; pm.expect(bad.available).to.be.false; pm.expect(bad.reasonCode).to.eql('ITEM_UNAVAILABLE'); pm.expect(bad.reason).to.be.a('string');",
+                  "  pm.expect(r.lines[0].available).to.be.true;",
+                  "  pm.expect(r.total.amount).to.eql(r.lines[0].lineTotal.amount);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "позиции нет в меню → ITEM_NOT_FOUND без цены",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"c1000000-0000-4000-8000-0000000000aa\",\"quantity\":1}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const l = pm.response.json().lines[0];",
+                  "pm.test('ITEM_NOT_FOUND, нет currentPrice/lineTotal', () => { pm.expect(l.reasonCode).to.eql('ITEM_NOT_FOUND'); pm.expect(l).to.not.have.property('currentPrice'); pm.expect(l).to.not.have.property('lineTotal'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "чужой модификатор → MODIFIER_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{colaId}}\",\"quantity\":1,\"modifierIds\":[\"{{baconId}}\"]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const l = pm.response.json().lines[0];",
+                  "pm.test('MODIFIER_NOT_FOUND (бекон от бургера не подходит к коле)', () => { pm.expect(l.available).to.be.false; pm.expect(l.reasonCode).to.eql('MODIFIER_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "позиция другого ресторана (изоляция по ресторану) → ITEM_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/a1000000-0000-4000-8000-000000000004/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":1}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('id бургера из ресторана 1 неизвестен ресторану 4', () => { pm.expect(r.valid).to.be.false; pm.expect(r.lines[0].reasonCode).to.eql('ITEM_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ресторан без меню → 404",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/a1000000-0000-4000-8000-000000000006/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":1}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json, code MENU_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('MENU_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "validateMenuItems: негативные (400)",
+      "item": [
+        {
+          "name": "пустой список",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "quantity = 0",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":0}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "quantity = 100",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":100}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "menuItemId не UUID",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"abc\",\"quantity\":1}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "дубликаты modifierIds",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":1,\"modifierIds\":[\"{{baconId}}\",\"{{baconId}}\"]}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_PARAMETER', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "неизвестное поле",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":1}],\"price\":1}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_JSON', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_JSON');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "quantity не целое",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\":[{\"menuItemId\":\"{{burgerId}}\",\"quantity\":1.5}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json, code INVALID_JSON', () => {",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "  pm.expect(pm.response.json().code).to.eql('INVALID_JSON');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# Helm-values сервиса restaurant для общего чарта deploy/charts/service.
+# Секреты в git не хранятся: Secret `restaurant-secrets` создаёт `make k8s-dev-secrets` / CI/CD / Vault.
+name: restaurant
+image:
+  repository: food/restaurant
+  tag: dev
+port: 8082
+replicas: 2
+env:
+  APP_ENV: dev
+  LOG_LEVEL: info
+  AUTH_MODE: dev
+existingSecret: restaurant-secrets # ключи: DATABASE_URL
+migrations:
+  enabled: true # Job `restaurant-service --migrate-only` (pre-install/pre-upgrade hook)
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+ingress:
+  paths: [] # публичные пути добавляются, когда готов gateway (S5)

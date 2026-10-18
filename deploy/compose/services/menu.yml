@@ -1,0 +1,20 @@
+services:
+  menu:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/menu
+        TARGET: ./services/menu/cmd/menu-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "8083"
+      DATABASE_URL: postgres://menu:menu@postgres:5432/menu?sslmode=disable
+      SEED_ON_START: "true"
+      AUTH_MODE: dev
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 64m
