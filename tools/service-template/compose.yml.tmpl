@@ -1,0 +1,22 @@
+services:
+  __NAME__:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/__NAME__
+        TARGET: ./services/__NAME__/cmd/__NAME__-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "__PORT__"
+      DATABASE_URL: postgres://__NAME__:__NAME__@postgres:5432/__NAME__?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      AUTH_MODE: dev
+    ports:
+      - "__PORT__:__PORT__"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    mem_limit: 128m

@@ -1,0 +1,22 @@
+// Package config — конфигурация __NAME__-service из окружения (12-factor).
+package config
+
+import "__MODPATH__/pkg/config"
+
+// Config — настройки сервиса.
+type Config struct {
+	config.Base
+	AuthMode     string
+	KafkaBrokers []string
+}
+
+// Load читает окружение; возвращает все найденные ошибки разом.
+func Load() (Config, error) {
+	r := config.FromEnv()
+	c := Config{
+		Base:         config.LoadBase(r, "__NAME__", "__PORT__", true),
+		AuthMode:     r.String("AUTH_MODE", "dev"),
+		KafkaBrokers: r.List("KAFKA_BROKERS", nil),
+	}
+	return c, r.Err()
+}

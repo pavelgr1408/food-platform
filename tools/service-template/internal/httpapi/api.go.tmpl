@@ -1,0 +1,39 @@
+// Package httpapi — HTTP-слой __NAME__-service.
+package httpapi
+
+import (
+	"log/slog"
+	"net/http"
+
+	"__MODPATH__/pkg/authclient"
+	"__MODPATH__/pkg/httpx"
+	"__MODPATH__/pkg/idempotency"
+	"__MODPATH__/pkg/metrics"
+)
+
+// Deps — зависимости HTTP-слоя.
+type Deps struct {
+	Log         *slog.Logger
+	Metrics     *metrics.Registry
+	Auth        authclient.Authenticator
+	Checks      []httpx.Check
+	Idempotency *idempotency.Store // nil в unit-тестах
+}
+
+// New собирает маршруты и стандартную цепочку middleware.
+func New(d Deps) http.Handler {
+	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux, d.Checks...)
+	mux.Handle("GET /metrics", d.Metrics.Handler())
+
+	// TODO(__NAME__): заменить заглушку реальными маршрутами из contracts/openapi/__NAME__.yaml.
+	// Создающие операции: mux.Handle("POST /…", d.Idempotency.Middleware(idempotency.Options{Required: true})(h)).
+	mux.HandleFunc("GET /__NAME__/_ping", func(w http.ResponseWriter, r *http.Request) {
+		p := authclient.FromContext(r.Context())
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"service": "__NAME__", "guest": p.Guest})
+	})
+
+	return httpx.Chain(httpx.TrackRoute(mux),
+		httpx.RequestContext(), httpx.Recover(d.Log), httpx.AccessLog(d.Log),
+		d.Metrics.Middleware(), authclient.Middleware(d.Auth))
+}
