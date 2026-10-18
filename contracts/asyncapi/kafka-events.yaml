@@ -1,0 +1,1056 @@
+asyncapi: 3.0.0
+
+info:
+  title: Система управления заказами — асинхронные взаимодействия
+  version: 1.0.0
+  description: |
+    Асинхронный контракт платформы управления заказами сети кафе.
+
+    Документ **дополняет** OpenAPI-спецификацию (которая описывает
+    синхронные HTTP REST вызовы через api-gateway) и закрывает всё
+    остальное — асинхронный обмен, который в OpenAPI не выражается:
+
+      * **Kafka** — событийная шина между внутренними сервисами
+        (orders / payment / delivery / loyalty / notification) и общими
+        системами (система производства).
+      * **Webhook** — входящие асинхронные обратные вызовы от внешних
+        систем (платёжный шлюз, кассовая система/POS, курьерская система).
+        Исходящие синхронные вызовы к этим системам остаются в OpenAPI.
+      * **Push** — доставка уведомлений через APNs / FCM / HMS.
+
+    Это landscape-документ уровня всей системы: `send` / `receive`
+    трактуются с точки зрения внутреннего сервиса, указанного в
+    `summary`/`tags` каждой операции. Прослеживаемость к сценариям
+    приведена в тегах операций (UC-*).
+  contact:
+    name: Архитектурная команда
+  tags:
+    - name: kafka
+    - name: webhook
+    - name: push
+
+defaultContentType: application/json
+
+servers:
+  kafka:
+    host: kafka.internal:9092
+    protocol: kafka
+    description: Kafka-кластер (событийная шина внутренних сервисов)
+    tags:
+      - name: env:production
+  paymentCallbacks:
+    host: payment-service.internal
+    protocol: https
+    description: HTTPS-эндпоинт payment-service, принимающий webhook-и от платёжного шлюза и кассы
+    tags:
+      - name: kind:webhook-receiver
+  deliveryCallbacks:
+    host: delivery-service.internal
+    protocol: https
+    description: HTTPS-эндпоинт delivery-service, принимающий webhook-и от курьерской системы
+    tags:
+      - name: kind:webhook-receiver
+  apns:
+    host: api.push.apple.com
+    protocol: https
+    description: Apple Push Notification service (внешняя система)
+    tags:
+      - name: kind:push-provider
+  fcm:
+    host: fcm.googleapis.com
+    protocol: https
+    description: Firebase Cloud Messaging (внешняя система)
+    tags:
+      - name: kind:push-provider
+  hms:
+    host: push-api.cloud.huawei.com
+    protocol: https
+    description: Huawei Mobile Services push (внешняя система)
+    tags:
+      - name: kind:push-provider
+
+channels:
+
+  ordersState:
+    address: orders.state
+    title: Передача заказа в обработку
+    description: |
+      Оформленный заказ (состав, способ получения и оплаты). Продюсер —
+      orders-service. Потребители — payment-service, система производства,
+      delivery-service. См. UC-ORD-06, UC-ORD-01/02/03.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.state.dlq
+    messages:
+      orderState:
+        $ref: '#/components/messages/OrderState'
+
+  ordersStatus:
+    address: orders.status
+    title: Статус заказа
+    description: |
+      Агрегированный статус заказа (принят/готовится/готов/в доставке/
+      доставлен/выдан/закрыт). Продюсер — orders-service. Потребители —
+      notification-service и payment-service. См. UC-ORD-06, UC-RCV-01/02/03.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.status.dlq
+    messages:
+      orderStatus:
+        $ref: '#/components/messages/OrderStatus'
+
+  ordersPaymentsStatus:
+    address: orders.payments.status
+    title: Статус оплаты заказа
+    description: |
+      Итоговый статус оплаты. Продюсер — payment-service. Потребитель —
+      orders-service (разрешает обработку/выдачу). См. UC-PAY-01/02/03/04.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.payments.status.dlq
+    messages:
+      paymentStatus:
+        $ref: '#/components/messages/PaymentStatus'
+
+  ordersPaymentsLink:
+    address: orders.payments.link
+    title: Платёжная ссылка
+    description: |
+      Ссылка на оплату для оффлайн-сценариев (оплата курьеру через терминал).
+      Продюсер — payment-service. Потребитель — delivery-service. См. UC-PAY-03.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.payments.link.dlq
+    messages:
+      paymentLink:
+        $ref: '#/components/messages/PaymentLink'
+
+  ordersDishStatus:
+    address: orders.dish.status
+    title: Статусы блюд
+    description: |
+      Статусы приготовления отдельных позиций. Продюсер — система
+      производства. Потребитель — orders-service. См. UC-ORD-06.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.dish.status.dlq
+    messages:
+      dishStatus:
+        $ref: '#/components/messages/DishStatus'
+
+  ordersDeliveryStatus:
+    address: orders.delivery.status
+    title: Статус доставки
+    description: |
+      Статус доставки заказа. Продюсер — delivery-service (по данным
+      курьерской системы). Потребитель — orders-service. См. UC-RCV-02, UC-PAY-03.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+    x-partition-key: orderId
+    x-dlq: orders.delivery.status.dlq
+    messages:
+      deliveryStatus:
+        $ref: '#/components/messages/DeliveryStatus'
+
+  productionLeadTime:
+    address: production.lead.time
+    title: Загрузка производства
+    description: |
+      Фоновая репликация текущей загрузки/времени приготовления. Продюсер —
+      система производства. Потребитель — orders-service (расчёт ETA). См. UC-ORD-05, UC-ORD-06.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 1
+        replicas: 1
+    x-partition-key: restaurantId
+    x-dlq: production.lead.time.dlq
+    messages:
+      productionLeadTime:
+        $ref: '#/components/messages/ProductionLeadTime'
+
+  promotionsDiscount:
+    address: promotions.discount
+    title: Публикация акций и скидок
+    description: |
+      Реплика действующих акций для расчёта корзины. Продюсер —
+      loyalty-service. Потребитель — orders-service. См. UC-PRM-01/02/03/04.
+    servers:
+      - $ref: '#/servers/kafka'
+    bindings:
+      kafka:
+        partitions: 1
+        replicas: 1
+        topicConfiguration:
+          cleanup.policy: [compact]
+    x-partition-key: promotionId
+    x-dlq: promotions.discount.dlq
+    messages:
+      promotionDiscount:
+        $ref: '#/components/messages/PromotionDiscount'
+
+  paymentGatewayWebhook:
+    address: /webhooks/payments/gateway
+    title: Webhook платёжного шлюза
+    description: Асинхронное уведомление о статусе онлайн-оплаты. См. UC-PAY-02.
+    servers:
+      - $ref: '#/servers/paymentCallbacks'
+    bindings:
+      http:
+        method: POST
+    messages:
+      paymentGatewayEvent:
+        $ref: '#/components/messages/PaymentGatewayWebhook'
+
+  posPaymentWebhook:
+    address: /webhooks/payments/pos
+    title: Webhook кассовой системы (POS)
+    description: |
+      Подтверждение оплаты при получении на кассе/терминале (в т. ч.
+      наличная оплата с фискальным чеком). См. UC-PAY-04.
+    servers:
+      - $ref: '#/servers/paymentCallbacks'
+    bindings:
+      http:
+        method: POST
+    messages:
+      posPaymentEvent:
+        $ref: '#/components/messages/PosPaymentWebhook'
+
+  deliveryWebhook:
+    address: /webhooks/delivery/status
+    title: Webhook курьерской системы
+    description: Асинхронный статус доставки/оплаты от внешней курьерской системы. См. UC-RCV-02, UC-PAY-03.
+    servers:
+      - $ref: '#/servers/deliveryCallbacks'
+    bindings:
+      http:
+        method: POST
+    messages:
+      deliveryExtEvent:
+        $ref: '#/components/messages/DeliveryWebhook'
+
+  pushApns:
+    address: /3/device/{deviceToken}
+    title: Push через APNs
+    description: Отправка push-уведомления на устройства Apple. См. UC-ORD-01, UC-RCV-01/02/03.
+    servers:
+      - $ref: '#/servers/apns'
+    parameters:
+      deviceToken:
+        $ref: '#/components/parameters/deviceToken'
+    messages:
+      pushNotification:
+        $ref: '#/components/messages/PushNotification'
+
+  pushFcm:
+    address: /v1/projects/{projectId}/messages:send
+    title: Push через FCM
+    description: Отправка push-уведомления на устройства Android (Google). См. UC-ORD-01, UC-RCV-01/02/03.
+    servers:
+      - $ref: '#/servers/fcm'
+    parameters:
+      projectId:
+        $ref: '#/components/parameters/projectId'
+    messages:
+      pushNotification:
+        $ref: '#/components/messages/PushNotification'
+
+  pushHms:
+    address: /v1/{appId}/messages:send
+    title: Push через HMS
+    description: Отправка push-уведомления на устройства Huawei. См. UC-ORD-01, UC-RCV-01/02/03.
+    servers:
+      - $ref: '#/servers/hms'
+    parameters:
+      appId:
+        $ref: '#/components/parameters/appId'
+    messages:
+      pushNotification:
+        $ref: '#/components/messages/PushNotification'
+
+operations:
+
+  # ---- orders.state ----
+  sendOrderState:
+    action: send
+    title: orders-service публикует заказ
+    summary: orders-service → orders.state
+    channel:
+      $ref: '#/channels/ordersState'
+    tags:
+      - name: service:orders-service
+      - name: UC-ORD-06
+    messages:
+      - $ref: '#/channels/ordersState/messages/orderState'
+
+  receiveOrderStateOnPayment:
+    action: receive
+    title: payment-service получает заказ
+    summary: orders.state → payment-service
+    channel:
+      $ref: '#/channels/ordersState'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-01
+    messages:
+      - $ref: '#/channels/ordersState/messages/orderState'
+
+  receiveOrderStateOnProduction:
+    action: receive
+    title: Система производства получает заказ на приготовление
+    summary: orders.state → система производства
+    channel:
+      $ref: '#/channels/ordersState'
+    tags:
+      - name: service:production-system
+      - name: UC-ORD-06
+    messages:
+      - $ref: '#/channels/ordersState/messages/orderState'
+
+  receiveOrderStateOnDelivery:
+    action: receive
+    title: delivery-service получает заказ для доставки
+    summary: orders.state → delivery-service
+    channel:
+      $ref: '#/channels/ordersState'
+    tags:
+      - name: service:delivery-service
+      - name: UC-RCV-02
+    messages:
+      - $ref: '#/channels/ordersState/messages/orderState'
+
+  # ---- orders.status ----
+  sendOrderStatus:
+    action: send
+    title: orders-service публикует статус заказа
+    summary: orders-service → orders.status
+    channel:
+      $ref: '#/channels/ordersStatus'
+    tags:
+      - name: service:orders-service
+      - name: UC-ORD-06
+    messages:
+      - $ref: '#/channels/ordersStatus/messages/orderStatus'
+
+  receiveOrderStatusOnNotification:
+    action: receive
+    title: notification-service получает статус заказа
+    summary: orders.status → notification-service
+    channel:
+      $ref: '#/channels/ordersStatus'
+    tags:
+      - name: service:notification-service
+      - name: UC-RCV-01
+    messages:
+      - $ref: '#/channels/ordersStatus/messages/orderStatus'
+
+  receiveOrderStatusOnPayment:
+    action: receive
+    title: payment-service получает статус заказа
+    summary: orders.status → payment-service
+    channel:
+      $ref: '#/channels/ordersStatus'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-01
+    messages:
+      - $ref: '#/channels/ordersStatus/messages/orderStatus'
+
+  # ---- orders.payments.status ----
+  sendPaymentStatus:
+    action: send
+    title: payment-service публикует статус оплаты
+    summary: payment-service → orders.payments.status
+    channel:
+      $ref: '#/channels/ordersPaymentsStatus'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-01
+    messages:
+      - $ref: '#/channels/ordersPaymentsStatus/messages/paymentStatus'
+
+  receivePaymentStatusOnOrders:
+    action: receive
+    title: orders-service получает статус оплаты
+    summary: orders.payments.status → orders-service
+    channel:
+      $ref: '#/channels/ordersPaymentsStatus'
+    tags:
+      - name: service:orders-service
+      - name: UC-PAY-01
+    messages:
+      - $ref: '#/channels/ordersPaymentsStatus/messages/paymentStatus'
+
+  # ---- orders.payments.link ----
+  sendPaymentLink:
+    action: send
+    title: payment-service публикует платёжную ссылку
+    summary: payment-service → orders.payments.link
+    channel:
+      $ref: '#/channels/ordersPaymentsLink'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-03
+    messages:
+      - $ref: '#/channels/ordersPaymentsLink/messages/paymentLink'
+
+  receivePaymentLinkOnDelivery:
+    action: receive
+    title: delivery-service получает платёжную ссылку
+    summary: orders.payments.link → delivery-service
+    channel:
+      $ref: '#/channels/ordersPaymentsLink'
+    tags:
+      - name: service:delivery-service
+      - name: UC-PAY-03
+    messages:
+      - $ref: '#/channels/ordersPaymentsLink/messages/paymentLink'
+
+  # ---- orders.dish.status ----
+  sendDishStatus:
+    action: send
+    title: Система производства публикует статусы блюд
+    summary: система производства → orders.dish.status
+    channel:
+      $ref: '#/channels/ordersDishStatus'
+    tags:
+      - name: service:production-system
+      - name: UC-ORD-06
+    messages:
+      - $ref: '#/channels/ordersDishStatus/messages/dishStatus'
+
+  receiveDishStatusOnOrders:
+    action: receive
+    title: orders-service получает статусы блюд
+    summary: orders.dish.status → orders-service
+    channel:
+      $ref: '#/channels/ordersDishStatus'
+    tags:
+      - name: service:orders-service
+      - name: UC-ORD-06
+    messages:
+      - $ref: '#/channels/ordersDishStatus/messages/dishStatus'
+
+  # ---- orders.delivery.status ----
+  sendDeliveryStatus:
+    action: send
+    title: delivery-service публикует статус доставки
+    summary: delivery-service → orders.delivery.status
+    channel:
+      $ref: '#/channels/ordersDeliveryStatus'
+    tags:
+      - name: service:delivery-service
+      - name: UC-RCV-02
+    messages:
+      - $ref: '#/channels/ordersDeliveryStatus/messages/deliveryStatus'
+
+  receiveDeliveryStatusOnOrders:
+    action: receive
+    title: orders-service получает статус доставки
+    summary: orders.delivery.status → orders-service
+    channel:
+      $ref: '#/channels/ordersDeliveryStatus'
+    tags:
+      - name: service:orders-service
+      - name: UC-RCV-02
+    messages:
+      - $ref: '#/channels/ordersDeliveryStatus/messages/deliveryStatus'
+
+  # ---- production.lead.time ----
+  sendProductionLeadTime:
+    action: send
+    title: Система производства публикует загрузку
+    summary: система производства → production.lead.time
+    channel:
+      $ref: '#/channels/productionLeadTime'
+    tags:
+      - name: service:production-system
+      - name: UC-ORD-05
+    messages:
+      - $ref: '#/channels/productionLeadTime/messages/productionLeadTime'
+
+  receiveProductionLeadTimeOnOrders:
+    action: receive
+    title: orders-service получает загрузку производства
+    summary: production.lead.time → orders-service
+    channel:
+      $ref: '#/channels/productionLeadTime'
+    tags:
+      - name: service:orders-service
+      - name: UC-ORD-05
+    messages:
+      - $ref: '#/channels/productionLeadTime/messages/productionLeadTime'
+
+  # ---- promotions.discount ----
+  sendPromotionDiscount:
+    action: send
+    title: loyalty-service публикует акции
+    summary: loyalty-service → promotions.discount
+    channel:
+      $ref: '#/channels/promotionsDiscount'
+    tags:
+      - name: service:loyalty-service
+      - name: UC-PRM-02
+    messages:
+      - $ref: '#/channels/promotionsDiscount/messages/promotionDiscount'
+
+  receivePromotionDiscountOnOrders:
+    action: receive
+    title: orders-service получает акции для расчёта корзины
+    summary: promotions.discount → orders-service
+    channel:
+      $ref: '#/channels/promotionsDiscount'
+    tags:
+      - name: service:orders-service
+      - name: UC-PRM-01
+    messages:
+      - $ref: '#/channels/promotionsDiscount/messages/promotionDiscount'
+
+  # ---- Webhooks (входящие асинхронные обратные вызовы) ----
+  receivePaymentGatewayWebhook:
+    action: receive
+    title: payment-service принимает webhook платёжного шлюза
+    summary: платёжный шлюз → payment-service (webhook)
+    channel:
+      $ref: '#/channels/paymentGatewayWebhook'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-02
+    messages:
+      - $ref: '#/channels/paymentGatewayWebhook/messages/paymentGatewayEvent'
+
+  receivePosPaymentWebhook:
+    action: receive
+    title: payment-service принимает webhook кассы
+    summary: кассовая система (POS) → payment-service (webhook)
+    channel:
+      $ref: '#/channels/posPaymentWebhook'
+    tags:
+      - name: service:payment-service
+      - name: UC-PAY-04
+    messages:
+      - $ref: '#/channels/posPaymentWebhook/messages/posPaymentEvent'
+
+  receiveDeliveryWebhook:
+    action: receive
+    title: delivery-service принимает webhook курьерской системы
+    summary: курьерская система → delivery-service (webhook)
+    channel:
+      $ref: '#/channels/deliveryWebhook'
+    tags:
+      - name: service:delivery-service
+      - name: UC-RCV-02
+    messages:
+      - $ref: '#/channels/deliveryWebhook/messages/deliveryExtEvent'
+
+  # ---- Push ----
+  sendPushApns:
+    action: send
+    title: notification-service отправляет push через APNs
+    summary: notification-service → APNs
+    channel:
+      $ref: '#/channels/pushApns'
+    tags:
+      - name: service:notification-service
+      - name: UC-RCV-01
+    messages:
+      - $ref: '#/channels/pushApns/messages/pushNotification'
+
+  sendPushFcm:
+    action: send
+    title: notification-service отправляет push через FCM
+    summary: notification-service → FCM
+    channel:
+      $ref: '#/channels/pushFcm'
+    tags:
+      - name: service:notification-service
+      - name: UC-RCV-01
+    messages:
+      - $ref: '#/channels/pushFcm/messages/pushNotification'
+
+  sendPushHms:
+    action: send
+    title: notification-service отправляет push через HMS
+    summary: notification-service → HMS
+    channel:
+      $ref: '#/channels/pushHms'
+    tags:
+      - name: service:notification-service
+      - name: UC-RCV-01
+    messages:
+      - $ref: '#/channels/pushHms/messages/pushNotification'
+
+components:
+
+  parameters:
+    deviceToken:
+      description: Push-токен устройства Apple
+    projectId:
+      description: Идентификатор проекта FCM
+    appId:
+      description: Идентификатор приложения HMS
+
+  messageTraits:
+    EventEnvelope:
+      description: >-
+        Конверт события Kafka (ADR-9/10). Заголовки обязательны для всех топиков
+        внутренней шины; потребитель использует `event-id` для дедупликации (inbox),
+        `traceparent` — для сквозной трассировки. Ключ партиции указан в
+        `x-partition-key` канала (для заказных топиков — `orderId`, что гарантирует
+        порядок событий одного заказа).
+      headers:
+        type: object
+        required: [event-id, event-type, occurred-at]
+        properties:
+          event-id:
+            type: string
+            format: uuid
+            description: Уникальный идентификатор события (ключ идемпотентности потребителя)
+          event-type:
+            type: string
+            description: Тип события, например `orders.state.v1`
+          occurred-at:
+            type: string
+            format: date-time
+          traceparent:
+            type: string
+            description: W3C Trace Context
+
+  messages:
+
+    OrderState:
+      name: OrderState
+      title: Заказ передан в обработку
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/OrderState'
+
+    OrderStatus:
+      name: OrderStatus
+      title: Статус заказа изменён
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/OrderStatus'
+
+    PaymentStatus:
+      name: PaymentStatus
+      title: Статус оплаты
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/PaymentStatus'
+
+    PaymentLink:
+      name: PaymentLink
+      title: Платёжная ссылка
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/PaymentLink'
+
+    DishStatus:
+      name: DishStatus
+      title: Статусы блюд заказа
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/DishStatus'
+
+    DeliveryStatus:
+      name: DeliveryStatus
+      title: Статус доставки
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/DeliveryStatus'
+
+    ProductionLeadTime:
+      name: ProductionLeadTime
+      title: Загрузка производства
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      payload:
+        $ref: '#/components/schemas/ProductionLeadTime'
+
+    PromotionDiscount:
+      name: PromotionDiscount
+      title: Акция/скидка опубликована
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/EventEnvelope'
+      correlationId:
+        location: $message.payload#/promotionId
+      payload:
+        $ref: '#/components/schemas/PromotionDiscount'
+
+    PaymentGatewayWebhook:
+      name: PaymentGatewayWebhook
+      title: Событие платёжного шлюза
+      contentType: application/json
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/PaymentGatewayWebhook'
+
+    PosPaymentWebhook:
+      name: PosPaymentWebhook
+      title: Событие кассовой системы
+      contentType: application/json
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/PosPaymentWebhook'
+
+    DeliveryWebhook:
+      name: DeliveryWebhook
+      title: Событие курьерской системы
+      contentType: application/json
+      correlationId:
+        location: $message.payload#/orderId
+      payload:
+        $ref: '#/components/schemas/DeliveryWebhook'
+
+    PushNotification:
+      name: PushNotification
+      title: Push-уведомление
+      contentType: application/json
+      correlationId:
+        location: $message.payload#/data/orderId
+      payload:
+        $ref: '#/components/schemas/PushNotification'
+
+  schemas:
+
+    OrderState:
+      type: object
+      required: [orderId, revision, orderNumber, restaurantId, fulfillmentType, items, totalAmount, paymentStatus, createdAt]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 1
+          description: >-
+            Монотонная версия состояния заказа (ADR-10). Заказ публикуется в
+            `orders.state` минимум дважды: при создании (`paymentStatus=pending`,
+            его обрабатывает только payment-service) и после оплаты
+            (`paymentStatus=paid`, `revision+1`). Потребитель игнорирует события
+            с revision ≤ уже обработанной. Производство и доставка действуют,
+            только если `paymentStatus=paid` ИЛИ `paymentMethod` ∈ {courier,
+            restaurant} (предоплаты нет).
+        orderNumber:
+          type: string
+        restaurantId:
+          type: string
+        source:
+          type: string
+          enum: [online, fax, staff]
+          description: Канал оформления (онлайн / факс — UC-ORD-02 / персонал)
+        fulfillmentType:
+          type: string
+          enum: [delivery, pickup]
+        deliveryAddress:
+          type: string
+        customer:
+          type: object
+          properties:
+            userId: { type: string }
+            guest: { type: boolean }
+            phone: { type: string }
+            name: { type: string }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        totalAmount:
+          $ref: '#/components/schemas/Money'
+        paymentMethod:
+          type: string
+          enum: [online, courier, restaurant]
+        paymentStatus:
+          type: string
+          enum: [pending, paid]
+          description: >-
+            pending — заказ создан, оплата не подтверждена; paid — оплата
+            подтверждена. Для способов оплаты courier/restaurant остаётся pending,
+            но заказ уходит в производство сразу (см. `revision`).
+        appliedPromotions:
+          type: array
+          items:
+            type: string
+          description: Идентификаторы применённых акций
+        requestedPickupInterval:
+          type: string
+          description: Желаемый интервал получения (A1 UC-ORD-05)
+        createdAt:
+          type: string
+          format: date-time
+
+    OrderItem:
+      type: object
+      required: [dishId, quantity]
+      properties:
+        dishId: { type: string }
+        name: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        modifiers:
+          type: array
+          items: { type: string }
+        price:
+          $ref: '#/components/schemas/Money'
+
+    OrderStatus:
+      type: object
+      required: [orderId, orderNumber, status, updatedAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        orderNumber: { type: string }
+        status:
+          type: string
+          enum: [accepted, cooking, ready, on_delivery, delivered, handed_over, closed, not_received, cancelled]
+        etaReadyAt: { type: string, format: date-time }
+        etaDeliveryAt: { type: string, format: date-time }
+        reason:
+          type: string
+          description: Пояснение для нештатных статусов (напр. неполучение)
+        updatedAt: { type: string, format: date-time }
+
+    PaymentStatus:
+      type: object
+      required: [orderId, paymentId, status, method, updatedAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        paymentId: { type: string }
+        status:
+          type: string
+          enum: [pending, paid, declined, unknown]
+        method:
+          type: string
+          enum: [online, courier, restaurant]
+        amount:
+          $ref: '#/components/schemas/Money'
+        gatewayReference:
+          type: string
+          description: Ссылка на операцию во внешней системе (шлюз/POS/курьер)
+        paidAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PaymentLink:
+      type: object
+      required: [orderId, paymentId, paymentUrl, amount]
+      properties:
+        orderId: { type: string, format: uuid }
+        paymentId: { type: string }
+        paymentUrl: { type: string, format: uri }
+        amount:
+          $ref: '#/components/schemas/Money'
+        expiresAt: { type: string, format: date-time }
+
+    DishStatus:
+      type: object
+      required: [orderId, dishes, updatedAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        dishes:
+          type: array
+          items:
+            type: object
+            required: [dishId, status]
+            properties:
+              dishId: { type: string }
+              status:
+                type: string
+                enum: [queued, cooking, ready]
+        updatedAt: { type: string, format: date-time }
+
+    DeliveryStatus:
+      type: object
+      required: [orderId, deliveryId, status, updatedAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        deliveryId: { type: string }
+        courierId: { type: string }
+        status:
+          type: string
+          enum: [searching, assigned, picked_up, en_route, delivered, failed]
+        updatedAt: { type: string, format: date-time }
+
+    ProductionLeadTime:
+      type: object
+      required: [restaurantId, leadTimeMinutes, measuredAt]
+      properties:
+        restaurantId: { type: string }
+        currentLoad:
+          type: number
+          description: Текущая загрузка производства (0..1 или условные единицы)
+        leadTimeMinutes:
+          type: integer
+          minimum: 0
+        measuredAt: { type: string, format: date-time }
+
+    PromotionDiscount:
+      type: object
+      required: [promotionId, scope, status, validFrom]
+      properties:
+        promotionId: { type: string }
+        scope:
+          type: string
+          enum: [national, local]
+        restaurantId:
+          type: string
+          description: Обязателен для scope=local (UC-PRM-03)
+        title: { type: string }
+        conditions:
+          type: object
+          description: Условия применения (позиции, минимальная сумма и т. п.)
+          additionalProperties: true
+        discount:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [percent, fixed, gift]
+            value:
+              type: number
+        priority:
+          type: integer
+        validFrom: { type: string, format: date-time }
+        validTo: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [active, completed]
+
+    PaymentGatewayWebhook:
+      type: object
+      required: [orderId, paymentId, status, timestamp]
+      properties:
+        orderId: { type: string, format: uuid }
+        paymentId: { type: string }
+        status:
+          type: string
+          enum: [paid, declined, pending]
+        amount:
+          $ref: '#/components/schemas/Money'
+        gatewayReference: { type: string }
+        signature:
+          type: string
+          description: Подпись для верификации подлинности webhook
+        timestamp: { type: string, format: date-time }
+
+    PosPaymentWebhook:
+      type: object
+      required: [orderId, receiptId, method, status, timestamp]
+      properties:
+        orderId: { type: string, format: uuid }
+        receiptId: { type: string }
+        method:
+          type: string
+          enum: [cash, card]
+        status:
+          type: string
+          enum: [paid, declined]
+        amount:
+          $ref: '#/components/schemas/Money'
+        fiscalData:
+          type: object
+          description: Данные фискального чека (Д6)
+          additionalProperties: true
+        timestamp: { type: string, format: date-time }
+
+    DeliveryWebhook:
+      type: object
+      required: [orderId, deliveryId, status, timestamp]
+      properties:
+        orderId: { type: string, format: uuid }
+        deliveryId: { type: string }
+        courierId: { type: string }
+        status:
+          type: string
+          enum: [assigned, picked_up, delivered, paid, failed]
+        timestamp: { type: string, format: date-time }
+
+    PushNotification:
+      type: object
+      required: [platform, title, body]
+      properties:
+        deviceToken: { type: string }
+        platform:
+          type: string
+          enum: [ios, android, huawei]
+        title: { type: string }
+        body: { type: string }
+        priority:
+          type: string
+          enum: [normal, high]
+        data:
+          type: object
+          properties:
+            orderId: { type: string, format: uuid }
+            orderNumber: { type: string }
+            type:
+              type: string
+              enum: [order_created, order_ready, on_delivery, delivered, handed_over]
+
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+          default: RUB

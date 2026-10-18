@@ -1,0 +1,232 @@
+openapi: 3.1.0
+
+info:
+  title: payment-service — REST API
+  version: 1.1.0
+  description: >-
+    Обработка платежей: способы оплаты, инициализация онлайн-оплаты, оплаты на
+    кассе/терминале, статус платежа. Интеграция с платёжным шлюзом и кассовой
+    системой. Хранилище — payment-db. (UC-PAY-01/02/03/04)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8085
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: payment-service
+
+paths:
+
+  /orders/{orderId}/payment-methods:
+    get:
+      tags: [payment-service]
+      operationId: getPaymentMethods
+      summary: Доступные способы оплаты
+      description: >-
+        Возвращает способы оплаты, доступные для выбранного способа получения
+        (онлайн / курьеру / в ресторане). Платёжный сервис уже знает о заказе из
+        события `orders.state`. (UC-PAY-01)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Список способов оплаты
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PaymentMethod' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /orders/{orderId}/payments:
+    post:
+      tags: [payment-service]
+      operationId: initiatePayment
+      summary: Инициировать платёж
+      description: >-
+        Создаёт платёж по заказу. Для онлайн-оплаты (UC-PAY-02) сервис
+        инициализирует оплату в платёжном шлюзе и возвращает платёжную ссылку;
+        итоговый статус приходит webhook-ом от шлюза либо запрашивается синхронно.
+        Для оплаты курьеру (UC-PAY-03) формируется платёжная ссылка, передаваемая
+        в delivery-service через Kafka `payments.link`. Заказ передаётся в
+        обработку только после подтверждения оплаты. Идемпотентно по
+        `Idempotency-Key`.
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+        - { $ref: '_common.yaml#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentInitRequest' }
+      responses:
+        '201':
+          description: Платёж инициирован
+          headers:
+            Location: { $ref: '_common.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '402':
+          description: Платёж отклонён — повторить или сменить способ (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: >-
+            Повторная оплата этой попытки заблокирована; статус неизвестен (E2).
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /orders/{orderId}/payments/pos:
+    post:
+      tags: [payment-service]
+      operationId: initiatePosPayment
+      summary: Инициировать оплату на кассе/терминале (персонал)
+      description: >-
+        Инициализирует оплату на кассе/терминале при получении в ресторане. Даже
+        наличная оплата проводится через кассу с терминальным чеком (Д6).
+        Подтверждение приходит webhook-ом от кассовой системы. (UC-PAY-04)
+      security:
+        - bearerAuth: [payments:staff]
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+        - { $ref: '_common.yaml#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PosPaymentInitRequest' }
+      responses:
+        '201':
+          description: Оплата на кассе инициирована
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '402':
+          description: Отказ кассовой операции — предложить иной способ (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /orders/{orderId}/payments/{paymentId}:
+    get:
+      tags: [payment-service]
+      operationId: getPayment
+      summary: Статус платежа
+      description: >-
+        Возвращает текущий статус платежа. Используется в том числе при неизвестном
+        статусе/тайм-ауте для запроса состояния операции. (UC-PAY-01/02 E2)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+        - { $ref: '#/components/parameters/PaymentId' }
+      responses:
+        '200':
+          description: Текущий статус платежа
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+webhooks:
+
+  paymentGatewayStatus:
+    post:
+      tags: [payment-service]
+      operationId: onPaymentGatewayStatus
+      summary: Статус оплаты от платёжного шлюза
+      description: >-
+        Асинхронное уведомление о статусе онлайн-оплаты. Приёмник —
+        payment-service. При отсутствии webhook статус запрашивается синхронно.
+        (UC-PAY-02)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentStatusCallback' }
+      responses:
+        '200': { description: Уведомление принято }
+
+  posPaymentConfirmation:
+    post:
+      tags: [payment-service]
+      operationId: onPosPaymentConfirmation
+      summary: Подтверждение оплаты от кассовой системы
+      description: >-
+        Подтверждение оплаты при получении в ресторане. Приёмник — payment-service;
+        далее статус публикуется в `payments.status`. (UC-PAY-04)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentStatusCallback' }
+      responses:
+        '200': { description: Уведомление принято }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  parameters:
+    PaymentId:
+      name: paymentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    PaymentMethod:
+      type: object
+      properties:
+        type: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
+        title: { type: string }
+        enabled: { type: boolean }
+    PaymentInitRequest:
+      type: object
+      required: [method]
+      properties:
+        method: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
+        returnUrl:
+          type: string
+          format: uri
+          description: URL возврата после оплаты в форме провайдера (онлайн).
+    PosPaymentInitRequest:
+      type: object
+      required: [tender]
+      properties:
+        tender:
+          type: string
+          enum: [card, cash]
+          description: Способ на кассе; наличные также проводятся через терминал (Д6).
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        method: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
+        status: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
+        amount: { $ref: '_common.yaml#/components/schemas/Money' }
+        paymentUrl:
+          type: string
+          format: uri
+          description: Платёжная ссылка (онлайн / для оплаты курьеру).
+        createdAt: { type: string, format: date-time }
+    PaymentStatusCallback:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId: { type: string, format: uuid }
+        paymentId: { type: string, format: uuid }
+        status: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
+        externalRef: { type: string }

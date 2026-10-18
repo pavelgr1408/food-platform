@@ -1,0 +1,99 @@
+openapi: 3.1.0
+
+info:
+  title: notification-service — REST API
+  version: 1.1.0
+  description: >-
+    Уведомления: регистрация разрешений и push-токенов устройств. Рассылка push
+    выполняется по событиям orders.status через APNs/FCM/Huawei (асинхронно).
+    Хранилище — notification-db.
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8088
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: notification-service
+
+paths:
+
+  /notifications/device-tokens:
+    post:
+      tags: [notification-service]
+      operationId: registerDeviceToken
+      summary: Зарегистрировать разрешения и push-токен
+      description: >-
+        Регистрирует push-токен устройства и разрешения на уведомления. Push
+        отправляется только на мобильные приложения (Д3); рассылка выполняется по
+        событиям `orders.status` через APNs/FCM/Huawei асинхронно.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceTokenRegistration' }
+      responses:
+        '201':
+          description: Токен зарегистрирован
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceToken' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+    get:
+      tags: [notification-service]
+      operationId: listDeviceTokens
+      summary: Токены устройств текущего пользователя
+      responses:
+        '200':
+          description: Список зарегистрированных токенов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DeviceToken' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+
+  /notifications/device-tokens/{tokenId}:
+    delete:
+      tags: [notification-service]
+      operationId: deleteDeviceToken
+      summary: Отозвать push-токен
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Токен удалён
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+    PushPlatform:
+      type: string
+      enum: [apns, fcm, huawei]
+    DeviceTokenRegistration:
+      type: object
+      required: [platform, token]
+      properties:
+        platform: { $ref: '#/components/schemas/PushPlatform' }
+        token: { type: string }
+        permissionsGranted: { type: boolean }
+    DeviceToken:
+      allOf:
+        - $ref: '#/components/schemas/DeviceTokenRegistration'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            registeredAt: { type: string, format: date-time }

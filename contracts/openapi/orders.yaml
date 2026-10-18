@@ -1,0 +1,408 @@
+openapi: 3.1.0
+
+info:
+  title: orders-service — REST API
+  version: 1.1.0
+  description: >-
+    Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
+    выбор способа получения, оценка времени готовности (ETA), поиск заказа и
+    отметка выдачи персоналом. Хранилище — orders-db. (UC-ORD-*, UC-RCV-*)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8084
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: orders-service
+
+paths:
+
+  /carts:
+    post:
+      tags: [orders-service]
+      operationId: createCart
+      summary: Начать заказ / создать корзину
+      description: >-
+        Создаёт корзину в контексте выбранного ресторана. Поддерживается гостевое
+        оформление (без авторизации) с указанием контактных данных. (UC-ORD-01/03)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CartCreateRequest' }
+      responses:
+        '201':
+          description: Корзина создана
+          headers:
+            Location: { $ref: '_common.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+
+  /carts/{cartId}:
+    get:
+      tags: [orders-service]
+      operationId: getCart
+      summary: Состав и сумма корзины
+      parameters:
+        - { $ref: '#/components/parameters/CartId' }
+      responses:
+        '200':
+          description: Текущий состав и предварительная сумма
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /carts/{cartId}/items:
+    put:
+      tags: [orders-service]
+      operationId: updateCartItems
+      summary: Обновить корзину (позиции, модификаторы, количество)
+      description: >-
+        Обновляет состав корзины и пересчитывает сумму с учётом акций (реплика
+        `promotions.discount`). При недоступности позиции она удаляется/запрещается
+        с пояснением причины и пересчётом суммы (E1). (UC-ORD-01 loop, UC-ORD-03)
+      parameters:
+        - { $ref: '#/components/parameters/CartId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CartItemsUpdate' }
+      responses:
+        '200':
+          description: Обновлённая корзина (состав, применённые акции, сумма)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: Позиция недоступна — состав скорректирован (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /carts/{cartId}/fulfillment:
+    put:
+      tags: [orders-service]
+      operationId: setCartFulfillment
+      summary: Выбрать/сменить способ получения
+      description: >-
+        Устанавливает способ получения (доставка / в кафе) и, при доставке, адрес.
+        Смена способа влечёт пересчёт (например самовывоз вместо доставки, A4).
+        (UC-ORD-01, UC-RCV-01)
+      parameters:
+        - { $ref: '#/components/parameters/CartId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FulfillmentInput' }
+      responses:
+        '200':
+          description: Способ получения зафиксирован, сумма пересчитана
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cart' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+
+  /orders:
+    post:
+      tags: [orders-service]
+      operationId: createOrder
+      summary: Оформить заказ
+      description: >-
+        Фиксирует финальный состав и сумму, присваивает номер и создаёт заказ на
+        основе корзины. Оформленный заказ передаётся в обработку (UC-ORD-06)
+        асинхронно через Kafka `orders.state`. Заказ передаётся в обработку только
+        после подтверждения оплаты (см. payment-service). Может создаваться
+        клиентом (UC-ORD-03) или сотрудником от имени клиента (UC-ORD-02, факс).
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderCreateRequest' }
+      responses:
+        '201':
+          description: Заказ создан, присвоен номер
+          headers:
+            Location: { $ref: '_common.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '402':
+          description: Оплата не завершена — оплаченный заказ не создаётся (E3/E2)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '409':
+          description: Позиция недоступна — требуется корректировка состава (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+
+  /orders/{orderId}:
+    get:
+      tags: [orders-service]
+      operationId: getOrder
+      summary: Получить заказ
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Данные заказа (состав, статус, суммы, способ получения/оплаты)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /orders/{orderId}/eta:
+    get:
+      tags: [orders-service]
+      operationId: getOrderEta
+      summary: Просмотреть время получения заказа
+      description: >-
+        Возвращает ориентировочное время готовности (для самовывоза) или доставки.
+        Оценка считается из локальной реплики загрузки производства
+        (`production.lead.time`), без синхронного обращения к системе производства
+        (Д4). При недоступности оценки возвращается усреднённое время с пометкой о
+        приблизительности (E1). (UC-ORD-05)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Ориентировочное время получения
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Eta' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /orders/{orderId}/pickup-slot:
+    put:
+      tags: [orders-service]
+      operationId: setPickupSlot
+      summary: Зафиксировать желаемый интервал получения
+      description: >-
+        Сохраняет выбранный клиентом интервал получения в пределах режима работы
+        ресторана (отложенное время, UC-ORD-05 A1).
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PickupSlotInput' }
+      responses:
+        '200':
+          description: Интервал получения сохранён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+
+  /orders/search:
+    get:
+      tags: [orders-service]
+      operationId: searchOrder
+      summary: Поиск заказа по номеру (персонал)
+      description: >-
+        Поиск заказа сотрудником кафе по номеру для выдачи. Если заказ не найден —
+        уточнить данные клиента или эскалировать (E1). (UC-RCV-03)
+      security:
+        - bearerAuth: [orders:staff]
+      parameters:
+        - name: number
+          in: query
+          required: true
+          description: Номер заказа
+          schema: { type: string }
+      responses:
+        '200':
+          description: Заказ найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404':
+          description: Заказ не найден (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /orders/{orderId}/issuance:
+    post:
+      tags: [orders-service]
+      operationId: markOrderIssued
+      summary: Отметить выдачу заказа (персонал)
+      description: >-
+        Фиксирует факт выдачи заказа клиенту и закрывает заказ. Доступно
+        сотруднику кафе при получении в ресторане. (UC-RCV-03)
+      security:
+        - bearerAuth: [orders:staff]
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Выдача зафиксирована, заказ закрыт
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: Заказ нельзя выдать в текущем статусе (например, не оплачен)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  parameters:
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    FulfillmentType:
+      type: string
+      enum: [delivery, pickup]
+    ContactInfo:
+      type: object
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        email: { type: string, format: email }
+    Address:
+      type: object
+      properties:
+        raw: { type: string }
+        location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
+    CartItemInput:
+      type: object
+      required: [menuItemId, quantity]
+      properties:
+        menuItemId: { type: string, format: uuid }
+        quantity: { type: integer, minimum: 1 }
+        modifierIds:
+          type: array
+          items: { type: string, format: uuid }
+    CartItem:
+      allOf:
+        - $ref: '#/components/schemas/CartItemInput'
+        - type: object
+          properties:
+            name: { type: string }
+            unitPrice: { $ref: '_common.yaml#/components/schemas/Money' }
+            lineTotal: { $ref: '_common.yaml#/components/schemas/Money' }
+            available: { type: boolean }
+    CartCreateRequest:
+      type: object
+      required: [restaurantId]
+      properties:
+        restaurantId: { type: string, format: uuid }
+        guest:
+          type: boolean
+          description: Гостевое оформление без авторизации (UC-ORD-03 A1).
+        contact: { $ref: '#/components/schemas/ContactInfo' }
+    CartItemsUpdate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CartItemInput' }
+    AppliedPromotion:
+      type: object
+      properties:
+        promotionId: { type: string, format: uuid }
+        title: { type: string }
+        discount: { $ref: '_common.yaml#/components/schemas/Money' }
+    Cart:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        restaurantId: { type: string, format: uuid }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CartItem' }
+        appliedPromotions:
+          type: array
+          items: { $ref: '#/components/schemas/AppliedPromotion' }
+        fulfillment: { $ref: '#/components/schemas/FulfillmentInfo' }
+        subtotal: { $ref: '_common.yaml#/components/schemas/Money' }
+        discountTotal: { $ref: '_common.yaml#/components/schemas/Money' }
+        total: { $ref: '_common.yaml#/components/schemas/Money' }
+    FulfillmentInput:
+      type: object
+      required: [type]
+      properties:
+        type: { $ref: '#/components/schemas/FulfillmentType' }
+        address:
+          $ref: '#/components/schemas/Address'
+    FulfillmentInfo:
+      type: object
+      properties:
+        type: { $ref: '#/components/schemas/FulfillmentType' }
+        address: { $ref: '#/components/schemas/Address' }
+    PickupSlotInput:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+    OrderCreateRequest:
+      type: object
+      required: [cartId]
+      properties:
+        cartId: { type: string, format: uuid }
+        paymentMethod:
+          $ref: '_common.yaml#/components/schemas/PaymentMethodType'
+        contact: { $ref: '#/components/schemas/ContactInfo' }
+        channel:
+          type: string
+          enum: [online, staff_fax]
+          description: Канал оформления (клиент онлайн / сотрудник по факсу).
+    OrderStatus:
+      type: string
+      enum: [created, in_production, ready, in_delivery, delivered, issued, closed, cancelled]
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: string, description: Уникальный номер заказа }
+        restaurantId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        paymentStatus: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CartItem' }
+        fulfillment: { $ref: '#/components/schemas/FulfillmentInfo' }
+        total: { $ref: '_common.yaml#/components/schemas/Money' }
+        eta: { $ref: '#/components/schemas/Eta' }
+        createdAt: { type: string, format: date-time }
+    Eta:
+      type: object
+      properties:
+        readyAt: { type: string, format: date-time }
+        deliveryAt: { type: string, format: date-time }
+        estimateMinutes: { type: integer }
+        approximate:
+          type: boolean
+          description: true — показано усреднённое время при недоступной оценке (E1).

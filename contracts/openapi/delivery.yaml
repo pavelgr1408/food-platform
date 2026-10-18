@@ -1,0 +1,123 @@
+openapi: 3.1.0
+
+info:
+  title: delivery-service — REST API
+  version: 1.1.0
+  description: >-
+    Интеграция доставки: информация о доставке и координаты курьера (пулинг из
+    delivery-Redis). Интеграция с внешней курьерской системой. Хранилища —
+    delivery-db, delivery-Redis. (UC-RCV-02, UC-PAY-03)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8087
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: delivery-service
+
+paths:
+
+  /orders/{orderId}/delivery:
+    get:
+      tags: [delivery-service]
+      operationId: getDeliveryInfo
+      summary: Информация о доставке
+      description: >-
+        Возвращает статус доставки и назначенного курьера по заказу. Назначение
+        курьера инициируется по событию `orders.state`; при отсутствии курьера
+        клиенту предлагается самовывоз (E2). (UC-RCV-02)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Сведения о доставке
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryInfo' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /orders/{orderId}/delivery/courier-location:
+    get:
+      tags: [delivery-service]
+      operationId: getCourierLocation
+      summary: Координаты курьера (пулинг)
+      description: >-
+        Возвращает последние координаты курьера из delivery-Redis для отслеживания
+        доставки. Клиент периодически опрашивает эндпоинт и отображает курьера на
+        Mapkit. Координаты обновляются пулингом из внешней курьерской системы.
+        (UC-RCV-02, loop «Пулинг координат курьера»)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      responses:
+        '200':
+          description: Последние координаты курьера
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CourierLocation' }
+        '404':
+          description: Координаты недоступны (курьер не назначен/не выехал)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+webhooks:
+
+  courierDeliveryStatus:
+    post:
+      tags: [delivery-service]
+      operationId: onCourierDeliveryStatus
+      summary: Статус доставки от курьерской системы
+      description: >-
+        Уведомление о статусе доставки (в т. ч. «доставлено/оплачено»). Приёмник —
+        delivery-service; далее статус публикуется в `delivery.status`.
+        (UC-RCV-02, UC-PAY-03)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeliveryStatusCallback' }
+      responses:
+        '200': { description: Уведомление принято }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+    DeliveryStatus:
+      type: string
+      enum: [searching_courier, courier_assigned, picked_up, en_route, delivered, failed]
+    Courier:
+      type: object
+      properties:
+        name: { type: string }
+        phone: { type: string }
+    DeliveryInfo:
+      type: object
+      properties:
+        orderId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        courier: { $ref: '#/components/schemas/Courier' }
+        etaAt: { type: string, format: date-time }
+    CourierLocation:
+      type: object
+      properties:
+        location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
+        updatedAt: { type: string, format: date-time }
+    DeliveryStatusCallback:
+      type: object
+      required: [orderId, status]
+      properties:
+        orderId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        paid:
+          type: boolean
+          description: Признак оплаты при доставке (UC-PAY-03).
