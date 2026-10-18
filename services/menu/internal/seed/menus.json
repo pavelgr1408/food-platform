@@ -1,0 +1,47 @@
+{
+  "templates": {
+    "classic": [
+      { "category": "Бургеры", "items": [
+        { "key": "blt-classic", "name": "BLT Классик", "description": "Бекон, салат, томат, фирменный соус", "price": 34900,
+          "modifiers": [
+            { "key": "extra-bacon", "name": "Двойной бекон", "price": 8900 },
+            { "key": "cheddar", "name": "Сыр чеддер", "price": 5000 },
+            { "key": "no-onion", "name": "Без лука", "price": 0 }
+          ] },
+        { "key": "chicken-burger", "name": "Чикен бургер", "description": "Куриная котлета, айсберг, соус сацебели", "price": 31900,
+          "modifiers": [ { "key": "spicy-sauce", "name": "Острый соус", "price": 2000 } ] },
+        { "key": "veggie-burger", "name": "Веджи бургер", "description": "Овощная котлета, авокадо, томат", "price": 29900 }
+      ] },
+      { "category": "Сэндвичи", "items": [
+        { "key": "club", "name": "Клаб-сэндвич", "description": "Курица, бекон, яйцо, томат", "price": 27900 }
+      ] },
+      { "category": "Напитки", "items": [
+        { "key": "cola", "name": "Кола 0,5", "description": "", "price": 12900 },
+        { "key": "lemonade", "name": "Лимонад домашний", "description": "Лимон, мята", "price": 18900,
+          "modifiers": [ { "key": "large", "name": "Большой 0,7", "price": 6000 } ] },
+        { "key": "americano", "name": "Американо", "description": "", "price": 14900,
+          "modifiers": [ { "key": "oat-milk", "name": "Овсяное молоко", "price": 5000 } ] }
+      ] },
+      { "category": "Десерты", "items": [
+        { "key": "brownie", "name": "Брауни", "description": "Шоколадный брауни с орехами", "price": 17900 }
+      ] }
+    ],
+    "kiosk": [
+      { "category": "Бургеры", "items": [
+        { "key": "blt-classic", "name": "BLT Классик", "description": "Бекон, салат, томат, фирменный соус", "price": 33900,
+          "modifiers": [ { "key": "cheddar", "name": "Сыр чеддер", "price": 5000 } ] }
+      ] },
+      { "category": "Напитки", "items": [
+        { "key": "cola", "name": "Кола 0,5", "description": "", "price": 12900 },
+        { "key": "americano", "name": "Американо", "description": "", "price": 14900 }
+      ] }
+    ]
+  },
+  "restaurants": [
+    { "restaurantId": "a1000000-0000-4000-8000-000000000001", "template": "classic", "unavailable": ["brownie"] },
+    { "restaurantId": "a1000000-0000-4000-8000-000000000002", "template": "classic", "unavailable": ["chicken-burger", "cheddar"] },
+    { "restaurantId": "a1000000-0000-4000-8000-000000000003", "template": "kiosk" },
+    { "restaurantId": "a1000000-0000-4000-8000-000000000004", "template": "classic" },
+    { "restaurantId": "a1000000-0000-4000-8000-000000000005", "template": "classic" }
+  ]
+}
