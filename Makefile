@@ -71,8 +71,9 @@ docker-build: ## Образ сервиса: make docker-build SERVICE=auth [TAG=
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
-contract-check: pydeps-check ## Живые ответы restaurant+menu против OpenAPI (нужен make up SLICE="restaurant menu")
-	$(PYTHON) tools/contract-check/check.py catalog
+SCENARIO     ?= catalog
+contract-check: pydeps-check ## Живые ответы против OpenAPI: SCENARIO=catalog (restaurant+menu) | orders (restaurant+menu+orders)
+	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
 check-template: pydeps-check ## Шаблон сервиса генерирует собираемый и тестируемый сервис
 	tools/new-service/check-template.sh
 
