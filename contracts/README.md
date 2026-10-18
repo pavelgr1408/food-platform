@@ -16,6 +16,8 @@
 - Заголовки конверта события (`event-id`, `event-type`, `occurred-at`, `traceparent`) как `messageTraits.EventEnvelope`.
 - Kafka-биндинги: партиции, ключ партиции (`x-partition-key`), DLQ (`x-dlq`), compaction для `promotions.discount`.
 - Блок `x-kafka-topics` из OpenAPI удалён (дублировал AsyncAPI).
+- **auth.yaml 1.2.0** приведён к коду `services/auth`: `register`, `login` (по `phone`, не `login`), `refresh`, `logout`, `me`, `introspect`, JWKS; `verifyToken` (`/auth/token/verify`) удалён (ADR-11: JWKS + `introspect`); роли — `CUSTOMER/STAFF/FRANCHISE_OWNER/HQ_STAFF` (как в `pkg/authclient`), `subjectId` → `userId`. `authorize` оставлен как `x-status: planned` (S5). Формат ошибок — текущий `AuthError`, переход на Problem Details в S5. Проверено: 17 живых ответов сервиса валидны по схемам.
+- **ADR-13 (деньги):** `Money.amount` — `integer/int64`, минорные единицы (копейки), было `number/decimal` (549.00 → 54990). `PromotionDiscount.discount.value` — `integer`: для `percent` сотые доли процента (1500 = 15%), для `fixed` копейки.
 
 ## Порты (dev)
 gateway 8080 · auth 8081 · restaurant 8082 · menu 8083 · orders 8084 · payment 8085 · loyalty 8086 · delivery 8087 · notification 8088 · mock-externals 9090+
