@@ -1,0 +1,30 @@
+# auth-service (эталон, ADR-2). Секреты создаёт `make k8s-dev-secrets` (в git не хранятся):
+#   Secret auth-secrets (DATABASE_URL), Secret auth-jwt (private.pem, public.pem).
+name: auth
+image:
+  repository: food/auth
+  tag: dev
+port: 8081
+replicas: 2
+env:
+  APP_ENV: dev
+  JWT_ISSUER: restaurant-auth-service
+  JWT_AUDIENCE: restaurant-api
+  JWT_KEY_ID: local-dev-key
+  JWT_ACCESS_TTL: 15m
+  REFRESH_TOKEN_TTL: 720h
+  JWT_PRIVATE_KEY_PATH: /run/keys/private.pem
+  JWT_PUBLIC_KEY_PATH: /run/keys/public.pem
+existingSecret: auth-secrets
+secretVolumes:
+  - { name: jwt, secretName: auth-jwt, mountPath: /run/keys }
+probes:
+  # До S5 у auth нет /health/ и /metrics (ДЗ-3): обе пробы — на существующий /actuator/health.
+  liveness: { path: /actuator/health }
+metrics:
+  enabled: false
+migrations:
+  enabled: false # миграции применяются при старте; --migrate-only появится в S5
+ingress:
+  paths:
+    - { path: /auth, pathType: Prefix }
