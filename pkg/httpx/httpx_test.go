@@ -48,7 +48,7 @@ func TestStandardMiddlewareRecoverAndRequestID(t *testing.T) {
 		}
 		w.WriteHeader(204)
 	})
-	h := Standard(log)(mux)
+	h := Standard(log)(TrackRoute(mux))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/boom", nil))
@@ -227,5 +227,30 @@ func TestRunGracefulShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("shutdown timeout")
+	}
+}
+
+type ctxProbe struct{}
+
+// Регрессия: middleware, копирующий запрос (r.WithContext), не должен ломать метку маршрута
+// во внешних слоях, если mux обёрнут в TrackRoute.
+func TestRouteSurvivesRequestCopy(t *testing.T) {
+	var buf bytes.Buffer
+	log := logging.New(logging.Options{Writer: &buf})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	copying := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxProbe{}, 1)))
+		})
+	}
+	var seen string
+	probe := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r); seen = RouteOf(r) })
+	}
+	h := Chain(TrackRoute(mux), RequestContext(), Recover(log), AccessLog(log), probe, copying)
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/orders/42", nil))
+	if seen != "GET /orders/{id}" || !strings.Contains(buf.String(), `"route":"GET /orders/{id}"`) {
+		t.Fatalf("route=%q log=%s", seen, buf.String())
 	}
 }

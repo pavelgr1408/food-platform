@@ -4,7 +4,7 @@
 //	http_request_duration_seconds{service,method,route}   (histogram → квантили в Grafana)
 //	http_requests_in_flight{service}
 //
-// route — шаблон ServeMux ("GET /orders/{orderId}"), а не фактический путь:
+// route — шаблон ServeMux (httpx.TrackRoute) ("GET /orders/{orderId}"), а не фактический путь:
 // кардинальность ограничена числом маршрутов.
 package metrics
 
@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/pavelgr1408/food-platform/pkg/httpx"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -59,7 +60,7 @@ func (m *Registry) Handler() http.Handler {
 	return promhttp.HandlerFor(m.Reg, promhttp.HandlerOpts{})
 }
 
-// Middleware собирает RED-метрики. Ставьте снаружи mux, чтобы видеть r.Pattern.
+// Middleware собирает RED-метрики. Ставьте снаружи mux, который обёрнут в httpx.TrackRoute.
 func (m *Registry) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +69,7 @@ func (m *Registry) Middleware() func(http.Handler) http.Handler {
 			rec := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			start := time.Now()
 			next.ServeHTTP(rec, r)
-			route := r.Pattern
+			route := httpx.RouteOf(r)
 			if route == "" {
 				route = "unmatched"
 			}

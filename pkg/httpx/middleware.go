@@ -50,7 +50,7 @@ func RequestContext() Middleware {
 			} else {
 				trace = randHex(16)
 			}
-			ctx := logging.WithTraceID(logging.WithRequestID(r.Context(), id), trace)
+			ctx := withRouteHolder(logging.WithTraceID(logging.WithRequestID(r.Context(), id), trace))
 			w.Header().Set(HeaderRequestID, id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -110,7 +110,7 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 	return &StatusRecorder{ResponseWriter: w, Status: http.StatusOK}
 }
 
-// AccessLog пишет одну запись на запрос. Маршрут — шаблон из ServeMux (r.Pattern),
+// AccessLog пишет одну запись на запрос. Маршрут — шаблон из ServeMux (см. TrackRoute),
 // чтобы не плодить кардинальность. Пробы и /metrics логируются на уровне debug.
 func AccessLog(log *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
@@ -125,7 +125,7 @@ func AccessLog(log *slog.Logger) Middleware {
 				level = slog.LevelError
 			}
 			log.Log(r.Context(), level, "http request",
-				"method", r.Method, "route", r.Pattern, "path", r.URL.Path, "status", rec.Status,
+				"method", r.Method, "route", RouteOf(r), "path", r.URL.Path, "status", rec.Status,
 				"bytes", rec.Bytes, "duration_ms", float64(time.Since(start).Microseconds())/1000,
 				"remote_ip", clientIP(r), "user_agent", r.UserAgent())
 		})
@@ -154,6 +154,7 @@ func MaxBody(n int64) Middleware {
 }
 
 // Standard — стандартный набор: RequestContext → Recover → AccessLog (+ extra внутри).
+// Mux при этом нужно обернуть в TrackRoute.
 func Standard(log *slog.Logger, extra ...Middleware) Middleware {
 	all := append([]Middleware{RequestContext(), Recover(log), AccessLog(log)}, extra...)
 	return func(h http.Handler) http.Handler { return Chain(h, all...) }

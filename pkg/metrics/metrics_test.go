@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pavelgr1408/food-platform/pkg/httpx"
 )
 
 func TestREDMetrics(t *testing.T) {
@@ -13,7 +15,7 @@ func TestREDMetrics(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) })
 	mux.Handle("GET /metrics", m.Handler())
-	h := m.Middleware()(mux)
+	h := httpx.Chain(httpx.TrackRoute(mux), httpx.RequestContext(), m.Middleware())
 
 	for _, p := range []string{"/orders/1", "/orders/2", "/nope"} {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", p, nil))
