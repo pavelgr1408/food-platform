@@ -86,10 +86,24 @@ components:
         code: { type: string, description: Машиночитаемый код ошибки, example: ITEM_UNAVAILABLE }
     Money:
       type: object
+      description: |
+        Денежная сумма. `amount` — **целое число минорных единиц валюты** (для RUB — копейки):
+        `54990` = 549,90 ₽. Никаких дробных чисел и строк: сложение, сравнение и сверка
+        платежей — целочисленные. Округление (скидки, проценты) выполняется один раз,
+        на стороне orders-service, банковским способом (ADR-13).
       required: [amount, currency]
       properties:
-        amount: { type: number, format: decimal, example: 549.00 }
-        currency: { type: string, example: RUB, description: Код валюты ISO 4217 }
+        amount:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 54990
+          description: Сумма в минорных единицах (копейки для RUB), не отрицательная.
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          example: RUB
+          description: Код валюты ISO 4217
     GeoPoint:
       type: object
       required: [lat, lon]

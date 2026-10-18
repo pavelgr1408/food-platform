@@ -955,7 +955,9 @@ components:
         title: { type: string }
         conditions:
           type: object
-          description: Условия применения (позиции, минимальная сумма и т. п.)
+          description: |
+            Условия применения (позиции, минимальная сумма и т. п.).
+            Любые денежные значения внутри — целые числа в копейках.
           additionalProperties: true
         discount:
           type: object
@@ -964,7 +966,12 @@ components:
               type: string
               enum: [percent, fixed, gift]
             value:
-              type: number
+              type: integer
+              minimum: 0
+              description: |
+                Размер скидки — всегда целое число (без float):
+                `percent` — в сотых долях процента (basis points): 1500 = 15%, 1250 = 12,5%;
+                `fixed` — в копейках: 10000 = 100 ₽; `gift` — не используется (0).
         priority:
           type: integer
         validFrom: { type: string, format: date-time }
@@ -1046,11 +1053,17 @@ components:
 
     Money:
       type: object
+      description: |
+        Сумма в минорных единицах валюты (для RUB — копейки): 54990 = 549,90 ₽.
+        Целое число, не float (ADR-13).
       required: [amount, currency]
       properties:
         amount:
-          type: number
+          type: integer
+          format: int64
           minimum: 0
+          examples: [54990]
         currency:
           type: string
+          pattern: '^[A-Z]{3}$'
           default: RUB
