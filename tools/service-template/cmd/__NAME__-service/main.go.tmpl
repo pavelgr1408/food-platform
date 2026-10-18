@@ -1,0 +1,93 @@
+// __NAME__-service. Скелет из tools/service-template: все сквозные хуки подключены,
+// бизнес-логики нет. Эталон слоёв — services/auth.
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"__MODPATH__/pkg/authclient"
+	"__MODPATH__/pkg/httpx"
+	"__MODPATH__/pkg/idempotency"
+	"__MODPATH__/pkg/kafka"
+	"__MODPATH__/pkg/logging"
+	"__MODPATH__/pkg/metrics"
+	"__MODPATH__/pkg/pgxutil"
+	"__MODPATH__/services/__NAME__/internal/config"
+	"__MODPATH__/services/__NAME__/internal/httpapi"
+	"__MODPATH__/services/__NAME__/migrations"
+)
+
+func main() {
+	cfg, err := config.Load()
+	log := logging.New(logging.Options{Service: "__NAME__", Env: cfg.Env, Level: cfg.LogLevel})
+	if err != nil {
+		log.Error("configuration error", "error", err)
+		os.Exit(1)
+	}
+	if err := run(cfg, log); err != nil {
+		log.Error("service stopped with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(cfg config.Config, log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := pgxutil.Open(ctx, cfg.DatabaseURL, pgxutil.Options{AppName: "__NAME__-service"})
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	// Миграции: сервиса + outbox/inbox + ключи идемпотентности. В k8s — отдельной Job: `--migrate-only`.
+	if err := pgxutil.Migrate(ctx, pool, log,
+		pgxutil.Source{Module: "__NAME__", FS: migrations.FS},
+		kafka.Migrations(), idempotency.Migrations()); err != nil {
+		return err
+	}
+	if pgxutil.MigrateOnly(os.Args[1:]) {
+		log.Info("migrations applied, exiting (--migrate-only)")
+		return nil
+	}
+
+	auth, err := authclient.NewFromMode(cfg.AuthMode, cfg.Env, log)
+	if err != nil {
+		return err
+	}
+	reg := metrics.New("__NAME__")
+	checks := []httpx.Check{{Name: "db", Fn: pgxutil.Ping(pool)}}
+
+	var wg sync.WaitGroup
+	// Outbox relay → Kafka (включается, если задан KAFKA_BROKERS).
+	if len(cfg.KafkaBrokers) > 0 {
+		prod, err := kafka.NewProducer(cfg.KafkaBrokers, "__NAME__-service")
+		if err != nil {
+			return err
+		}
+		defer prod.Close()
+		reg.MustRegister("__NAME__", kafka.OutboxCollectors(pool)...)
+		checks = append(checks, httpx.Check{Name: "kafka", Fn: prod.Ping})
+		relay := &kafka.Relay{Pool: pool, Pub: prod, Log: log}
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = relay.Run(ctx) }()
+		// Консьюмеры: kafka.NewConsumer(kafka.ConsumerConfig{Group: "__NAME__", Topics: …, Pool: pool, Handler: …}).
+	}
+
+	idem := idempotency.NewStore(pool)
+	wg.Add(1)
+	go func() { defer wg.Done(); idem.Run(ctx, log) }()
+
+	handler := httpapi.New(httpapi.Deps{Log: log, Metrics: reg, Auth: auth, Checks: checks, Idempotency: idem})
+	srv := httpx.NewServer(":"+cfg.HTTPPort, handler)
+	err = httpx.Run(ctx, srv, log, 10*time.Second)
+	stop()
+	wg.Wait()
+	return err
+}

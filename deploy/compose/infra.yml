@@ -1,0 +1,86 @@
+# Запускать через Makefile (он задаёт --project-directory = корень репозитория; все пути в compose-файлах — от корня).
+# Dev-инфраструктура: PostgreSQL (БД на сервис) + Kafka (KRaft, 1 брокер) + Redis (profile redis).
+# Срезы сервисов подключаются отдельными файлами deploy/compose/services/<svc>.yml (см. Makefile: make up SLICE="restaurant menu").
+# Бюджет памяти (Docker Desktop ~10 ГБ): Postgres ≈ 150 МБ, Kafka ≈ 700 МБ, Redis ≈ 20 МБ.
+name: food-platform
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres # только dev; суперпользователь нужен pgtest (CREATE DATABASE)
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/compose/postgres/init:/docker-entrypoint-initdb.d:ro
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=200", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 512m
+
+  kafka:
+    image: apache/kafka:3.9.0
+    hostname: kafka
+    ports:
+      - "${KAFKA_EXTERNAL_PORT:-29092}:29092" # для go run на хосте
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false" # топики — только через kafka-init (как в проде)
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_LOG_RETENTION_HOURS: 24
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    mem_limit: 1g
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./deploy/compose/kafka:/init:ro
+    entrypoint: ["/bin/bash", "/init/create-topics.sh"]
+    environment:
+      BOOTSTRAP: kafka:9092
+    restart: "no"
+
+  redis:
+    profiles: [redis] # нужен с S7 (delivery): COMPOSE_PROFILES=redis make up
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 96m
+
+volumes:
+  pgdata:
+  kafkadata:

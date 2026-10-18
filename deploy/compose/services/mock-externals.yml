@@ -1,0 +1,19 @@
+# Срез: внешние системы (моки). Включаемые модули — MOCKS=payment,pos,production,courier,push (появляются с S3…S9).
+services:
+  mock-externals:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: tools/mock-externals
+        TARGET: ./tools/mock-externals
+    environment:
+      MOCKS: ${MOCKS:-ping}
+      MOCK_DELAY: ${MOCK_DELAY:-2s}
+      KAFKA_BROKERS: kafka:9092
+    ports:
+      - "9090-9099:9090-9099"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    mem_limit: 64m

@@ -1,0 +1,75 @@
+# Значения по умолчанию. Сервис переопределяет их в deploy/values/<svc>.yaml.
+name: "" # ОБЯЗАТЕЛЬНО: имя сервиса (orders, menu…) — имена ресурсов, лейблы
+
+image:
+  repository: ""   # ОБЯЗАТЕЛЬНО, например docker.io/<user>/food-orders
+  tag: dev
+  pullPolicy: IfNotPresent
+
+port: 8080           # порт приложения (containerPort)
+replicas: 2
+
+service:
+  port: 80           # порт Service → targetPort http
+
+# Несекретная конфигурация (12-factor) → ConfigMap + envFrom.
+env: {}
+# Секреты: имя уже существующего Secret (ключи → переменные окружения). В git не хранится.
+existingSecret: ""
+# Дополнительные переменные (valueFrom и т.п.)
+extraEnv: []
+# Монтирование секретов файлами, напр. JWT-ключи auth: [{name: jwt, secretName: auth-jwt, mountPath: /run/keys}]
+secretVolumes: []
+
+probes:
+  liveness:
+    path: /health/        # поверхностная проба (ADR-2)
+    initialDelaySeconds: 3
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    path: /actuator/health  # глубокая: БД/Kafka
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+
+# Миграции отдельным Job (pre-install/pre-upgrade hook): `<бинарь> --migrate-only`
+migrations:
+  enabled: false
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+
+ingress:
+  className: nginx
+  host: arch.homework
+  annotations: {}
+  # [{path: /api/orders, pathType: Prefix}] ; пусто → Ingress не создаётся
+  paths: []
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true # применяется при replicas > 1
+  minAvailable: 1
+
+# Prometheus: аннотации scrape (по умолчанию) и/или ServiceMonitor (если стоит prometheus-operator)
+metrics:
+  enabled: true
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []

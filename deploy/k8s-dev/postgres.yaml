@@ -1,0 +1,49 @@
+# Минимальный Postgres ДЛЯ SMOKE в локальном k8s (kind / Docker Desktop). НЕ для прода и не для нагрузки:
+# данные в emptyDir, учётка dev. Создаёт БД и роль auth (остальные сервисы — по мере добавления в init).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: postgres-init, labels: { app.kubernetes.io/part-of: food-platform } }
+data:
+  01-databases.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    for svc in auth; do
+      psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    CREATE ROLE ${svc} LOGIN PASSWORD '${svc}';
+    CREATE DATABASE ${svc} OWNER ${svc};
+    SQL
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: postgres, labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/part-of: food-platform } }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app.kubernetes.io/name: postgres } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: postgres, app.kubernetes.io/part-of: food-platform } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_USER, value: postgres }
+            - { name: POSTGRES_PASSWORD, value: postgres }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ name: pg, containerPort: 5432 }]
+          readinessProbe: { exec: { command: ["pg_isready", "-U", "postgres"] }, periodSeconds: 5 }
+          resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { memory: 384Mi } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+      volumes:
+        - { name: data, emptyDir: {} }
+        - { name: init, configMap: { name: postgres-init, defaultMode: 0755 } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, labels: { app.kubernetes.io/part-of: food-platform } }
+spec:
+  selector: { app.kubernetes.io/name: postgres }
+  ports: [{ name: pg, port: 5432, targetPort: pg }]

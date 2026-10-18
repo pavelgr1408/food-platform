@@ -1,0 +1,132 @@
+openapi: 3.1.0
+
+info:
+  title: menu-service — REST API
+  version: 1.1.0
+  description: >-
+    Меню и актуальные цены ресторана, проверка доступности позиций. Хранилище —
+    menu-db. (UC-ORD-01/02/03)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8083
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: menu-service
+
+paths:
+
+  /restaurants/{restaurantId}/menu:
+    get:
+      tags: [menu-service]
+      operationId: getMenu
+      summary: Меню и актуальные цены ресторана
+      description: >-
+        Возвращает меню с актуальными ценами для выбранного ресторана. Первый шаг
+        оформления заказа. (UC-ORD-01, UC-ORD-03)
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/RestaurantId' }
+      responses:
+        '200':
+          description: Меню с ценами
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Menu' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+  /restaurants/{restaurantId}/menu/validation:
+    post:
+      tags: [menu-service]
+      operationId: validateMenuItems
+      summary: Проверить позиции по актуальному меню
+      description: >-
+        Проверяет доступность и цены переданных позиций против актуального меню.
+        Используется при вводе заказа сотрудником (UC-ORD-02) и при пересчёте
+        корзины. Возвращает недоступные позиции для сценария E1 «позиция недоступна».
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/RestaurantId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MenuValidationRequest' }
+      responses:
+        '200':
+          description: Результат проверки позиций (доступность, актуальные цены)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MenuValidationResult' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  schemas:
+    Modifier:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        price: { $ref: '_common.yaml#/components/schemas/Money' }
+    MenuItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        price: { $ref: '_common.yaml#/components/schemas/Money' }
+        available: { type: boolean }
+        modifiers:
+          type: array
+          items: { $ref: '#/components/schemas/Modifier' }
+    Menu:
+      type: object
+      properties:
+        restaurantId: { type: string, format: uuid }
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              items:
+                type: array
+                items: { $ref: '#/components/schemas/MenuItem' }
+    MenuValidationRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [menuItemId, quantity]
+            properties:
+              menuItemId: { type: string, format: uuid }
+              quantity: { type: integer, minimum: 1 }
+              modifierIds:
+                type: array
+                items: { type: string, format: uuid }
+    MenuValidationResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              menuItemId: { type: string, format: uuid }
+              available: { type: boolean }
+              currentPrice: { $ref: '_common.yaml#/components/schemas/Money' }
+              reason: { type: string, description: 'Причина недоступности, если есть' }

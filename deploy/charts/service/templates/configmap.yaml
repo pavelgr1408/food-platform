@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ required "name is required" .Values.name }}-config
+  labels:
+    {{- include "svc.labels" . | nindent 4 }}
+data:
+  {{- range $k, $v := .Values.env }}
+  {{ $k }}: {{ $v | toString | quote }}
+  {{- end }}
+  HTTP_PORT: {{ .Values.port | toString | quote }}

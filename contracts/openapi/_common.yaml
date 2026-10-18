@@ -1,0 +1,105 @@
+openapi: 3.1.0
+
+info:
+  title: Общие компоненты REST API «Заказ еды»
+  version: 1.1.0
+  description: >-
+    Общие схемы, параметры и ответы, на которые ссылаются контракты сервисов
+    (`contracts/openapi/<service>.yaml`). Сам по себе документ не описывает операций.
+
+paths: {}
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        JWT, проверяемый api-gateway через auth-service. Скоупы в списке security
+        операции (например `promotions:write`, `orders:staff`) означают требуемые
+        права субъекта.
+
+  headers:
+    Location:
+      description: URI созданного ресурса.
+      schema: { type: string, format: uri-reference }
+
+  parameters:
+    RestaurantId:
+      name: restaurantId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Уникальный ключ, гарантирующий однократное выполнение создающей операции
+        при повторной отправке.
+      schema: { type: string, maxLength: 128 }
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Требуется аутентификация / токен недействителен
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    UnprocessableEntity:
+      description: Семантически некорректные данные
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      description: Формат ошибки по RFC 9457 (Problem Details).
+      properties:
+        type: { type: string, format: uri, default: 'about:blank' }
+        title: { type: string, example: Позиция недоступна }
+        status: { type: integer, example: 409 }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        code: { type: string, description: Машиночитаемый код ошибки, example: ITEM_UNAVAILABLE }
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: number, format: decimal, example: 549.00 }
+        currency: { type: string, example: RUB, description: Код валюты ISO 4217 }
+    GeoPoint:
+      type: object
+      required: [lat, lon]
+      properties:
+        lat: { type: number, format: double }
+        lon: { type: number, format: double }
+    PaymentMethodType:
+      type: string
+      enum: [online_card, courier_card, pos]
+      description: Онлайн-картой / курьеру (картой по ссылке) / на кассе.
+    PaymentStatus:
+      type: string
+      enum: [pending, authorized, paid, declined, unknown]

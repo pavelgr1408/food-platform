@@ -10,12 +10,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/restaurant-auth-service/internal/config"
-	"github.com/example/restaurant-auth-service/internal/httpapi"
-	"github.com/example/restaurant-auth-service/internal/service"
-	"github.com/example/restaurant-auth-service/internal/store"
-	"github.com/example/restaurant-auth-service/internal/token"
-	"github.com/example/restaurant-auth-service/migrations"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/config"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/httpapi"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/service"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/store"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/token"
+	"github.com/pavelgr1408/food-platform/services/auth/migrations"
 )
 
 func main() {

@@ -1,0 +1,177 @@
+openapi: 3.1.0
+
+info:
+  title: auth-service — REST API
+  version: 1.1.0
+  description: >-
+    Авторизация пользователей и проверка полномочий (клиент, сотрудник кафе,
+    владелец франшизы, сотрудник головной компании). Хранилище — auth-db.
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8081
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth-service
+
+paths:
+
+  /auth/login:
+    post:
+      tags: [auth-service]
+      operationId: login
+      summary: Аутентификация пользователя
+      description: >-
+        Выдаёт пару токенов по учётным данным. Используется всеми клиентскими
+        и персональными приложениями.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401':
+          description: Неверные учётные данные
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/token/verify:
+    post:
+      tags: [auth-service]
+      operationId: verifyToken
+      summary: Проверить токен/сессию (internal)
+      description: >-
+        Вызывается api-gateway на каждом входящем запросе для проверки токена
+        и получения субъекта с ролями. (UC-FND-01, UC-PRM-01, шаг «Проверить токен/сессию»)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: JWT для проверки }
+      responses:
+        '200':
+          description: Токен действителен
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Principal' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+
+  /auth/authorize:
+    post:
+      tags: [auth-service]
+      operationId: authorize
+      summary: Проверить полномочия на действие (internal)
+      description: >-
+        Проверяет полномочия субъекта на конкретное действие/область: уровень
+        акции (local/national) или привязку владельца франшизы к ресторану.
+        (UC-PRM-02/03/04, шаги «Проверить полномочия», «Проверить привязку владельца»)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizeRequest' }
+      responses:
+        '200':
+          description: Решение по авторизации
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizeDecision' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+
+  /auth/me:
+    get:
+      tags: [auth-service]
+      operationId: getCurrentPrincipal
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: Данные текущего субъекта
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Principal' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  responses:
+    TooManyRequests:
+      description: Превышен лимит запросов
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  schemas:
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login: { type: string }
+        password: { type: string, format: password }
+        deviceId: { type: string }
+    TokenPair:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        tokenType: { type: string, default: Bearer }
+        expiresIn: { type: integer, description: 'TTL access-токена, сек' }
+    Principal:
+      type: object
+      properties:
+        subjectId: { type: string, format: uuid }
+        displayName: { type: string }
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [client, cafe_staff, franchise_owner, hq_staff]
+        restaurantId:
+          type: string
+          format: uuid
+          description: Привязка к ресторану (для владельца франшизы/сотрудника кафе).
+    AuthorizeRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          example: promotion.manage
+        scope:
+          type: string
+          enum: [local, national]
+          description: Область действия для акций.
+        restaurantId:
+          type: string
+          format: uuid
+          description: Ресторан, к которому проверяется привязка.
+    AuthorizeDecision:
+      type: object
+      required: [allowed]
+      properties:
+        allowed: { type: boolean }
+        reason: { type: string }

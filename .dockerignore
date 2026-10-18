@@ -1,0 +1,7 @@
+.git
+**/*.pem
+**/.env
+**/config/keys
+**/node_modules
+*.bundle
+.dev

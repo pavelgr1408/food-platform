@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/example/restaurant-auth-service/internal/domain"
-	"github.com/example/restaurant-auth-service/internal/service"
-	"github.com/example/restaurant-auth-service/internal/store"
 	"github.com/google/uuid"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/service"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/store"
 )
 
 type API struct {

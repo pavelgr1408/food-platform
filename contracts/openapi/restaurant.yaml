@@ -1,0 +1,153 @@
+openapi: 3.1.0
+
+info:
+  title: restaurant-service — REST API
+  version: 1.1.0
+  description: >-
+    Поиск и выбор ресторанов сети с учётом режима работы и признака доставки.
+    Хранилище — restaurant-db. (UC-FND-01)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8082
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: restaurant-service
+
+paths:
+
+  /restaurants:
+    get:
+      tags: [restaurant-service]
+      operationId: searchRestaurants
+      summary: Найти рестораны сети
+      description: >-
+        Подбор ресторанов по геопозиции/адресу с признаком доставки и режимом
+        работы. Геопозиция определяется на клиенте средствами Mapkit; бэкенд к
+        картам не обращается (Д2). Поддерживает повторный подбор по фильтрам.
+        (UC-FND-01)
+      parameters:
+        - { $ref: '#/components/parameters/Latitude' }
+        - { $ref: '#/components/parameters/Longitude' }
+        - name: address
+          in: query
+          description: Город/адрес при ручном вводе без геолокации (A1).
+          schema: { type: string }
+        - name: deliveryOnly
+          in: query
+          description: Только рестораны с доставкой.
+          schema: { type: boolean }
+        - name: openNow
+          in: query
+          description: Только открытые сейчас (по режиму работы).
+          schema: { type: boolean }
+        - name: radiusMeters
+          in: query
+          description: Радиус поиска; используется в т.ч. для расширения зоны (A2/E2).
+          schema: { type: integer, minimum: 100, maximum: 50000, default: 5000 }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: >-
+            Список ресторанов (адрес, расстояние, режим, доставка). Может быть
+            пустым — вне зоны обслуживания / справочник пуст (A2/E2), тогда
+            клиенту предлагается самовывоз или смена адреса.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RestaurantPage' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /restaurants/{restaurantId}:
+    get:
+      tags: [restaurant-service]
+      operationId: getRestaurant
+      summary: Детали ресторана
+      description: >-
+        Адрес и координаты выбранного ресторана; фиксируются как контекст сессии
+        и используются далее в UC-ORD-01, а также клиентом для построения
+        маршрута на Mapkit (UC-MAP-02).
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/RestaurantId' }
+      responses:
+        '200':
+          description: Ресторан найден
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Restaurant' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  parameters:
+    Latitude:
+      name: lat
+      in: query
+      description: Широта (определяется на клиенте средствами Mapkit, Д2).
+      schema: { type: number, format: double, minimum: -90, maximum: 90 }
+    Longitude:
+      name: lon
+      in: query
+      description: Долгота (определяется на клиенте средствами Mapkit, Д2).
+      schema: { type: number, format: double, minimum: -180, maximum: 180 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  responses:
+    ServiceUnavailable:
+      description: Сервис временно недоступен
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  schemas:
+    RestaurantSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        address: { type: string }
+        location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
+        distanceMeters: { type: integer }
+        deliveryAvailable: { type: boolean }
+        openNow: { type: boolean }
+    Restaurant:
+      allOf:
+        - $ref: '#/components/schemas/RestaurantSummary'
+        - type: object
+          properties:
+            workingHours:
+              type: array
+              items:
+                type: object
+                properties:
+                  dayOfWeek: { type: integer, minimum: 1, maximum: 7 }
+                  opensAt: { type: string, example: '09:00' }
+                  closesAt: { type: string, example: '22:00' }
+    RestaurantPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RestaurantSummary' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }

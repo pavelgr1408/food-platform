@@ -1,0 +1,28 @@
+# Срез: auth-service. Ключи JWT: make keys SERVICE=auth (в git не попадают).
+services:
+  auth:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/auth
+        TARGET: ./services/auth/cmd/auth-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "8081"
+      DATABASE_URL: postgres://auth:auth@postgres:5432/auth?sslmode=disable
+      JWT_PRIVATE_KEY_PATH: /run/keys/private.pem
+      JWT_PUBLIC_KEY_PATH: /run/keys/public.pem
+      JWT_ISSUER: restaurant-auth-service
+      JWT_AUDIENCE: restaurant-api
+      JWT_KEY_ID: local-dev-key
+      JWT_ACCESS_TTL: 15m
+      REFRESH_TOKEN_TTL: 720h
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./services/auth/config/keys:/run/keys:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m

@@ -1,0 +1,248 @@
+openapi: 3.1.0
+
+info:
+  title: loyalty-service — REST API
+  version: 1.1.0
+  description: >-
+    Акции, промокоды и скидки: просмотр действующих предложений клиентом и
+    управление акциями персоналом (локальные / общенациональные). Публикация в
+    orders-service идёт через Kafka. Хранилище — loyalty-db. (UC-
+    PRM-01/02/03/04)
+    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа (api-gateway)
+  - url: http://localhost:8086
+    description: Локальный запуск (`go run` / docker compose)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: loyalty-service
+
+paths:
+
+  /promotions:
+    get:
+      tags: [loyalty-service]
+      operationId: listActivePromotions
+      summary: Действующие акции и спецпредложения
+      description: >-
+        Возвращает объединённые национальные и локальные предложения по региону/
+        ресторану, отсеивая недействующие. Без выбранного ресторана возвращаются
+        только общенациональные акции (A1). (UC-PRM-01)
+      parameters:
+        - name: region
+          in: query
+          schema: { type: string }
+        - name: restaurantId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Перечень действующих акций (условия, сроки)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Promotion' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '503':
+          description: >-
+            Подсистема акций недоступна (E1). Переход к меню/оформлению не
+            блокируется.
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    post:
+      tags: [loyalty-service]
+      operationId: createPromotion
+      summary: Создать акцию (персонал)
+      description: >-
+        Создаёт акцию с параметрами уровня субъекта. Область действия (локальная
+        для ресторана франшизы или общенациональная для всей сети) валидируется
+        по полномочиям. (UC-PRM-02/03/04)
+      security:
+        - bearerAuth: [promotions:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionInput' }
+      responses:
+        '201':
+          description: Акция создана (в статусе «Черновик»)
+          headers:
+            Location: { $ref: '_common.yaml#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '403':
+          description: Недостаточно прав / выход за пределы охвата (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '409':
+          description: Конфликт правил акций (E2)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+
+  /promotions/{promotionId}:
+    get:
+      tags: [loyalty-service]
+      operationId: getPromotion
+      summary: Параметры акции (персонал)
+      security:
+        - bearerAuth: [promotions:read]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      responses:
+        '200':
+          description: Акция найдена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+    put:
+      tags: [loyalty-service]
+      operationId: updatePromotion
+      summary: Изменить акцию (персонал)
+      description: >-
+        Изменение действующей акции в пределах полномочий субъекта; изменение
+        фиксируется в истории. (UC-PRM-03 A1)
+      security:
+        - bearerAuth: [promotions:write]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionInput' }
+      responses:
+        '200':
+          description: Акция обновлена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '403':
+          description: Запрет расширения охвата за пределы ресторана (E1)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: Конфликт правил акций (E2)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /promotions/{promotionId}/activation:
+    post:
+      tags: [loyalty-service]
+      operationId: activatePromotion
+      summary: Активировать и опубликовать акцию (персонал)
+      description: >-
+        Валидирует параметры и правила приоритета, сохраняет акцию и публикует её
+        целевой аудитории. Публикация в orders-service выполняется асинхронно
+        через Kafka-топик `promotions.discount`. (UC-PRM-02/03/04, «Публикация акции»)
+      security:
+        - bearerAuth: [promotions:write]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      responses:
+        '200':
+          description: Акция опубликована целевой аудитории
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+        '409':
+          description: Конфликт правил акций (E2)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /promotions/{promotionId}/completion:
+    post:
+      tags: [loyalty-service]
+      operationId: completePromotion
+      summary: Завершить акцию (персонал)
+      description: >-
+        Переводит акцию в статус «Завершена» и прекращает её публикацию.
+        (UC-PRM-02 A3, UC-PRM-04 A1)
+      security:
+        - bearerAuth: [promotions:write]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      responses:
+        '200':
+          description: Акция завершена
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Promotion' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  parameters:
+    PromotionId:
+      name: promotionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    PromotionScope:
+      type: string
+      enum: [local, national]
+      description: Область действия акции — ресторан франшизы или вся сеть.
+    PromotionStatus:
+      type: string
+      enum: [draft, active, completed]
+    Promotion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        scope: { $ref: '#/components/schemas/PromotionScope' }
+        status: { $ref: '#/components/schemas/PromotionStatus' }
+        restaurantId:
+          type: string
+          format: uuid
+          description: Заполняется для локальных акций.
+        priority: { type: integer }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        conditions:
+          type: object
+          additionalProperties: true
+          description: Условия акции (позиции, пороги, скидка).
+    PromotionInput:
+      type: object
+      required: [title, scope, startsAt, endsAt]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        scope: { $ref: '#/components/schemas/PromotionScope' }
+        restaurantId:
+          type: string
+          format: uuid
+          description: Обязателен для локальной акции; должен совпадать с привязкой владельца.
+        priority: { type: integer }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        conditions:
+          type: object
+          additionalProperties: true

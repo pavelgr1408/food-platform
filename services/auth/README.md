@@ -11,15 +11,14 @@
 - встроенные версионированные PostgreSQL-миграции и dev seed;
 - health check и graceful shutdown.
 
-## Быстрый запуск
+## Быстрый запуск (монорепо food-platform)
 
-Нужны Docker, Docker Compose и OpenSSL:
+Нужны Docker, Docker Compose, OpenSSL, Go 1.24+. Из **корня репозитория**:
 
 ```bash
-make compose-up
+make keys SERVICE=auth          # локальная RSA-пара JWT → services/auth/config/keys (в git не попадает)
+make up SLICE="auth"            # Postgres + Kafka + auth-service в контейнере → http://localhost:8081
 ```
-
-Сервис будет доступен на `http://localhost:8081`, PostgreSQL — на `localhost:5432`. При первом запуске `make` создаст локальную RSA-пару в `config/keys`; ключи исключены из Git. Если порты заняты: `POSTGRES_PORT=55432 AUTH_PORT=18081 make compose-up`.
 
 Проверка:
 
@@ -32,15 +31,17 @@ curl -s -X POST http://localhost:8081/auth/login \
 
 Dev-пользователи сохранены из Java-версии: customer `+79990000000 / 123456`, admin `+79991111111 / admin123`, blocked user `+79992222222 / blocked123`.
 
-## Локальная разработка
+> **Секреты.** Приватный ключ JWT и `.env` никогда не коммитятся (`.gitignore`). Ключ, который лежал в старом репозитории `auth_go`, считается скомпрометированным — не используйте его нигде.
 
-Скопируйте `.env.example` в `.env` и экспортируйте переменные либо используйте значения по умолчанию. Затем:
+## Локальная разработка (go run)
 
 ```bash
-make keys
-docker compose up -d auth-postgres
-go test ./...
-go run ./cmd/auth-service
+make up                         # инфраструктура
+make keys SERVICE=auth
+cp services/auth/.env.example services/auth/.env   # .env игнорируется git
+set -a; . services/auth/.env; set +a
+go run ./services/auth/cmd/auth-service
+go test ./services/auth/...
 ```
 
 ## API

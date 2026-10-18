@@ -1,0 +1,42 @@
+package httpapi
+
+import (
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"__MODPATH__/pkg/authclient"
+	"__MODPATH__/pkg/metrics"
+)
+
+func newHandler() http.Handler {
+	return New(Deps{Log: slog.New(slog.NewJSONHandler(io.Discard, nil)), Metrics: metrics.New("__NAME__"), Auth: authclient.DevAuthenticator{}})
+}
+
+func get(h http.Handler, path string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+	return rec
+}
+
+func TestHooksPresent(t *testing.T) {
+	h := newHandler()
+	if r := get(h, "/health/"); r.Code != 200 || strings.TrimSpace(r.Body.String()) != `{"status":"OK"}` {
+		t.Fatalf("liveness: %d %s", r.Code, r.Body)
+	}
+	if r := get(h, "/actuator/health"); r.Code != 200 {
+		t.Fatalf("readiness: %d", r.Code)
+	}
+	if r := get(h, "/__NAME__/_ping"); r.Code != 200 || !strings.Contains(r.Body.String(), `"service":"__NAME__"`) {
+		t.Fatalf("ping: %d %s", r.Code, r.Body)
+	}
+	if r := get(h, "/metrics"); r.Code != 200 || !strings.Contains(r.Body.String(), "http_requests_total") {
+		t.Fatalf("metrics: %d", r.Code)
+	}
+	if get(h, "/health/").Header().Get("X-Request-Id") == "" {
+		t.Fatal("request id header missing")
+	}
+}
