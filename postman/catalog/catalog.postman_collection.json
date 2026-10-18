@@ -1,0 +1,200 @@
+{
+  "info": {
+    "name": "catalog (S1: restaurant + menu)",
+    "description": "Сквозной сценарий S1: поиск → ресторан → меню → проверка корзины (в т.ч. стоп-лист). Срез: make up SLICE=\"restaurant menu\"; запуск: make newman SERVICE=catalog",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "restaurantUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "menuUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "restaurantId",
+      "value": ""
+    },
+    {
+      "key": "restaurantName",
+      "value": ""
+    },
+    {
+      "key": "okItem",
+      "value": ""
+    },
+    {
+      "key": "okMod",
+      "value": ""
+    },
+    {
+      "key": "okPrice",
+      "value": ""
+    },
+    {
+      "key": "okModPrice",
+      "value": ""
+    },
+    {
+      "key": "offItem",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Поиск ресторана с доставкой рядом (restaurant)",
+      "request": {
+        "method": "GET",
+        "url": "{{restaurantUrl}}/restaurants?lat=55.7640&lon=37.6050&deliveryOnly=true&radiusMeters=3000",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const b = pm.response.json();",
+              "pm.test('найден ближайший ресторан с доставкой', () => { pm.expect(b.total).to.be.above(0); pm.expect(b.items[0].deliveryAvailable).to.be.true; pm.expect(b.items[0].distanceMeters).to.be.below(50); });",
+              "pm.collectionVariables.set('restaurantId', b.items[0].id);",
+              "pm.collectionVariables.set('restaurantName', b.items[0].name);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Детали выбранного ресторана (restaurant)",
+      "request": {
+        "method": "GET",
+        "url": "{{restaurantUrl}}/restaurants/{{restaurantId}}",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('тот же ресторан, режим работы и таймзона на месте', () => { pm.expect(r.name).to.eql(pm.collectionVariables.get('restaurantName')); pm.expect(r.workingHours).to.not.be.empty; pm.expect(r.timezone).to.be.a('string'); pm.expect(r.deliveryAvailable).to.be.true; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Меню этого ресторана (menu) — id берутся из ответа",
+      "request": {
+        "method": "GET",
+        "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const m = pm.response.json();",
+              "pm.test('меню принадлежит выбранному ресторану (общий ключ — restaurantId)', () => pm.expect(m.restaurantId).to.eql(pm.collectionVariables.get('restaurantId')));",
+              "const all = m.categories.flatMap(c => c.items);",
+              "const ok = all.find(i => i.available && i.modifiers.some(x => x.available));",
+              "const off = all.find(i => !i.available);",
+              "pm.test('в меню есть доступная позиция с модификатором и позиция в стоп-листе', () => { pm.expect(ok).to.exist; pm.expect(off).to.exist; });",
+              "pm.collectionVariables.set('okItem', ok.id); pm.collectionVariables.set('okMod', ok.modifiers.find(x => x.available).id);",
+              "pm.collectionVariables.set('okPrice', ok.price.amount); pm.collectionVariables.set('okModPrice', ok.modifiers.find(x => x.available).price.amount);",
+              "pm.collectionVariables.set('offItem', off.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Проверка корзины (menu.validateMenuItems): всё доступно",
+      "request": {
+        "method": "POST",
+        "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu/validation",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"items\":[{\"menuItemId\":\"{{okItem}}\",\"quantity\":2,\"modifierIds\":[\"{{okMod}}\"]}]}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "const unit = Number(pm.collectionVariables.get('okPrice')) + Number(pm.collectionVariables.get('okModPrice'));",
+              "pm.test('valid, итог в копейках = 2 × (позиция + модификатор)', () => { pm.expect(r.valid).to.be.true; pm.expect(r.total.amount).to.eql(2 * unit); pm.expect(r.total.currency).to.eql('RUB'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. E1: в корзине позиция из стоп-листа → valid=false",
+      "request": {
+        "method": "POST",
+        "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu/validation",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"items\":[{\"menuItemId\":\"{{okItem}}\",\"quantity\":1},{\"menuItemId\":\"{{offItem}}\",\"quantity\":1}]}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "const r = pm.response.json();",
+              "pm.test('недоступна, orders получит причину и сможет предложить замену', () => { pm.expect(r.valid).to.be.false; pm.expect(r.lines[1].reasonCode).to.eql('ITEM_UNAVAILABLE'); pm.expect(r.lines[0].available).to.be.true; });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Самовывоз-вариант: поиск без доставки в радиусе 300 м от Парка Горького (hint=pickup)",
+      "request": {
+        "method": "GET",
+        "url": "{{restaurantUrl}}/restaurants?lat=55.7280&lon=37.6030&deliveryOnly=true&radiusMeters=300",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('доставки нет, сервис подсказывает самовывоз', () => { const b = pm.response.json(); pm.expect(b.items).to.eql([]); pm.expect(b.hint).to.eql('pickup'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
