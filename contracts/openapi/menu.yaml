@@ -2,11 +2,19 @@ openapi: 3.1.0
 
 info:
   title: menu-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Меню и актуальные цены ресторана, проверка доступности позиций. Хранилище —
     menu-db. (UC-ORD-01/02/03)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+    **Семантика (S1).**
+    Меню — на ресторан (сетевой шаблон не поддерживается). Деньги — целые копейки
+    (ADR-13, `Money`). Недоступная позиция (`available=false`, стоп-лист) остаётся в
+    меню и помечается флагом. Каждое изменение меню увеличивает `menuVersion`; версия
+    лежит в основе `ETag`. Данные загружаются при старте (seed), CRUD-API нет.
+    `validateMenuItems` — синхронный контракт для orders-service (целевой p99 ≲ 50 мс):
+    одна выборка по индексам, без обращений к другим сервисам.
 
 servers:
   - url: https://api.blt.example/v1
@@ -26,29 +34,51 @@ paths:
     get:
       tags: [menu-service]
       operationId: getMenu
+      security: [{}, { bearerAuth: [] }]
       summary: Меню и актуальные цены ресторана
       description: >-
         Возвращает меню с актуальными ценами для выбранного ресторана. Первый шаг
-        оформления заказа. (UC-ORD-01, UC-ORD-03)
+        оформления заказа. Поддерживает условные запросы: `If-None-Match` с текущим
+        `ETag` → `304` без тела. (UC-ORD-01, UC-ORD-03)
       parameters:
         - { $ref: '_common.yaml#/components/parameters/RestaurantId' }
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
       responses:
         '200':
           description: Меню с ценами
+          headers:
+            ETag:
+              description: Сильный валидатор вида `"v<menuVersion>"`.
+              schema: { type: string }
+            Cache-Control:
+              description: '`public, max-age=30`; авторитетная проверка перед заказом — `validateMenuItems`.'
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Menu' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '304':
+          description: Меню не изменилось (совпал `ETag`)
+        '404':
+          description: Для ресторана нет меню
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /restaurants/{restaurantId}/menu/validation:
     post:
       tags: [menu-service]
       operationId: validateMenuItems
+      security: [{}, { bearerAuth: [] }]
       summary: Проверить позиции по актуальному меню
       description: >-
         Проверяет доступность и цены переданных позиций против актуального меню.
         Используется при вводе заказа сотрудником (UC-ORD-02) и при пересчёте
-        корзины. Возвращает недоступные позиции для сценария E1 «позиция недоступна».
+        корзины. Недоступность позиции — **не ошибка запроса**: ответ `200` с
+        `valid=false` и причиной в строке (E1 «позиция недоступна»). Строки
+        возвращаются в порядке запроса. `404` — только если у ресторана нет меню.
       parameters:
         - { $ref: '_common.yaml#/components/parameters/RestaurantId' }
       requestBody:
@@ -62,8 +92,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MenuValidationResult' }
-        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '400':
+          description: >-
+            Некорректный запрос: пустой список, более 100 строк, количество вне 1…99,
+            не-UUID (`code`: `INVALID_JSON`, `INVALID_PARAMETER`).
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404':
+          description: Для ресторана нет меню
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 components:
 
@@ -74,59 +114,95 @@ components:
   schemas:
     Modifier:
       type: object
+      required: [id, name, price, available]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         price: { $ref: '_common.yaml#/components/schemas/Money' }
+        available: { type: boolean }
     MenuItem:
       type: object
+      required: [id, name, price, available, modifiers]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string }
         price: { $ref: '_common.yaml#/components/schemas/Money' }
-        available: { type: boolean }
+        available: { type: boolean, description: 'false — позиция в стоп-листе' }
         modifiers:
           type: array
           items: { $ref: '#/components/schemas/Modifier' }
+    MenuCategory:
+      type: object
+      required: [id, name, items]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MenuItem' }
     Menu:
       type: object
+      required: [restaurantId, menuVersion, categories]
       properties:
         restaurantId: { type: string, format: uuid }
+        menuVersion: { type: integer, format: int64, description: Растёт при каждом изменении меню. }
         categories:
           type: array
-          items:
-            type: object
-            properties:
-              name: { type: string }
-              items:
-                type: array
-                items: { $ref: '#/components/schemas/MenuItem' }
+          items: { $ref: '#/components/schemas/MenuCategory' }
     MenuValidationRequest:
       type: object
       required: [items]
       properties:
         items:
           type: array
+          minItems: 1
+          maxItems: 100
           items:
             type: object
             required: [menuItemId, quantity]
             properties:
               menuItemId: { type: string, format: uuid }
-              quantity: { type: integer, minimum: 1 }
+              quantity: { type: integer, minimum: 1, maximum: 99 }
               modifierIds:
                 type: array
+                maxItems: 20
                 items: { type: string, format: uuid }
+    ValidationReasonCode:
+      type: string
+      enum: [ITEM_NOT_FOUND, ITEM_UNAVAILABLE, MODIFIER_NOT_FOUND, MODIFIER_UNAVAILABLE]
+      description: >-
+        `ITEM_NOT_FOUND` — позиции нет в меню ресторана; `MODIFIER_NOT_FOUND` — модификатор
+        не принадлежит позиции; `*_UNAVAILABLE` — в стоп-листе.
+    MenuValidationLine:
+      type: object
+      required: [menuItemId, quantity, available]
+      properties:
+        menuItemId: { type: string, format: uuid }
+        quantity: { type: integer }
+        available: { type: boolean }
+        currentPrice:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/Money'
+          description: >-
+            Цена за единицу с выбранными модификаторами (позиция + модификаторы).
+            Отсутствует для `ITEM_NOT_FOUND`.
+        lineTotal:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/Money'
+          description: '`currentPrice` × `quantity`. Отсутствует, если `currentPrice` нет.'
+        reasonCode: { $ref: '#/components/schemas/ValidationReasonCode' }
+        reason: { type: string, description: 'Причина недоступности, человекочитаемо; если есть' }
     MenuValidationResult:
       type: object
+      required: [valid, menuVersion, lines, total]
       properties:
-        valid: { type: boolean }
+        valid: { type: boolean, description: 'true, если все строки доступны' }
+        menuVersion: { type: integer, format: int64 }
         lines:
           type: array
-          items:
-            type: object
-            properties:
-              menuItemId: { type: string, format: uuid }
-              available: { type: boolean }
-              currentPrice: { $ref: '_common.yaml#/components/schemas/Money' }
-              reason: { type: string, description: 'Причина недоступности, если есть' }
+          items: { $ref: '#/components/schemas/MenuValidationLine' }
+        total:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/Money'
+          description: Сумма `lineTotal` доступных строк.

@@ -2,11 +2,22 @@ openapi: 3.1.0
 
 info:
   title: restaurant-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Поиск и выбор ресторанов сети с учётом режима работы и признака доставки.
     Хранилище — restaurant-db. (UC-FND-01)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+    **Семантика (S1).**
+    Поиск публичный (гость допускается). Центр поиска — `lat`+`lon` либо `address`
+    (город из справочника, A1); если не задано ничего, возвращается весь активный
+    список по названию без расстояний. Результат отсортирован по расстоянию.
+    `deliveryAvailable` = у ресторана включена доставка и, если центр известен,
+    центр попадает в радиус доставки ресторана. `openNow` вычисляется по режиму
+    работы в часовом поясе ресторана с учётом исключений по датам и ночного
+    закрытия (`closesAt` ≤ `opensAt` — закрытие на следующие сутки; `24:00` —
+    конец суток). Пустой результат сопровождается `hint` (A2/E2).
+    Данные ресторанов загружаются при старте (seed), CRUD-API нет.
 
 servers:
   - url: https://api.blt.example/v1
@@ -26,6 +37,7 @@ paths:
     get:
       tags: [restaurant-service]
       operationId: searchRestaurants
+      security: [{}, { bearerAuth: [] }]
       summary: Найти рестораны сети
       description: >-
         Подбор ресторанов по геопозиции/адресу с признаком доставки и режимом
@@ -37,7 +49,10 @@ paths:
         - { $ref: '#/components/parameters/Longitude' }
         - name: address
           in: query
-          description: Город/адрес при ручном вводе без геолокации (A1).
+          description: >-
+            Город/адрес при ручном вводе без геолокации (A1). Распознаётся по справочнику
+            городов; не распознан — пустой результат с `hint=change_address`.
+            Игнорируется, если заданы `lat` и `lon`.
           schema: { type: string }
         - name: deliveryOnly
           in: query
@@ -49,7 +64,7 @@ paths:
           schema: { type: boolean }
         - name: radiusMeters
           in: query
-          description: Радиус поиска; используется в т.ч. для расширения зоны (A2/E2).
+          description: Радиус поиска от центра; используется в т.ч. для расширения зоны (A2/E2). Без центра игнорируется.
           schema: { type: integer, minimum: 100, maximum: 50000, default: 5000 }
         - { $ref: '#/components/parameters/Limit' }
         - { $ref: '#/components/parameters/Offset' }
@@ -62,7 +77,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RestaurantPage' }
-        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '400':
+          description: >-
+            Некорректные параметры: задана только одна из `lat`/`lon`, значение вне диапазона
+            (`code`: `INVALID_PARAMETER`, `COORDINATES_INCOMPLETE`).
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
@@ -70,6 +91,7 @@ paths:
     get:
       tags: [restaurant-service]
       operationId: getRestaurant
+      security: [{}, { bearerAuth: [] }]
       summary: Детали ресторана
       description: >-
         Адрес и координаты выбранного ресторана; фиксируются как контекст сессии
@@ -83,7 +105,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Restaurant' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '404':
+          description: Ресторан не найден или выведен из эксплуатации (`active=false`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 components:
 
@@ -121,29 +147,59 @@ components:
   schemas:
     RestaurantSummary:
       type: object
+      required: [id, name, address, city, location, deliveryAvailable, openNow]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         address: { type: string }
+        city: { type: string }
         location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
-        distanceMeters: { type: integer }
+        distanceMeters:
+          type: integer
+          description: Расстояние до центра поиска; отсутствует, если центр не задан.
         deliveryAvailable: { type: boolean }
         openNow: { type: boolean }
+    WorkingHours:
+      type: object
+      required: [dayOfWeek, opensAt, closesAt]
+      description: >-
+        Интервал работы; дней/интервалов может быть несколько (перерыв). `closesAt` ≤
+        `opensAt` — закрытие на следующие сутки (ночной режим).
+      properties:
+        dayOfWeek: { type: integer, minimum: 1, maximum: 7, description: '1 = понедельник … 7 = воскресенье (ISO 8601), день начала интервала' }
+        opensAt: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', example: '09:00' }
+        closesAt: { type: string, pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$', example: '22:00' }
+    ScheduleException:
+      type: object
+      required: [date, closed]
+      description: >-
+        Исключение на календарную дату (в часовом поясе ресторана): заменяет обычный режим
+        этого дня. `closed=true` — в этот день закрыто (тогда `opensAt`/`closesAt` отсутствуют).
+        Несколько записей на одну дату — несколько интервалов.
+      properties:
+        date: { type: string, format: date }
+        closed: { type: boolean }
+        opensAt: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }
+        closesAt: { type: string, pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$' }
+        note: { type: string }
     Restaurant:
       allOf:
         - $ref: '#/components/schemas/RestaurantSummary'
         - type: object
+          required: [timezone, deliveryEnabled, workingHours]
           properties:
+            timezone: { type: string, example: Europe/Moscow, description: Часовой пояс IANA }
+            deliveryEnabled: { type: boolean }
+            deliveryRadiusMeters: { type: integer, description: 'Радиус доставки; 0, если доставки нет.' }
             workingHours:
               type: array
-              items:
-                type: object
-                properties:
-                  dayOfWeek: { type: integer, minimum: 1, maximum: 7 }
-                  opensAt: { type: string, example: '09:00' }
-                  closesAt: { type: string, example: '22:00' }
+              items: { $ref: '#/components/schemas/WorkingHours' }
+            scheduleExceptions:
+              type: array
+              items: { $ref: '#/components/schemas/ScheduleException' }
     RestaurantPage:
       type: object
+      required: [items, total, limit, offset]
       properties:
         items:
           type: array
@@ -151,3 +207,13 @@ components:
         total: { type: integer }
         limit: { type: integer }
         offset: { type: integer }
+        center:
+          $ref: '_common.yaml#/components/schemas/GeoPoint'
+        hint:
+          type: string
+          enum: [pickup, expand_radius, change_address]
+          description: >-
+            Присутствует только при пустом `items`. `pickup` — доставка не покрывает точку,
+            но рядом есть рестораны для самовывоза (повторить без `deliveryOnly`);
+            `expand_radius` — увеличить `radiusMeters`; `change_address` — адрес не
+            распознан или радиус уже максимальный.
