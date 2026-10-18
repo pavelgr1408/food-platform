@@ -843,14 +843,17 @@ components:
       type: object
       required: [dishId, quantity]
       properties:
-        dishId: { type: string }
+        dishId: { type: string, description: Идентификатор позиции меню (`menuItemId`). }
         name: { type: string }
         quantity: { type: integer, minimum: 1 }
         modifiers:
           type: array
           items: { type: string }
+          description: Идентификаторы модификаторов.
         price:
-          $ref: '#/components/schemas/Money'
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          description: Цена за единицу с модификаторами; сумма строки = `price` × `quantity`.
 
     OrderStatus:
       type: object
@@ -860,7 +863,11 @@ components:
         orderNumber: { type: string }
         status:
           type: string
-          enum: [accepted, cooking, ready, on_delivery, delivered, handed_over, closed, not_received, cancelled]
+          enum: [pending_payment, accepted, cooking, ready, on_delivery, delivered, handed_over, closed, not_received, cancelled]
+          description: >-
+            `pending_payment` — заказ создан, ждёт онлайн-оплаты (потребители, кроме
+            payment, могут игнорировать; уведомление клиенту — с `accepted`).
+            `cancelled` с `reason=payment_timeout` — отмена по таймауту неоплаты.
         etaReadyAt: { type: string, format: date-time }
         etaDeliveryAt: { type: string, format: date-time }
         reason:
