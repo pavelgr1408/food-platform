@@ -9,5 +9,5 @@ tools/new-service/new-service.sh tplcheck 8199 >/dev/null
 gofmt -l services/tplcheck | (! grep .) || { echo "template output is not gofmt-clean"; exit 1; }
 go vet ./services/tplcheck/...
 go test ./services/tplcheck/...
-python3 tools/validate-values/validate_values.py >/dev/null
+"${PYTHON:-python3}" tools/validate-values/validate_values.py >/dev/null
 echo "template OK"

@@ -10,6 +10,9 @@ GO_PKGS      := ./...
 NS           ?= food
 SERVICE      ?=
 BASE_URL     ?=
+# Python-утилиты (gen-topics, validate-values): venv из `make py-deps`, иначе системный python3
+PYTHON       = $(if $(wildcard .dev/venv/bin/python),$(CURDIR)/.dev/venv/bin/python,python3)
+export PYTHON
 
 .PHONY: help
 help: ## Список команд
@@ -28,10 +31,10 @@ ps: ## Состояние контейнеров
 	$(COMPOSE) ps
 logs: ## Логи: make logs SERVICE=kafka
 	$(COMPOSE) logs -f --tail=100 $(SERVICE)
-topics: ## Перегенерировать deploy/compose/kafka/topics.txt из AsyncAPI
-	python3 tools/gen-topics/gen_topics.py
-check-topics: ## topics.txt соответствует AsyncAPI
-	python3 tools/gen-topics/gen_topics.py --check
+topics: pydeps-check ## Перегенерировать deploy/compose/kafka/topics.txt из AsyncAPI
+	$(PYTHON) tools/gen-topics/gen_topics.py
+check-topics: pydeps-check ## topics.txt соответствует AsyncAPI
+	$(PYTHON) tools/gen-topics/gen_topics.py --check
 
 ## ---------- код ----------
 .PHONY: fmt fmt-check vet lint test test-int build
@@ -68,7 +71,7 @@ docker-build: ## Образ сервиса: make docker-build SERVICE=auth [TAG=
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
-check-template: ## Шаблон сервиса генерирует собираемый и тестируемый сервис
+check-template: pydeps-check ## Шаблон сервиса генерирует собираемый и тестируемый сервис
 	tools/new-service/check-template.sh
 
 ## ---------- контракты ----------
@@ -79,8 +82,8 @@ lint-contracts: check-topics ## Redocly (OpenAPI) + AsyncAPI validate + topics.t
 
 ## ---------- Kubernetes / Helm ----------
 .PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-clean
-validate-values: ## deploy/values/*.yaml против values.schema.json
-	python3 tools/validate-values/validate_values.py
+validate-values: pydeps-check ## deploy/values/*.yaml против values.schema.json
+	$(PYTHON) tools/validate-values/validate_values.py
 helm-lint: validate-values ## helm lint + template для каждого values-файла
 	@for v in deploy/values/*.yaml; do n=$$(basename $$v .yaml); \
 	  helm lint deploy/charts/service -f $$v && helm template $$n deploy/charts/service -f $$v >/dev/null || exit 1; done
@@ -102,3 +105,12 @@ k8s-smoke-auth: docker-build k8s-dev-secrets ## Smoke: auth в локально�
 k8s-clean: ## Удалить smoke-стенд
 	-helm uninstall auth -n $(NS)
 	-kubectl delete namespace $(NS)
+
+## ---------- python-утилиты ----------
+.PHONY: py-deps pydeps-check
+py-deps: ## Создать .dev/venv и поставить pyyaml/jsonschema (нужно для topics, validate-values, check-template)
+	python3 -m venv .dev/venv
+	.dev/venv/bin/pip install -q -r tools/requirements.txt
+	@echo "готово: .dev/venv"
+pydeps-check:
+	@$(PYTHON) -c 'import yaml, jsonschema' 2>/dev/null || { echo "Нет python-зависимостей (pyyaml, jsonschema). Выполните: make py-deps"; exit 1; }

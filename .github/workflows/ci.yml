@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install pyyaml
+      - run: pip install -r tools/requirements.txt
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
       - run: make lint-contracts
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install pyyaml jsonschema
+      - run: pip install -r tools/requirements.txt
       - uses: azure/setup-helm@v4
       - run: make helm-lint
       - name: compose files are valid
