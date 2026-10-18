@@ -56,7 +56,7 @@ func TestMigrateModulesIndependentAndBadSQLRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := pgxutil.Source{Module: "a", FS: fsOf(map[string]string{
-		"001_x.sql": `CREATE TABLE a1(id int);`,
+		"001_x.sql":   `CREATE TABLE a1(id int);`,
 		"002_bad.sql": `CREATE TABLE a2(id int); SELECT broken;`,
 	})}
 	if err := pgxutil.Migrate(ctx, pool, nil, bad); err == nil {
