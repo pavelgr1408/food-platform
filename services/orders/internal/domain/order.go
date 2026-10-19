@@ -119,6 +119,8 @@ type Order struct {
 	PaymentMethod                    PaymentMethod
 	PaymentStatus                    PaymentStatus
 	PaymentUpdatedAt                 *time.Time // время последнего применённого события оплаты
+	AcceptedAt                       *time.Time // момент принятия заказа (S4: от него считается ETA)
+	ProductionUpdatedAt              *time.Time // updatedAt последнего применённого снимка блюд (S4)
 	Fulfillment                      FulfillmentType
 	Address                          Address
 	Contact                          Contact

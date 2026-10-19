@@ -137,7 +137,16 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 		if err := enqueueState(ctx, tx, order); err != nil {
 			return err
 		}
-		if err := enqueueStatus(ctx, tx, order, order.Status, "", now); err != nil {
+		var eta *time.Time
+		if order.Status == domain.StatusAccepted { // оплата не нужна → заказ принят сразу (ADR-10)
+			order.AcceptedAt = &now
+			e, err := s.estimate(ctx, tx, order)
+			if err != nil {
+				return err
+			}
+			eta = &e.ReadyAt
+		}
+		if err := enqueueStatus(ctx, tx, order, order.Status, "", eta, now); err != nil {
 			return err
 		}
 		if commit != nil {
@@ -251,24 +260,64 @@ type Eta struct {
 	Approximate     bool
 }
 
-// GetEta возвращает типовое время (S4 заменит репликой production.lead.time; до тех пор
-// Approximate всегда true — это же поведение E1 UC-ORD-05 «оценка недоступна»).
+// GetEta возвращает оценку времени получения (S4): по свежей реплике production.lead.time,
+// иначе — типовое время с approximate=true (E1 UC-ORD-05); синхронных вызовов производства нет.
 func (s *Service) GetEta(ctx context.Context, userID, id string) (Eta, error) {
 	o, err := s.loadOrder(ctx, userID, id)
 	if err != nil {
 		return Eta{}, err
 	}
-	ready := o.CreatedAt.Add(time.Duration(s.cfg.PrepMinutes) * time.Minute)
-	if o.PickupFrom != nil {
-		ready = *o.PickupFrom
+	return s.estimate(ctx, s.pool, o)
+}
+
+// estimate считает ETA заказа:
+//
+//	готов (ready и дальше)        → момент готовности из журнала, estimate=0, approximate=false;
+//	свежая реплика лид-тайма      → (accepted_at | max(created_at, now)) + leadTime, approximate=false;
+//	реплики нет / она устарела    → то же с типовым ETA_PREP_MINUTES, approximate=true.
+//
+// Для самовывоза со слотом готовность не раньше начала слота; для доставки поверх готовности добавляется
+// типовое ETA_DELIVERY_MINUTES (своей оценки доставки до S7 нет → approximate=true).
+func (s *Service) estimate(ctx context.Context, db store.DBTX, o domain.Order) (Eta, error) {
+	now := s.now()
+	var e Eta
+	if o.Status == domain.StatusReady || o.Status == domain.StatusHandedOver || o.Status == domain.StatusOnDelivery ||
+		o.Status == domain.StatusDelivered || o.Status == domain.StatusClosed {
+		at, found, err := s.st.StatusTime(ctx, db, o.ID, domain.StatusReady)
+		if err != nil {
+			return Eta{}, err
+		}
+		if found {
+			e.ReadyAt = at
+		}
 	}
-	e := Eta{ReadyAt: ready, Approximate: true}
-	target := ready
+	if e.ReadyAt.IsZero() {
+		base := o.CreatedAt
+		switch {
+		case o.AcceptedAt != nil:
+			base = *o.AcceptedAt
+		case now.After(base):
+			base = now
+		}
+		prep, approximate := time.Duration(s.cfg.PrepMinutes)*time.Minute, true
+		lt, found, err := s.st.GetLeadTime(ctx, db, o.RestaurantID)
+		if err != nil {
+			return Eta{}, err
+		}
+		if found && now.Sub(lt.MeasuredAt) <= s.cfg.LeadTimeTTL {
+			prep, approximate = time.Duration(lt.Minutes)*time.Minute, false
+		}
+		e.ReadyAt, e.Approximate = base.Add(prep), approximate
+		if o.PickupFrom != nil && o.PickupFrom.After(e.ReadyAt) {
+			e.ReadyAt = *o.PickupFrom
+		}
+	}
+	target := e.ReadyAt
 	if o.Fulfillment == domain.FulfillmentDelivery {
-		d := ready.Add(time.Duration(s.cfg.DeliveryMinutes) * time.Minute)
-		e.DeliveryAt, target = &d, d
+		d := e.ReadyAt.Add(time.Duration(s.cfg.DeliveryMinutes) * time.Minute)
+		e.DeliveryAt, target, e.Approximate = &d, d, true
 	}
-	if mins := int((target.Sub(s.now()) + time.Minute - 1) / time.Minute); mins > 0 {
+	if mins := int((target.Sub(now) + time.Minute - 1) / time.Minute); mins > 0 {
 		e.EstimateMinutes = mins
 	}
 	return e, nil
@@ -354,7 +403,19 @@ func (s *Service) transitionTx(ctx context.Context, tx pgx.Tx, orderID string, t
 		return domain.Order{}, false, err
 	}
 	o.Status, o.StatusReason, o.UpdatedAt = to, reason, at
-	return o, true, enqueueStatus(ctx, tx, o, to, reason, at)
+	if to == domain.StatusAccepted {
+		o.AcceptedAt = &at
+	}
+	var eta *time.Time
+	if to == domain.StatusAccepted || to == domain.StatusCooking {
+		// ожидаемая готовность — в orders.status, чтобы клиент видел её без отдельного запроса (S4)
+		e, err := s.estimate(ctx, tx, o)
+		if err != nil {
+			return domain.Order{}, false, err
+		}
+		eta = &e.ReadyAt
+	}
+	return o, true, enqueueStatus(ctx, tx, o, to, reason, eta, at)
 }
 
 func (s *Service) noteTransition(ctx context.Context, o domain.Order, to domain.Status, reason, actor string) {

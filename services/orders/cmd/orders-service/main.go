@@ -68,6 +68,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	reg := metrics.New("orders")
 	m := service.NewMetrics()
 	reg.MustRegister("orders", m.Collectors()...)
+	reg.MustRegister("orders", service.StuckCollectors(pool)...)
 	checks := []httpx.Check{{Name: "db", Fn: pgxutil.Ping(pool)}}
 
 	var wg sync.WaitGroup
@@ -105,27 +106,37 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Log:         log,
 		Metrics:     m,
 		Config: service.Config{PaymentTimeout: cfg.PaymentTimeout, UnknownGrace: cfg.UnknownGrace, CartTTL: cfg.CartTTL,
-			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes},
+			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes, LeadTimeTTL: cfg.LeadTimeTTL},
 	})
 	wg.Add(1)
 	go func() { defer wg.Done(); svc.RunJanitor(ctx, cfg.JanitorInterval) }()
 
-	// Консьюмер orders.payments.status (S3): paid → accepted + повторная публикация orders.state (ADR-10).
-	// Консьюмеры orders.dish.status и production.lead.time — S4.
+	// Консьюмеры Kafka. Группы раздельные: «ядовитое» или медленное событие производства не задерживает оплату.
+	//   orders-service            orders.payments.status (S3): paid → accepted + повторный orders.state (ADR-10);
+	//   orders-service-production orders.dish.status и production.lead.time (S4): accepted → cooking → ready, ETA.
 	if len(cfg.KafkaBrokers) > 0 {
-		cons, err := kafka.NewConsumer(kafka.ConsumerConfig{Brokers: cfg.KafkaBrokers, Group: "orders-service",
-			Topics: []string{service.TopicPaymentStatus}, Pool: pool, Handler: svc.HandlePaymentStatus, Log: log})
-		if err != nil {
-			return err
-		}
-		defer cons.Close()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := cons.Run(ctx); err != nil && ctx.Err() == nil {
-				log.Error("consumer stopped", "error", err)
+		for _, c := range []struct {
+			group  string
+			topics []string
+			h      kafka.TxHandler
+		}{
+			{"orders-service", []string{service.TopicPaymentStatus}, svc.HandlePaymentStatus},
+			{"orders-service-production", []string{service.TopicDishStatus, service.TopicLeadTime}, svc.HandleProduction},
+		} {
+			cons, err := kafka.NewConsumer(kafka.ConsumerConfig{Brokers: cfg.KafkaBrokers, Group: c.group,
+				Topics: c.topics, Pool: pool, Handler: c.h, Log: log})
+			if err != nil {
+				return err
 			}
-		}()
+			defer cons.Close()
+			wg.Add(1)
+			go func(group string) {
+				defer wg.Done()
+				if err := cons.Run(ctx); err != nil && ctx.Err() == nil {
+					log.Error("consumer stopped", "group", group, "error", err)
+				}
+			}(c.group)
+		}
 	}
 
 	handler := httpapi.New(httpapi.Deps{Log: log, Metrics: reg, Auth: auth, Checks: checks, Idempotency: idem, Orders: svc})

@@ -37,7 +37,8 @@ type Config struct {
 	PaymentTimeout  time.Duration // pending_payment старше — отменяется (payment_timeout)
 	UnknownGrace    time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
 	CartTTL         time.Duration // открытые корзины без изменений старше — удаляются
-	PrepMinutes     int           // типовое время приготовления (ETA до S4)
+	PrepMinutes     int           // типовое время приготовления (ETA, если свежей оценки производства нет)
+	LeadTimeTTL     time.Duration // срок годности реплики production.lead.time
 	DeliveryMinutes int           // типовое время доставки поверх приготовления
 	DefaultCurrency string
 }
@@ -51,6 +52,9 @@ func (c *Config) defaults() {
 	}
 	if c.CartTTL <= 0 {
 		c.CartTTL = 7 * 24 * time.Hour
+	}
+	if c.LeadTimeTTL <= 0 {
+		c.LeadTimeTTL = 15 * time.Minute
 	}
 	if c.PrepMinutes <= 0 {
 		c.PrepMinutes = 20

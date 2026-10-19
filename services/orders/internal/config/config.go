@@ -24,8 +24,9 @@ type Config struct {
 	CartTTL         time.Duration // заброшенная корзина удаляется через это время
 	JanitorInterval time.Duration
 
-	PrepMinutes     int // типовое время приготовления для ETA (до S4)
-	DeliveryMinutes int // типовое время доставки
+	PrepMinutes     int           // типовое время приготовления для ETA без свежей оценки производства
+	DeliveryMinutes int           // типовое время доставки
+	LeadTimeTTL     time.Duration // срок годности production.lead.time (S4)
 }
 
 // Load читает окружение; возвращает все найденные ошибки разом.
@@ -44,6 +45,7 @@ func Load() (Config, error) {
 		JanitorInterval: r.Duration("JANITOR_INTERVAL", 30*time.Second),
 		PrepMinutes:     r.Int("ETA_PREP_MINUTES", 20),
 		DeliveryMinutes: r.Int("ETA_DELIVERY_MINUTES", 30),
+		LeadTimeTTL:     r.Duration("LEAD_TIME_TTL", 15*time.Minute),
 	}
 	err := r.Err()
 	var bad []error
@@ -53,7 +55,7 @@ func Load() (Config, error) {
 		}
 	}
 	for k, v := range map[string]time.Duration{"UPSTREAM_TIMEOUT": c.UpstreamTimeout, "PAYMENT_TIMEOUT": c.PaymentTimeout, "PAYMENT_UNKNOWN_GRACE": c.UnknownGrace,
-		"CART_TTL": c.CartTTL, "JANITOR_INTERVAL": c.JanitorInterval} {
+		"CART_TTL": c.CartTTL, "JANITOR_INTERVAL": c.JanitorInterval, "LEAD_TIME_TTL": c.LeadTimeTTL} {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))
 		}
