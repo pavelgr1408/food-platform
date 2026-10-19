@@ -85,7 +85,6 @@ func run(cfg config.Config, log *slog.Logger) error {
 		waker = relay
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = relay.Run(ctx) }()
-		// Консьюмеры orders.payments.status (S3), orders.dish.status, production.lead.time (S4) — позже.
 	} else {
 		log.Warn("KAFKA_BROKERS is empty: events accumulate in the outbox and are not published")
 	}
@@ -105,11 +104,29 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Waker:       waker,
 		Log:         log,
 		Metrics:     m,
-		Config: service.Config{PaymentTimeout: cfg.PaymentTimeout, CartTTL: cfg.CartTTL,
+		Config: service.Config{PaymentTimeout: cfg.PaymentTimeout, UnknownGrace: cfg.UnknownGrace, CartTTL: cfg.CartTTL,
 			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes},
 	})
 	wg.Add(1)
 	go func() { defer wg.Done(); svc.RunJanitor(ctx, cfg.JanitorInterval) }()
+
+	// Консьюмер orders.payments.status (S3): paid → accepted + повторная публикация orders.state (ADR-10).
+	// Консьюмеры orders.dish.status и production.lead.time — S4.
+	if len(cfg.KafkaBrokers) > 0 {
+		cons, err := kafka.NewConsumer(kafka.ConsumerConfig{Brokers: cfg.KafkaBrokers, Group: "orders-service",
+			Topics: []string{service.TopicPaymentStatus}, Pool: pool, Handler: svc.HandlePaymentStatus, Log: log})
+		if err != nil {
+			return err
+		}
+		defer cons.Close()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := cons.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Error("consumer stopped", "error", err)
+			}
+		}()
+	}
 
 	handler := httpapi.New(httpapi.Deps{Log: log, Metrics: reg, Auth: auth, Checks: checks, Idempotency: idem, Orders: svc})
 	srv := httpx.NewServer(":"+cfg.HTTPPort, handler)

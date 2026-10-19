@@ -26,13 +26,14 @@ type env struct {
 	menu  *testkit.FakeMenu
 	rest  *testkit.FakeRestaurants
 	clock *testkit.Clock
+	m     *service.Metrics
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := &env{pool: testkit.Pool(t), menu: testkit.NewMenu(), rest: testkit.NewRestaurants(), clock: testkit.NewClock()}
+	e := &env{pool: testkit.Pool(t), menu: testkit.NewMenu(), rest: testkit.NewRestaurants(), clock: testkit.NewClock(), m: service.NewMetrics()}
 	e.svc = service.New(service.Deps{Pool: e.pool, Menu: e.menu, Restaurants: e.rest, Log: testkit.Log(),
-		Clock: e.clock.Now, Metrics: service.NewMetrics(),
+		Clock: e.clock.Now, Metrics: e.m,
 		Config: service.Config{PaymentTimeout: 15 * time.Minute}})
 	return e
 }

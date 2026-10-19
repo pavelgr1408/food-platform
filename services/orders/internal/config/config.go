@@ -20,6 +20,7 @@ type Config struct {
 	UpstreamTimeout time.Duration // на одну попытку вызова menu/restaurant
 
 	PaymentTimeout  time.Duration // неоплаченный заказ отменяется через это время
+	UnknownGrace    time.Duration // доп. срок для заказов с неизвестным итогом оплаты
 	CartTTL         time.Duration // заброшенная корзина удаляется через это время
 	JanitorInterval time.Duration
 
@@ -38,6 +39,7 @@ func Load() (Config, error) {
 		RestaurantURL:   r.String("RESTAURANT_URL", "http://localhost:8082"),
 		UpstreamTimeout: r.Duration("UPSTREAM_TIMEOUT", 800*time.Millisecond),
 		PaymentTimeout:  r.Duration("PAYMENT_TIMEOUT", 15*time.Minute),
+		UnknownGrace:    r.Duration("PAYMENT_UNKNOWN_GRACE", time.Hour),
 		CartTTL:         r.Duration("CART_TTL", 7*24*time.Hour),
 		JanitorInterval: r.Duration("JANITOR_INTERVAL", 30*time.Second),
 		PrepMinutes:     r.Int("ETA_PREP_MINUTES", 20),
@@ -50,7 +52,7 @@ func Load() (Config, error) {
 			bad = append(bad, errors.New(k+" must be an http(s) URL"))
 		}
 	}
-	for k, v := range map[string]time.Duration{"UPSTREAM_TIMEOUT": c.UpstreamTimeout, "PAYMENT_TIMEOUT": c.PaymentTimeout,
+	for k, v := range map[string]time.Duration{"UPSTREAM_TIMEOUT": c.UpstreamTimeout, "PAYMENT_TIMEOUT": c.PaymentTimeout, "PAYMENT_UNKNOWN_GRACE": c.UnknownGrace,
 		"CART_TTL": c.CartTTL, "JANITOR_INTERVAL": c.JanitorInterval} {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))
