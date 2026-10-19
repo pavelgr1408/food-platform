@@ -24,3 +24,6 @@ vendor/
 # local data
 .dev/
 *.bundle
+
+# lint-contracts: AsyncAPI-валидатор (зависимости ставит npm ci по lock-файлу)
+tools/validate-asyncapi/node_modules/
