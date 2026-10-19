@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/pavelgr1408/food-platform/pkg/pgxutil"
 	"github.com/pavelgr1408/food-platform/services/orders/internal/domain"
 )
 
@@ -45,16 +47,28 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 // RestaurantCode возвращает короткий числовой код ресторана для номеров заказов, создавая его
 // при первом обращении. Вызывать ВНЕ транзакции заказа (с пулом): код фиксируется сразу и не
 // «сгорает» при откате оформления (identity-последовательности не откатываются).
-func (s *Store) RestaurantCode(ctx context.Context, db DBTX, restaurantID string) (int, error) {
+//
+// Создание идёт в короткой транзакции под advisory-lock: иначе параллельные первые заказы
+// делали бы INSERT … ON CONFLICT DO NOTHING, а такой INSERT расходует значение identity даже
+// при конфликте — код ресторана получался бы случайным (R2 вместо R1). Быстрый путь (код уже
+// есть) — один SELECT без блокировок.
+func (s *Store) RestaurantCode(ctx context.Context, pool *pgxpool.Pool, restaurantID string) (int, error) {
+	const sel = `SELECT code FROM restaurant_codes WHERE restaurant_id = $1`
 	var code int
-	err := db.QueryRow(ctx, `SELECT code FROM restaurant_codes WHERE restaurant_id = $1`, restaurantID).Scan(&code)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// ON CONFLICT: параллельный запрос мог создать код одновременно.
-		if _, err = db.Exec(ctx, `INSERT INTO restaurant_codes (restaurant_id) VALUES ($1) ON CONFLICT DO NOTHING`, restaurantID); err != nil {
-			return 0, err
-		}
-		err = db.QueryRow(ctx, `SELECT code FROM restaurant_codes WHERE restaurant_id = $1`, restaurantID).Scan(&code)
+	err := pool.QueryRow(ctx, sel, restaurantID).Scan(&code)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return code, err
 	}
+	err = pgxutil.InTx(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('orders.restaurant_codes'))`); err != nil {
+			return err
+		}
+		err := tx.QueryRow(ctx, sel, restaurantID).Scan(&code) // мог создать победитель гонки
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		return tx.QueryRow(ctx, `INSERT INTO restaurant_codes (restaurant_id) VALUES ($1) RETURNING code`, restaurantID).Scan(&code)
+	})
 	return code, err
 }
 
