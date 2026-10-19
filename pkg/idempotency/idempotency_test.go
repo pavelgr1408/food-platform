@@ -166,7 +166,7 @@ func TestPanicReleasesKey(t *testing.T) {
 
 func TestStaleLockTakeoverAndExpiry(t *testing.T) {
 	s, ctx := newStore(t)
-	s.LockTimeout = 50 * time.Millisecond
+	s.LockTimeout = 400 * time.Millisecond // запас: на медленном CI второй Begin может прийти позже 50 мс и «перехватить» замок
 	hash := []byte("h")
 	if o, _, _ := s.Begin(ctx, "sc", "k", hash); o != idempotency.Acquired {
 		t.Fatal("first acquire")
@@ -174,7 +174,7 @@ func TestStaleLockTakeoverAndExpiry(t *testing.T) {
 	if o, _, _ := s.Begin(ctx, "sc", "k", hash); o != idempotency.InProgress {
 		t.Fatalf("want InProgress, got %v", o)
 	}
-	time.Sleep(80 * time.Millisecond) // исполнитель «умер»
+	time.Sleep(550 * time.Millisecond) // исполнитель «умер»
 	if o, _, _ := s.Begin(ctx, "sc", "k", hash); o != idempotency.Acquired {
 		t.Fatalf("stale lock must be taken over, got %v", o)
 	}
