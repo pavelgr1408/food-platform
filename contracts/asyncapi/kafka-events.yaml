@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Система управления заказами — асинхронные взаимодействия
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Асинхронный контракт платформы управления заказами сети кафе.
 
@@ -868,7 +868,13 @@ components:
             `pending_payment` — заказ создан, ждёт онлайн-оплаты (потребители, кроме
             payment, могут игнорировать; уведомление клиенту — с `accepted`).
             `cancelled` с `reason=payment_timeout` — отмена по таймауту неоплаты.
-        etaReadyAt: { type: string, format: date-time }
+        etaReadyAt:
+          type: string
+          format: date-time
+          description: >-
+            Ожидаемое время готовности. Заполняется для `accepted` и `cooking` (оценка по
+            `production.lead.time`; если свежей загрузки нет — типовое время). Для остальных
+            статусов не передаётся.
         etaDeliveryAt: { type: string, format: date-time }
         reason:
           type: string
@@ -926,6 +932,16 @@ components:
     DishStatus:
       type: object
       required: [orderId, dishes, updatedAt]
+      description: >-
+        Снимок статусов ВСЕХ блюд заказа на момент `updatedAt` (не дельта). Система производства
+        берёт в работу только оплаченные заказы или заказы без предоплаты (ADR-10) и публикует
+        снимок при каждой смене статуса любого блюда; статусы блюд монотонны
+        `queued → cooking → ready`. orders-service выводит статус заказа: все блюда `queued` —
+        `accepted` (без изменений); хотя бы одно `cooking` или `ready` (но не все `ready`) —
+        `cooking`; все блюда заказа `ready` — `ready` (если заказ был `accepted`, orders проходит
+        `cooking` → `ready`). Блюдо заказа, которого нет в снимке, считается `queued`. Событие со
+        старым `updatedAt` игнорируется; статус заказа не откатывается назад; событие по
+        `pending_payment`/`cancelled` игнорируется (метрика и лог).
       properties:
         orderId: { type: string, format: uuid }
         dishes:
@@ -955,6 +971,12 @@ components:
     ProductionLeadTime:
       type: object
       required: [restaurantId, leadTimeMinutes, measuredAt]
+      description: >-
+        Текущее время приготовления ресторана. Публикуется периодически и при смене загрузки;
+        orders-service хранит последнее значение на ресторан (событие со старым `measuredAt`
+        игнорируется) и считает ETA: `etaReadyAt` = момент принятия заказа + `leadTimeMinutes`.
+        Значение старше настраиваемого срока (`LEAD_TIME_TTL`, по умолчанию 15 минут) считается
+        устаревшим — ETA возвращается как типовое с `approximate=true` (E1 UC-ORD-05).
       properties:
         restaurantId: { type: string }
         currentLoad:
