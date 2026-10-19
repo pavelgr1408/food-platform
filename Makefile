@@ -72,7 +72,7 @@ newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
 SCENARIO     ?= catalog
-contract-check: pydeps-check ## Живые ответы против OpenAPI: SCENARIO=catalog (restaurant+menu) | orders (restaurant+menu+orders)
+contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog или orders (см. docs/dev.md)
 	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
 check-template: pydeps-check ## Шаблон сервиса генерирует собираемый и тестируемый сервис
 	tools/new-service/check-template.sh
