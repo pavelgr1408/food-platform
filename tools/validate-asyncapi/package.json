@@ -1,0 +1,9 @@
+{
+  "name": "validate-asyncapi",
+  "private": true,
+  "description": "Валидация contracts/asyncapi/*.yaml парсером AsyncAPI с зафиксированным lock-файлом (детерминированная установка вместо npx @asyncapi/cli: тот тянул сотни плавающих транзитивных зависимостей, включая @aws-sdk, и CI падал на сбоях реестра npm)",
+  "type": "module",
+  "dependencies": {
+    "@asyncapi/parser": "3.6.6"
+  }
+}
