@@ -878,9 +878,23 @@ components:
     PaymentStatus:
       type: object
       required: [orderId, paymentId, status, method, updatedAt]
+      description: >-
+        Факт о платеже. Публикуется при каждой смене статуса попытки (outbox, ключ —
+        `orderId`, поэтому события одного заказа упорядочены). orders-service реагирует так:
+        `paid` → `pending_payment → accepted` и повторная публикация `orders.state`
+        (`paymentStatus=paid`, `revision+1`); `declined`/`unknown`/`pending` — только
+        отражаются в `paymentStatus` заказа (заказ остаётся `pending_payment`, `unknown`
+        откладывает автоотмену по таймауту). Событие со старым `updatedAt` игнорируется;
+        `paid` не перезаписывается другим статусом. `paid` для уже отменённого заказа —
+        нештатная ситуация (деньги получены, заказ не исполняется): фиксируется в orders
+        метрикой и логом, возврат — S6.
       properties:
         orderId: { type: string, format: uuid }
-        paymentId: { type: string }
+        paymentId: { type: string, format: uuid }
+        attempt:
+          type: integer
+          minimum: 1
+          description: Номер попытки оплаты заказа.
         status:
           type: string
           enum: [pending, paid, declined, unknown]
@@ -892,6 +906,9 @@ components:
         gatewayReference:
           type: string
           description: Ссылка на операцию во внешней системе (шлюз/POS/курьер)
+        reason:
+          type: string
+          description: Код причины отказа (`status=declined`).
         paidAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 

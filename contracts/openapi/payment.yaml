@@ -2,12 +2,53 @@ openapi: 3.1.0
 
 info:
   title: payment-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
     Обработка платежей: способы оплаты, инициализация онлайн-оплаты, оплаты на
     кассе/терминале, статус платежа. Интеграция с платёжным шлюзом и кассовой
     системой. Хранилище — payment-db. (UC-PAY-01/02/03/04)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+
+    **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
+    `services/payment` (S3); `planned` — целевое поведение, появится в указанном этапе.
+    В S3 полностью реализована **онлайн-оплата картой** (`online_card`); оплата на
+    кассе (`pos`, инициация персоналом) — S6, оплата курьеру (`courier_card`) — S7.
+    Приёмник вебхука кассы (`/webhooks/payments/pos`) готов в S3 (общая обработка статуса).
+
+
+    **Откуда сервис знает о заказе (ADR-10).** Из событий `orders.state` (сумма, способ,
+    владелец; устаревшие `revision` игнорируются) и `orders.status` (отменён ли заказ).
+    Синхронных вызовов orders нет. Следствие: сразу после `POST /orders` событие может ещё
+    не дойти — `404 ORDER_NOT_FOUND` с `Retry-After: 1` означает «заказа нет *или* событие
+    ещё в пути»; клиент повторяет запрос.
+
+
+    **Платёжный автомат.** `pending → paid | declined | unknown`, а также
+    `unknown → paid | declined`. `paid` и `declined` — финальные; противоречащие уведомления
+    (например `declined` после `paid`) не применяются и учитываются метрикой.
+    `authorized` зарезервирован (двухстадийная оплата), в S3 не используется.
+    Платёж создаётся в БД **до** вызова шлюза; вызов шлюза выполняется вне транзакции с
+    ключом `Idempotence-Key = paymentId` (повтор вызова не создаёт второй платёж у шлюза).
+    Таймаут/ошибка шлюза → `unknown`: **новая попытка оплаты заказа блокируется**
+    (`409 PAYMENT_STATUS_UNKNOWN`), пока фоновый reconciler не получит у шлюза
+    итог (`GET status`, backoff) — деньги не списываются дважды (MG1).
+
+
+    **Вебхуки** принимаются мимо api-gateway (прямой ingress-путь) и защищены подписью
+    `X-Signature: t=<unix>,v1=<hex(HMAC-SHA256(secret, t + "." + body))>`; окно replay ±5 мин,
+    дедупликация по `eventId`. Сумма из вебхука сверяется с суммой платежа.
+
+
+    **Деньги** — целые копейки (ADR-13). Карточные данные не хранятся и не передаются:
+    только ссылка на операцию шлюза (`gatewayReference`).
+
+
+    **Коды ошибок (`Problem.code`):** `INVALID_PARAMETER`, `INVALID_JSON`,
+    `IDEMPOTENCY_KEY_REQUIRED|INVALID|REUSED|IN_PROGRESS`, `ORDER_NOT_FOUND`,
+    `PAYMENT_NOT_FOUND`, `ORDER_NOT_PAYABLE`, `PAYMENT_METHOD_NOT_ALLOWED`,
+    `PAYMENT_METHOD_NOT_SUPPORTED`, `PAYMENT_IN_PROGRESS`, `PAYMENT_STATUS_UNKNOWN`,
+    `ALREADY_PAID`, `PAYMENT_DECLINED`, `INVALID_SIGNATURE`, `AMOUNT_MISMATCH`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -17,6 +58,7 @@ servers:
 
 security:
   - bearerAuth: []
+  - {}
 
 tags:
   - name: payment-service
@@ -27,11 +69,15 @@ paths:
     get:
       tags: [payment-service]
       operationId: getPaymentMethods
+      x-status: implemented
       summary: Доступные способы оплаты
       description: >-
-        Возвращает способы оплаты, доступные для выбранного способа получения
-        (онлайн / курьеру / в ресторане). Платёжный сервис уже знает о заказе из
-        события `orders.state`. (UC-PAY-01)
+        Способы оплаты для способа получения заказа: самовывоз — `online_card`, `pos`;
+        доставка — `online_card`, `courier_card`. `enabled=true` — только способ, выбранный
+        при оформлении заказа, и только пока его можно оплатить: для `online_card` заказ
+        должен быть в `pending_payment` (не отменён, не оплачен). Способ оплаты меняется
+        пересозданием заказа; смена способа у существующего заказа не поддерживается.
+        Платёжный сервис знает о заказе из события `orders.state`. (UC-PAY-01)
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
       responses:
@@ -42,24 +88,40 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/PaymentMethod' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/OrderNotFound' }
 
   /orders/{orderId}/payments:
     post:
       tags: [payment-service]
       operationId: initiatePayment
+      x-status: implemented
       summary: Инициировать платёж
       description: >-
-        Создаёт платёж по заказу. Для онлайн-оплаты (UC-PAY-02) сервис
-        инициализирует оплату в платёжном шлюзе и возвращает платёжную ссылку;
-        итоговый статус приходит webhook-ом от шлюза либо запрашивается синхронно.
-        Для оплаты курьеру (UC-PAY-03) формируется платёжная ссылка, передаваемая
-        в delivery-service через Kafka `payments.link`. Заказ передаётся в
-        обработку только после подтверждения оплаты. Идемпотентно по
-        `Idempotency-Key`.
+        Создаёт попытку оплаты заказа. **Онлайн-оплата (UC-PAY-02, S3):** платёж
+        записывается в БД (`pending`), затем — вне транзакции — создаётся оплата в шлюзе;
+        в ответе платёжная ссылка (`paymentUrl`). Итог приходит вебхуком шлюза либо
+        запрашивается reconciler-ом. Статусы публикуются в `orders.payments.status`
+        (orders принимает заказ после `paid`).
+
+
+        `Idempotency-Key` **обязателен**: повтор с тем же ключом и телом возвращает тот же
+        ответ (`Idempotent-Replay: true`) без нового платежа; тот же ключ с другим телом —
+        `422 IDEMPOTENCY_KEY_REUSED`.
+
+
+        Одновременно у заказа не более одной «живой» попытки и не более одного успешного
+        платежа (гарантируется уникальными индексами БД): пока есть `pending` —
+        `409 PAYMENT_IN_PROGRESS`, пока есть `unknown` — `409 PAYMENT_STATUS_UNKNOWN` (E2),
+        после `paid` — `409 ALREADY_PAID`. После `declined` можно создать новую попытку
+        (новый ключ). Шлюз не ответил в срок — `202` с `status=unknown`: платёж
+        мог быть создан, ждите итога (`getPayment`).
+
+
+        `courier_card` (UC-PAY-03) — S7, `pos` — отдельная операция `initiatePosPayment` (S6);
+        в S3 для них `422 PAYMENT_METHOD_NOT_SUPPORTED`.
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
-        - { $ref: '_common.yaml#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
       requestBody:
         required: true
         content:
@@ -67,21 +129,45 @@ paths:
             schema: { $ref: '#/components/schemas/PaymentInitRequest' }
       responses:
         '201':
-          description: Платёж инициирован
+          description: Платёж создан, оплата в шлюзе инициализирована (`status=pending`)
           headers:
             Location: { $ref: '_common.yaml#/components/headers/Location' }
+            Idempotent-Replay:
+              description: '`true`, если это повтор уже обработанного запроса.'
+              schema: { type: string, enum: ['true'] }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Payment' }
+        '202':
+          description: >-
+            Шлюз не ответил в срок: платёж записан со `status=unknown` (E2). Создавать новую
+            попытку нельзя; итог — `getPayment`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
         '402':
-          description: Платёж отклонён — повторить или сменить способ (E1)
+          description: >-
+            Шлюз синхронно отказал в создании оплаты (`PAYMENT_DECLINED`, E1) — предложить
+            повторить. Отказ банка приходит позже вебхуком (`status=declined`).
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/OrderNotFound' }
         '409':
           description: >-
-            Повторная оплата этой попытки заблокирована; статус неизвестен (E2).
+            `ORDER_NOT_PAYABLE` (заказ отменён или уже принят без онлайн-оплаты),
+            `PAYMENT_IN_PROGRESS`, `PAYMENT_STATUS_UNKNOWN`, `ALREADY_PAID`,
+            `IDEMPOTENCY_IN_PROGRESS`. У `PAYMENT_IN_PROGRESS|PAYMENT_STATUS_UNKNOWN`
+            в расширении `paymentId` — текущая попытка.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/PaymentConflictProblem' }
+        '422':
+          description: >-
+            `PAYMENT_METHOD_NOT_ALLOWED` (способ не совпадает со способом заказа),
+            `PAYMENT_METHOD_NOT_SUPPORTED` (`courier_card`/`pos` — S6/S7),
+            `IDEMPOTENCY_KEY_REUSED`
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -90,16 +176,17 @@ paths:
     post:
       tags: [payment-service]
       operationId: initiatePosPayment
+      x-status: planned
       summary: Инициировать оплату на кассе/терминале (персонал)
       description: >-
-        Инициализирует оплату на кассе/терминале при получении в ресторане. Даже
-        наличная оплата проводится через кассу с терминальным чеком (Д6).
-        Подтверждение приходит webhook-ом от кассовой системы. (UC-PAY-04)
+        **Планируется в S6.** Инициализирует оплату на кассе/терминале при получении в
+        ресторане. Даже наличная оплата проводится через кассу с терминальным чеком (Д6).
+        Подтверждение приходит webhook-ом от кассовой системы (приёмник готов в S3). (UC-PAY-04)
       security:
         - bearerAuth: [payments:staff]
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
-        - { $ref: '_common.yaml#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
       requestBody:
         required: true
         content:
@@ -116,16 +203,18 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/OrderNotFound' }
 
   /orders/{orderId}/payments/{paymentId}:
     get:
       tags: [payment-service]
       operationId: getPayment
+      x-status: implemented
       summary: Статус платежа
       description: >-
-        Возвращает текущий статус платежа. Используется в том числе при неизвестном
-        статусе/тайм-ауте для запроса состояния операции. (UC-PAY-01/02 E2)
+        Текущий статус платежа — из БД payment-service (без обращения к шлюзу: итог
+        подтягивают вебхук и reconciler). Используется при `202`/`unknown` и для опроса
+        после перехода на страницу оплаты. (UC-PAY-01/02 E2)
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
         - { $ref: '#/components/parameters/PaymentId' }
@@ -135,7 +224,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Payment' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '404':
+          description: Заказ или платёж не найден (`ORDER_NOT_FOUND`, `PAYMENT_NOT_FOUND`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 webhooks:
 
@@ -143,40 +236,93 @@ webhooks:
     post:
       tags: [payment-service]
       operationId: onPaymentGatewayStatus
+      x-status: implemented
+      x-path: /webhooks/payments/gateway
       summary: Статус оплаты от платёжного шлюза
       description: >-
-        Асинхронное уведомление о статусе онлайн-оплаты. Приёмник —
-        payment-service. При отсутствии webhook статус запрашивается синхронно.
-        (UC-PAY-02)
+        Асинхронное уведомление о статусе онлайн-оплаты (приёмник — payment-service,
+        путь `POST /webhooks/payments/gateway`, мимо api-gateway). Подпись —
+        `X-Signature` (секрет `GATEWAY_WEBHOOK_SECRET`). Обработка идемпотентна по `eventId`:
+        повтор доставки возвращает `200` без эффекта. Если вебхук потерян, статус
+        подтягивает reconciler (`GET status` шлюза). (UC-PAY-02)
+      security:
+        - webhookSignature: []
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PaymentStatusCallback' }
       responses:
-        '200': { description: Уведомление принято }
+        '200': { description: 'Уведомление принято (в том числе повтор — без эффекта)' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401':
+          description: Подпись отсутствует/неверна или вне окна replay (`INVALID_SIGNATURE`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404':
+          description: Платёж неизвестен (`PAYMENT_NOT_FOUND`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '422':
+          description: >-
+            `AMOUNT_MISMATCH` — сумма в уведомлении не совпадает с суммой платежа
+            (не применяется, фиксируется метрикой `payment_amount_mismatch_total`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   posPaymentConfirmation:
     post:
       tags: [payment-service]
       operationId: onPosPaymentConfirmation
+      x-status: implemented
+      x-path: /webhooks/payments/pos
       summary: Подтверждение оплаты от кассовой системы
       description: >-
-        Подтверждение оплаты при получении в ресторане. Приёмник — payment-service;
-        далее статус публикуется в `payments.status`. (UC-PAY-04)
+        Подтверждение оплаты при получении в ресторане (приёмник — payment-service, путь
+        `POST /webhooks/payments/pos`). Та же обработка и тот же формат, что у шлюза;
+        секрет — `POS_WEBHOOK_SECRET`. Принимает только платежи `method=pos`, которые
+        создаёт `initiatePosPayment` (S6). Статус публикуется в `orders.payments.status`.
+        (UC-PAY-04)
+      security:
+        - webhookSignature: []
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PaymentStatusCallback' }
       responses:
-        '200': { description: Уведомление принято }
+        '200': { description: 'Уведомление принято (в том числе повтор — без эффекта)' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401':
+          description: Подпись отсутствует/неверна или вне окна replay (`INVALID_SIGNATURE`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404':
+          description: Платёж неизвестен (`PAYMENT_NOT_FOUND`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '422':
+          description: '`AMOUNT_MISMATCH`'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 components:
 
   securitySchemes:
     bearerAuth:
       $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: >-
+        `t=<unix>,v1=<hex(HMAC-SHA256(secret, t + "." + body))>`; окно ±5 минут.
 
   parameters:
     PaymentId:
@@ -184,23 +330,50 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Уникальный ключ (1–128 печатных ASCII-символов), гарантирующий однократное
+        создание платежа при повторной отправке.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+
+  responses:
+    OrderNotFound:
+      description: >-
+        Заказ не найден или чужой (`ORDER_NOT_FOUND`); также — событие `orders.state`
+        ещё не обработано (в ответе `Retry-After: 1`).
+      headers:
+        Retry-After:
+          description: Секунды до повтора.
+          schema: { type: integer }
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   schemas:
     PaymentMethod:
       type: object
+      required: [type, title, enabled]
       properties:
         type: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
         title: { type: string }
-        enabled: { type: boolean }
+        enabled:
+          type: boolean
+          description: Можно ли оплатить заказ этим способом прямо сейчас.
     PaymentInitRequest:
       type: object
       required: [method]
+      additionalProperties: false
       properties:
         method: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
         returnUrl:
           type: string
           format: uri
-          description: URL возврата после оплаты в форме провайдера (онлайн).
+          maxLength: 500
+          description: >-
+            URL возврата после оплаты в форме провайдера (онлайн); схема `http`/`https`.
     PosPaymentInitRequest:
       type: object
       required: [tender]
@@ -211,22 +384,55 @@ components:
           description: Способ на кассе; наличные также проводятся через терминал (Д6).
     Payment:
       type: object
+      required: [id, orderId, method, status, amount, attempt, createdAt, updatedAt]
       properties:
         id: { type: string, format: uuid }
         orderId: { type: string, format: uuid }
         method: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
         status: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
         amount: { $ref: '_common.yaml#/components/schemas/Money' }
+        attempt:
+          type: integer
+          minimum: 1
+          description: Номер попытки оплаты этого заказа.
         paymentUrl:
           type: string
           format: uri
-          description: Платёжная ссылка (онлайн / для оплаты курьеру).
+          description: Платёжная ссылка (онлайн / для оплаты курьеру). Нет у `unknown`, пока шлюз не ответил.
+        declineReason:
+          type: string
+          description: Причина отказа (`status=declined`), код шлюза.
+        paidAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PaymentConflictProblem:
+      allOf:
+        - $ref: '_common.yaml#/components/schemas/Problem'
+        - type: object
+          properties:
+            paymentId:
+              type: string
+              format: uuid
+              description: Текущая попытка (`PAYMENT_IN_PROGRESS`, `PAYMENT_STATUS_UNKNOWN`, `ALREADY_PAID`).
     PaymentStatusCallback:
       type: object
-      required: [orderId, status]
+      required: [eventId, orderId, paymentId, status]
       properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Идентификатор уведомления; повтор доставки несёт тот же `eventId`.
         orderId: { type: string, format: uuid }
-        paymentId: { type: string, format: uuid }
-        status: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
-        externalRef: { type: string }
+        paymentId:
+          type: string
+          format: uuid
+          description: Наш идентификатор платежа (передаётся шлюзу как reference).
+        status:
+          type: string
+          enum: [paid, declined]
+          description: Итог операции; промежуточные статусы вебхуком не приходят.
+        externalRef: { type: string, description: Ссылка на операцию во внешней системе. }
+        amount:
+          $ref: '_common.yaml#/components/schemas/Money'
+        reason: { type: string, description: Код причины отказа (`status=declined`). }
+        occurredAt: { type: string, format: date-time }
