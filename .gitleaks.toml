@@ -1,0 +1,15 @@
+# Расширяет стандартные правила gitleaks. Секретов в репозитории нет; здесь исключены
+# только заведомо публичные dev-значения и тестовые фикстуры.
+title = "food-platform gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "dev-значения по умолчанию (только APP_ENV=dev) и фикстуры проверки конфигурации"
+paths = [
+  '''services/payment/internal/config/config_test\.go''',
+]
+regexes = [
+  '''dev-(gateway|pos)-(webhook-secret|api-key)''',
+]
