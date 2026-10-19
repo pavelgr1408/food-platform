@@ -69,3 +69,17 @@ func TestValidateMixedKeepsOrderAndOnlyCountsAvailable(t *testing.T) {
 	}
 	_ = p
 }
+
+func TestValidateReturnsItemNameSnapshot(t *testing.T) {
+	c := catalog()
+	burger := c["burger"]
+	burger.Name = "Бургер"
+	c["burger"] = burger
+	r := Validate(c, []Line{{MenuItemID: "burger", Quantity: 1}, {MenuItemID: "ghost", Quantity: 1}})
+	if r.Lines[0].Name != "Бургер" {
+		t.Errorf("name snapshot: %q", r.Lines[0].Name)
+	}
+	if r.Lines[1].Name != "" {
+		t.Errorf("unknown item must have no name: %q", r.Lines[1].Name)
+	}
+}

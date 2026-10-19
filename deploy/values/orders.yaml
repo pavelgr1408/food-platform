@@ -1,0 +1,26 @@
+# Helm-values сервиса orders для общего чарта deploy/charts/service.
+# Секреты в git не хранятся: Secret `orders-secrets` создаёт `make k8s-dev-secrets` / CI/CD / Vault.
+name: orders
+image:
+  repository: food/orders
+  tag: dev
+port: 8084
+replicas: 2
+env:
+  APP_ENV: dev
+  LOG_LEVEL: info
+  AUTH_MODE: dev
+  KAFKA_BROKERS: kafka:9092
+  MENU_URL: http://menu:8083
+  RESTAURANT_URL: http://restaurant:8082
+  UPSTREAM_TIMEOUT: 800ms
+  PAYMENT_TIMEOUT: 15m
+  CART_TTL: 168h
+existingSecret: orders-secrets # ключи: DATABASE_URL
+migrations:
+  enabled: true # Job `orders-service --migrate-only` (pre-install/pre-upgrade hook)
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+ingress:
+  paths: [] # публичные пути добавляются, когда готов gateway (S5)

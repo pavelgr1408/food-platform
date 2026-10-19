@@ -104,6 +104,7 @@ type lineDTO struct {
 	MenuItemID   string `json:"menuItemId"`
 	Quantity     int    `json:"quantity"`
 	Available    bool   `json:"available"`
+	Name         string `json:"name,omitempty"`
 	CurrentPrice *money `json:"currentPrice,omitempty"`
 	LineTotal    *money `json:"lineTotal,omitempty"`
 	ReasonCode   string `json:"reasonCode,omitempty"`
@@ -121,7 +122,7 @@ func toValidation(v service.Validation) validationDTO {
 	out := validationDTO{Valid: v.Valid, MenuVersion: v.MenuVersion, Total: money{v.Total, v.Currency},
 		Lines: make([]lineDTO, 0, len(v.Lines))}
 	for _, l := range v.Lines {
-		d := lineDTO{MenuItemID: l.MenuItemID, Quantity: l.Quantity, Available: l.Available, ReasonCode: l.ReasonCode, Reason: l.Reason}
+		d := lineDTO{MenuItemID: l.MenuItemID, Quantity: l.Quantity, Available: l.Available, Name: l.Name, ReasonCode: l.ReasonCode, Reason: l.Reason}
 		if l.UnitPrice != nil {
 			d.CurrentPrice = &money{*l.UnitPrice, v.Currency}
 			d.LineTotal = &money{*l.LineTotal, v.Currency}

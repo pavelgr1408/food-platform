@@ -25,6 +25,7 @@ type Line struct {
 // LineResult — результат проверки строки.
 type LineResult struct {
 	MenuItemID string
+	Name       string // название позиции (снапшот для orders); пусто для ITEM_NOT_FOUND
 	Quantity   int
 	Available  bool
 	// UnitPrice — цена за единицу с найденными модификаторами; nil, если позиции нет в меню.
@@ -52,6 +53,7 @@ func Validate(items map[string]Item, lines []Line) Result {
 		if !ok {
 			lr.Available, lr.ReasonCode = false, ReasonItemNotFound
 		} else {
+			lr.Name = it.Name
 			unit := it.Price
 			if !it.Available {
 				lr.Available, lr.ReasonCode = false, ReasonItemUnavailable

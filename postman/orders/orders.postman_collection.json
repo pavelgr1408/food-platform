@@ -1,0 +1,2197 @@
+{
+  "info": {
+    "name": "orders-service",
+    "description": "Ядро заказа (S2): корзина, оформление с Idempotency-Key, доставка/самовывоз, ADR-10. Срез: make up SLICE=\"restaurant menu orders\". Запуск: make newman SERVICE=orders. Ресторан №4 (Невский) работает 24/7 — сценарий не зависит от времени суток.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "menuUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "restaurantUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000004"
+    },
+    {
+      "key": "idemKey",
+      "value": ""
+    },
+    {
+      "key": "firstOrderKey",
+      "value": ""
+    },
+    {
+      "key": "firstOrderBody",
+      "value": ""
+    },
+    {
+      "key": "burgerId",
+      "value": ""
+    },
+    {
+      "key": "baconId",
+      "value": ""
+    },
+    {
+      "key": "colaId",
+      "value": ""
+    },
+    {
+      "key": "burgerPrice",
+      "value": ""
+    },
+    {
+      "key": "baconPrice",
+      "value": ""
+    },
+    {
+      "key": "colaPrice",
+      "value": ""
+    },
+    {
+      "key": "expectedTotal",
+      "value": ""
+    },
+    {
+      "key": "cartId",
+      "value": ""
+    },
+    {
+      "key": "cartId2",
+      "value": ""
+    },
+    {
+      "key": "cartId3",
+      "value": ""
+    },
+    {
+      "key": "cartId4",
+      "value": ""
+    },
+    {
+      "key": "cartId5",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "orderNumber",
+      "value": ""
+    },
+    {
+      "key": "deliveryOrderId",
+      "value": ""
+    },
+    {
+      "key": "slotFrom",
+      "value": ""
+    },
+    {
+      "key": "slotTo",
+      "value": ""
+    },
+    {
+      "key": "aliceCart",
+      "value": ""
+    },
+    {
+      "key": "aliceOrder",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Подготовка (menu + restaurant)",
+      "item": [
+        {
+          "name": "меню ресторана: id позиций и цены",
+          "request": {
+            "method": "GET",
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().categories.flatMap(c => c.items);",
+                  "const burger = items.find(i => i.name === 'BLT Классик'); const cola = items.find(i => i.name === 'Кола 0,5');",
+                  "pm.test('в меню есть бургер, бекон и кола', () => { pm.expect(burger).to.exist; pm.expect(cola).to.exist; });",
+                  "const bacon = burger.modifiers.find(m => m.name === 'Двойной бекон');",
+                  "pm.expect(bacon).to.exist;",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('burgerId', burger.id); cv.set('baconId', bacon.id); cv.set('colaId', cola.id);",
+                  "cv.set('burgerPrice', burger.price.amount); cv.set('baconPrice', bacon.price.amount); cv.set('colaPrice', cola.price.amount);",
+                  "pm.test('цены — целые копейки', () => { pm.expect(Number.isInteger(burger.price.amount)).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ресторан открыт и принимает доставку (restaurant)",
+          "request": {
+            "method": "GET",
+            "url": "{{restaurantUrl}}/restaurants/{{restaurantId}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test('ресторан круглосуточный: открыт, доставка включена', () => { pm.expect(r.openNow).to.be.true; pm.expect(r.deliveryEnabled).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Probes",
+      "item": [
+        {
+          "name": "liveness",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health/",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status OK', () => pm.expect(pm.response.json().status).to.eql('OK'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "readiness (БД, Kafka)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/actuator/health",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Гость: корзина → заказ (самовывоз, онлайн-оплата)",
+      "item": [
+        {
+          "name": "createCart (гость, контакты)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const c = pm.response.json();",
+                  "pm.collectionVariables.set('cartId', c.id);",
+                  "pm.test('Location указывает на корзину', () => pm.expect(pm.response.headers.get('Location')).to.eql('/carts/' + c.id));",
+                  "pm.test('пустая открытая корзина, сумма 0', () => { pm.expect(c.status).to.eql('open'); pm.expect(c.items).to.eql([]); pm.expect(c.total.amount).to.eql(0); pm.expect(c.appliedPromotions).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "updateCartItems: бургер×2 + бекон, кола×1 — цены с сервера, копейки",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2,\n      \"modifierIds\": [\n        \"{{baconId}}\"\n      ]\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const intMoney = (m) => Number.isInteger(m.amount) && m.amount >= 0 && m.currency === 'RUB';",
+                  "const c = pm.response.json(); const cv = pm.collectionVariables;",
+                  "const unit = Number(cv.get('burgerPrice')) + Number(cv.get('baconPrice')); const expected = 2 * unit + Number(cv.get('colaPrice'));",
+                  "cv.set('expectedTotal', expected);",
+                  "pm.test('сумма = 2×(бургер+бекон)+кола, целые копейки', () => { pm.expect(c.subtotal.amount).to.eql(expected); pm.expect(c.total.amount).to.eql(expected); pm.expect(c.discountTotal.amount).to.eql(0); pm.expect(intMoney(c.total)).to.be.true; });",
+                  "pm.test('позиции: снапшот названия, цена за единицу и сумма строки', () => { const l = c.items[0]; pm.expect(l.name).to.eql('BLT Классик'); pm.expect(l.unitPrice.amount).to.eql(unit); pm.expect(l.lineTotal.amount).to.eql(2 * unit); pm.expect(l.available).to.be.true; pm.expect(l.modifierIds).to.eql([cv.get('baconId')]); });",
+                  "pm.test('деньги в JSON — без дробной части', () => pm.expect(pm.response.text()).to.match(/\"amount\":\\d+[,}]/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setCartFulfillment: самовывоз",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('способ получения зафиксирован', () => pm.expect(pm.response.json().fulfillment.type).to.eql('pickup'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getCart",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/{{cartId}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json();",
+                  "pm.test('корзина переживает запросы (E1: связь потеряна — состояние на сервере)', () => { pm.expect(c.items).to.have.lengthOf(2); pm.expect(c.total.amount).to.eql(Number(pm.collectionVariables.get('expectedTotal'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createOrder (Idempotency-Key) → 201, pending_payment",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); const cv = pm.collectionVariables;",
+                  "cv.set('orderId', o.id); cv.set('orderNumber', o.number); cv.set('firstOrderKey', cv.get('idemKey')); cv.set('firstOrderBody', pm.response.text());",
+                  "pm.test('Location и номер заказа', () => { pm.expect(pm.response.headers.get('Location')).to.eql('/orders/' + o.id); pm.expect(o.number).to.match(/^R\\d+-\\d{6}-\\d{4,}$/); });",
+                  "pm.test('ADR-10: онлайн-оплата → pending_payment, оплата pending', () => { pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); pm.expect(o.paymentMethod).to.eql('online_card'); });",
+                  "pm.test('сумма заказа = сумме корзины', () => { pm.expect(o.total.amount).to.eql(Number(cv.get('expectedTotal'))); pm.expect(o.subtotal.amount).to.eql(o.total.amount); });",
+                  "pm.test('нет повторного Idempotent-Replay на первом запросе', () => pm.expect(pm.response.headers.has('Idempotent-Replay')).to.be.false);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "повтор того же запроса → тот же 201 и тот же заказ (MG2)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{firstOrderKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Idempotent-Replay: true', () => pm.expect(pm.response.headers.get('Idempotent-Replay')).to.eql('true'));",
+                  "pm.test('байт-в-байт тот же ответ, тот же Location', () => { pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('firstOrderBody')); pm.expect(pm.response.headers.get('Location')).to.eql('/orders/' + pm.collectionVariables.get('orderId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "тот же ключ с другим телом → 422 IDEMPOTENCY_KEY_REUSED",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{firstOrderKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом IDEMPOTENCY_KEY_REUSED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "новый ключ на уже оформленную корзину → 409 CART_CLOSED (второго заказа нет)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json с кодом CART_CLOSED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_CLOSED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getCart: корзина оформлена и ссылается на заказ",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/{{cartId}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status=ordered, orderId', () => { const c = pm.response.json(); pm.expect(c.status).to.eql('ordered'); pm.expect(c.orderId).to.eql(pm.collectionVariables.get('orderId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "оформленную корзину нельзя менять → 409 CART_CLOSED",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json с кодом CART_CLOSED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_CLOSED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getOrder",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{orderId}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "pm.test('тот же заказ, 2 позиции, самовывоз', () => { pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId')); pm.expect(o.number).to.eql(pm.collectionVariables.get('orderNumber')); pm.expect(o.items).to.have.lengthOf(2); pm.expect(o.fulfillment.type).to.eql('pickup'); pm.expect(o.createdAt).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getOrderEta: типовое время, approximate=true",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{orderId}}/eta",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json();",
+                  "pm.test('приблизительная оценка (до S4)', () => { pm.expect(e.approximate).to.be.true; pm.expect(e.readyAt).to.be.a('string'); pm.expect(e.estimateMinutes).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setPickupSlot: слот через 2 часа",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/orders/{{orderId}}/pickup-slot",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"from\": \"{{slotFrom}}\", \"to\": \"{{slotTo}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const from = new Date(Date.now() + 2 * 3600e3); const to = new Date(from.getTime() + 30 * 60e3);",
+                  "pm.collectionVariables.set('slotFrom', from.toISOString()); pm.collectionVariables.set('slotTo', to.toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('слот сохранён', () => { const s = pm.response.json().pickupSlot; pm.expect(new Date(s.from).toISOString()).to.eql(pm.collectionVariables.get('slotFrom')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setPickupSlot: from > to → 422 INVALID_SLOT",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/orders/{{orderId}}/pickup-slot",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"from\": \"{{slotTo}}\", \"to\": \"{{slotFrom}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом INVALID_SLOT', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_SLOT'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Оплата на кассе / курьеру: сразу accepted (ADR-10)",
+      "item": [
+        {
+          "name": "новая корзина (гость)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"phone\": \"+79990000010\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cartId2', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "позиции + самовывоз",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId2}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 3\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('3×кола', () => pm.expect(pm.response.json().total.amount).to.eql(3 * Number(pm.collectionVariables.get('colaPrice'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "самовывоз",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId2}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "courier_card при самовывозе → 422 PAYMENT_METHOD_NOT_ALLOWED",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId2}}\",\n  \"paymentMethod\": \"courier_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом PAYMENT_METHOD_NOT_ALLOWED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('PAYMENT_METHOD_NOT_ALLOWED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pos (на кассе) → 201 accepted, оплата pending",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId2}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.test('предоплаты нет → accepted, paymentStatus остаётся pending', () => { pm.expect(o.status).to.eql('accepted'); pm.expect(o.paymentStatus).to.eql('pending'); pm.expect(o.paymentMethod).to.eql('pos'); });",
+                  "pm.test('номер следующий за предыдущим в тот же день', () => { const seq = n => Number(n.split('-')[2]); pm.expect(seq(o.number)).to.be.above(seq(pm.collectionVariables.get('orderNumber'))); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Доставка",
+      "item": [
+        {
+          "name": "новая корзина с контактом",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Пётр\",\n    \"phone\": \"+79990000011\",\n    \"email\": \"p@example.com\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cartId3', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "позиции",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId3}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "доставка без адреса → 422 ADDRESS_REQUIRED",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId3}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом ADDRESS_REQUIRED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ADDRESS_REQUIRED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "доставка с адресом и координатами",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId3}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Санкт-Петербург, Невский пр., 28\",\n    \"location\": {\n      \"lat\": 59.9343,\n      \"lon\": 30.3351\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const f = pm.response.json().fulfillment;",
+                  "pm.test('адрес сохранён', () => { pm.expect(f.type).to.eql('delivery'); pm.expect(f.address.raw).to.include('Невский'); pm.expect(f.address.location.lat).to.eql(59.9343); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pos при доставке → 422",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId3}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом PAYMENT_METHOD_NOT_ALLOWED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('PAYMENT_METHOD_NOT_ALLOWED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "courier_card → 201 accepted, ETA с доставкой",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId3}}\",\n  \"paymentMethod\": \"courier_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('deliveryOrderId', o.id);",
+                  "pm.test('accepted, адрес доставки в заказе', () => { pm.expect(o.status).to.eql('accepted'); pm.expect(o.fulfillment.type).to.eql('delivery'); pm.expect(o.fulfillment.address.raw).to.include('Невский'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getOrderEta для доставки: deliveryAt позже readyAt",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{deliveryOrderId}}/eta",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const e = pm.response.json(); pm.test('есть deliveryAt', () => { pm.expect(e.deliveryAt).to.be.a('string'); pm.expect(new Date(e.deliveryAt) > new Date(e.readyAt)).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "слот для доставки не нужен → 422",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/orders/{{deliveryOrderId}}/pickup-slot",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"from\": \"{{slotFrom}}\", \"to\": \"{{slotTo}}\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом INVALID_SLOT', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_SLOT'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Негативные сценарии",
+      "item": [
+        {
+          "name": "новая корзина",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cartId4', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E1: несуществующая позиция → 409 ITEMS_UNAVAILABLE со списком, остальное сохранено",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId4}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"c1000000-0000-4000-8000-0000000000aa\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json с кодом ITEMS_UNAVAILABLE', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ITEMS_UNAVAILABLE'); });",
+                  "const u = pm.response.json().unavailableItems;",
+                  "pm.test('unavailableItems: id и причина', () => { pm.expect(u).to.have.lengthOf(1); pm.expect(u[0].menuItemId).to.eql('c1000000-0000-4000-8000-0000000000aa'); pm.expect(u[0].reasonCode).to.eql('ITEM_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "корзина после E1: осталась только кола",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/{{cartId4}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('1 позиция, сумма пересчитана', () => { const c = pm.response.json(); pm.expect(c.items).to.have.lengthOf(1); pm.expect(c.total.amount).to.eql(Number(pm.collectionVariables.get('colaPrice'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createOrder без Idempotency-Key → 400",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId4}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом IDEMPOTENCY_KEY_REQUIRED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createOrder: нет способа получения → 422",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId4}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом FULFILLMENT_REQUIRED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('FULFILLMENT_REQUIRED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "самовывоз",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId4}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "гость без телефона → 422 CONTACT_REQUIRED",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId4}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом CONTACT_REQUIRED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CONTACT_REQUIRED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "телефон в самом запросе → 201",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId4}}\",\n  \"paymentMethod\": \"online_card\",\n  \"contact\": {\n    \"phone\": \"+79990000012\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "пустая корзина → 422 CART_EMPTY",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"phone\": \"+79990000013\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cartId5', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createOrder пустой корзины",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId5}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом CART_EMPTY', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_EMPTY'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "несуществующая корзина → 404 CART_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/a1000000-0000-4000-8000-0000000000ff",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом CART_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "несуществующий заказ → 404 ORDER_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/a1000000-0000-4000-8000-0000000000ff",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом ORDER_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createCart без guest и без токена → 401",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('problem+json с кодом UNAUTHENTICATED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createCart: неизвестный ресторан → 404",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"a1000000-0000-4000-8000-0000000000ff\",\n  \"guest\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом RESTAURANT_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('RESTAURANT_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createCart: неактивный ресторан (№6) → 404",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"a1000000-0000-4000-8000-000000000006\",\n  \"guest\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом RESTAURANT_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('RESTAURANT_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createCart: битый JSON → 400",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"restaurantId\":"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_JSON', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_JSON'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createCart: неизвестное поле → 400",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"discount\": 100\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_JSON', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_JSON'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "updateCartItems: quantity=100 → 400",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId5}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 100\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "updateCartItems: дубль строки → 400",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId5}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "updateCartItems: тело без items → 400",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId5}}/items",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "setCartFulfillment: неизвестный тип → 400",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{cartId5}}/fulfillment",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"teleport\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "staff_fax пока недоступен → 422 CHANNEL_NOT_AVAILABLE",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId5}}\",\n  \"paymentMethod\": \"online_card\",\n  \"channel\": \"staff_fax\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('problem+json с кодом CHANNEL_NOT_AVAILABLE', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CHANNEL_NOT_AVAILABLE'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Владелец ресурса: пользователь и гость",
+      "item": [
+        {
+          "name": "alice создаёт корзину (без guest)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/carts",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('aliceCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alice наполняет корзину",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{aliceCart}}/items",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bob не видит корзину alice → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/{{aliceCart}}",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом CART_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "гость не видит корзину пользователя → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/carts/{{aliceCart}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом CART_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bob не может изменить корзину alice → 404",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{aliceCart}}/items",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом CART_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alice: самовывоз",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/carts/{{aliceCart}}/fulfillment",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bob не может оформить корзину alice → 404",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{aliceCart}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом CART_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CART_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alice оформляет заказ (телефон не обязателен)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{aliceCart}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('aliceOrder', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bob не видит заказ alice → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{aliceOrder}}",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом ORDER_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bob не видит ETA чужого заказа → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{aliceOrder}}/eta",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом ORDER_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "гость не видит заказ пользователя → 404",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{aliceOrder}}",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json с кодом ORDER_NOT_FOUND', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "alice видит свой заказ",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/{{aliceOrder}}",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Метрики после сценариев",
+      "item": [
+        {
+          "name": "metrics: RED, бизнес-метрики и outbox",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/metrics",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.text();",
+                  "pm.test('RED-метрики по шаблону маршрута', () => pm.expect(t).to.include('http_requests_total'));",
+                  "pm.test('бизнес-метрики заказов', () => { pm.expect(t).to.include('orders_created_total'); pm.expect(t).to.include('orders_status_transitions_total'); });",
+                  "pm.test('счётчик созданных заказов растёт', () => pm.expect(t).to.include('orders_created_total{'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -43,3 +43,16 @@ make contract-check
 ```
 `SEED_ON_START=true` в срезе загружает демо-рестораны и меню (идемпотентно). `make contract-check` валидирует живые
 ответы обоих сервисов против `contracts/openapi/*.yaml`.
+
+## Ядро заказа (S2): orders
+```bash
+make up SLICE="restaurant menu orders"
+make newman SERVICE=orders
+make contract-check SCENARIO=orders
+```
+`orders` вызывает `menu` (`validateMenuItems`) и `restaurant` по HTTP (`MENU_URL`, `RESTAURANT_URL`; в срезе — имена сервисов compose),
+события `orders.state` / `orders.status` уходят в Kafka через outbox. Сценарий Postman идёт по ресторану №4 (Невский, 24/7), поэтому
+не зависит от времени суток. Событие в Kafka (нужен срез с Kafka):
+```bash
+docker compose --project-directory . -f deploy/compose/infra.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic orders.state --from-beginning --property print.key=true --property print.headers=true --timeout-ms 5000
+```
