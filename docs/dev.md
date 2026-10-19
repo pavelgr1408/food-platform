@@ -69,3 +69,16 @@ make contract-check SCENARIO=payment
 который по умолчанию подтверждает оплату вебхуком через `MOCK_DELAY` (2 с). Сценарии Postman «отказ», «таймаут → unknown», «потерянный вебхук» сами
 переключают режимы мока через `/_admin/gateway/*` и возвращают их обратно. Коллекцию можно гонять повторно без пересоздания среза.
 Ручная проверка двойного списания: `curl localhost:9091/_inspect/payments` — на заказ ровно одна операция шлюза.
+
+## Производство и сквозной MVP (S4)
+```bash
+make up SLICE="restaurant menu orders payment mock-externals"
+make newman SERVICE=e2e
+```
+`mock-externals` (по умолчанию `MOCKS=ping,payment,production`) содержит модуль `production` (:9092): читает `orders.state` (берёт заказ в работу, только если
+`paymentStatus=paid` или оплата не предоплатная — ADR-10), публикует `orders.dish.status` (`queued → cooking → ready`) и `production.lead.time`.
+Тайминги — `MOCK_PRODUCTION_QUEUE_DELAY` (2s), `MOCK_PRODUCTION_COOK_TIME` (3s) или на лету: `POST :9092/_admin/production/timing?queue=1s&cook=2s`.
+Управление сценариями: `POST /_admin/production/mode?queue=off|on` («авария очереди», E3: заказы остаются `accepted`, растёт метрика
+`orders_stuck_in_accepted_seconds`), `POST /_admin/production/leadtime?restaurantId=<id>&minutes=<n>` (зафиксировать время приготовления ресторана),
+`POST /_admin/production/reset`, `GET /_inspect/production`. Коллекция `postman/e2e/` сама задаёт тайминги и возвращает настройки в конце.
+Заказы без `production` в срезе остаются в `accepted`: orders честно показывает типовой ETA (`approximate=true`).

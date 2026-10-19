@@ -1,0 +1,1656 @@
+{
+  "info": {
+    "name": "e2e: сквозной MVP (веха M1)",
+    "description": "Сквозной сценарий платформы (S4): каталог → корзина → заказ → онлайн-оплата (mock шлюза) → производство (mock) → cooking → ready, ETA по загрузке производства, заказ без предоплаты, неоплаченный заказ не уходит в производство (ADR-10), «авария очереди» производства (E3). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\" (MOCKS=ping,payment,production). Запуск: make newman SERVICE=e2e. Ресторан №4 работает 24/7. Коллекция сама задаёт тайминги mock производства и возвращает их в конце; повторные прогоны безопасны.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "ordersUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "paymentUrl",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "menuUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "restaurantUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "mockUrl",
+      "value": "http://localhost:9091"
+    },
+    {
+      "key": "productionUrl",
+      "value": "http://localhost:9092"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000004"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Подготовка",
+      "item": [
+        {
+          "name": "меню: id бургера и колы",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const all = pm.response.json().categories.flatMap(c => c.items);",
+                  "const burger = all.find(i => i.name === 'BLT Классик'), cola = all.find(i => i.name === 'Кола 0,5');",
+                  "pm.test('позиции есть в меню', () => { pm.expect(burger).to.exist; pm.expect(cola).to.exist; });",
+                  "pm.collectionVariables.set('burgerId', burger.id); pm.collectionVariables.set('colaId', cola.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: сброс режимов и операций",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: сброс",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: тайминги (очередь 1 с, готовка 2 с)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/timing?queue=1s&cook=2s&stagger=0s"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('тайминги применены', () => { const j = pm.response.json(); pm.expect(j.queue).to.eql('1s'); pm.expect(j.cook).to.eql('2s'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: лид-тайм ресторана №4 = 25 минут",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/leadtime?restaurantId={{restaurantId}}&minutes=25"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('зафиксировано 25 минут и опубликовано', () => { const j = pm.response.json(); pm.expect(j.leadTimeMinutes).to.eql(25); pm.expect(j.fixed).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Probes",
+      "item": [
+        {
+          "name": "orders: readiness (БД, Kafka)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('БД и Kafka UP', () => { const c = pm.response.json().components; pm.expect(c.db.status).to.eql('UP'); pm.expect(c.kafka.status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "payment: readiness (БД, Kafka)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('БД и Kafka UP', () => { const c = pm.response.json().components; pm.expect(c.db.status).to.eql('UP'); pm.expect(c.kafka.status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "restaurant: liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{restaurantUrl}}/health/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "menu: liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/health/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: health и режим очереди",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('очередь производства включена', () => pm.expect(pm.response.json().queue).to.eql('on'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Каталог: ресторан → меню",
+      "item": [
+        {
+          "name": "restaurant: поиск по городу (Санкт-Петербург)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{restaurantUrl}}/restaurants?address=%D0%A1%D0%B0%D0%BD%D0%BA%D1%82-%D0%9F%D0%B5%D1%82%D0%B5%D1%80%D0%B1%D1%83%D1%80%D0%B3"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ресторан №4 найден', () => pm.expect(pm.response.json().items.map(r => r.id)).to.include(pm.collectionVariables.get('restaurantId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "menu: validateMenuItems — корзина валидна, цены в копейках",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu/validation",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const v = pm.response.json();",
+                  "pm.test('valid, итог 2×349 + 129 = 827 ₽ = 82700 коп.', () => { pm.expect(v.valid).to.be.true; pm.expect(v.total.amount).to.eql(82700); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Сквозной сценарий M1: онлайн-оплата → производство → ready",
+      "item": [
+        {
+          "name": "a: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('aCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{aCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('aTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{aCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: createOrder (онлайн-карта → pending_payment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{aKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{aCart}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('aKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('aOrder', o.id);",
+                  "pm.test('заказ ждёт оплаты', () => { pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });",
+                  "pm.test('сумма — целые копейки', () => { pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.total.amount).to.eql(82700); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getOrderEta до оплаты — ждём свежую загрузку (production.lead.time → orders)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}/eta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_16f3b7'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.approximate === false);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"в orders появилась реплика загрузки производства\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getOrderEta до оплаты — 25 минут",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}/eta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('ETA по свежей загрузке производства: approximate=false', () => pm.expect(j.approximate).to.be.false);",
+                  "pm.test('estimateMinutes ≈ 25', () => { pm.expect(j.estimateMinutes).to.be.within(23, 25); });",
+                  "pm.test('доставки нет (самовывоз)', () => pm.expect(j.deliveryAt).to.be.undefined);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{aOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_1d041a'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"payment узнал о заказе через Kafka\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: initiatePayment → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{aPayKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{paymentUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('aPayKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const pay = pm.response.json();",
+                  "pm.test('сумма платежа = сумме заказа (целые копейки)', () => { pm.expect(Number.isInteger(pay.amount.amount)).to.be.true; pm.expect(pay.amount.amount).to.eql(Number(pm.collectionVariables.get('aTotal'))); });",
+                  "pm.collectionVariables.set('aPayId', pay.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getPayment → paid (вебхук шлюза)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{aOrder}}/payments/{{aPayId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_7286b0'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"платёж оплачен по вебхуку шлюза\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: orders: pending_payment → accepted, paymentStatus=paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_d3da22'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted' || j.status === 'cooking' || j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ принят после оплаты (ADR-10) и сразу взят производством, если оно быстрее опроса\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getOrderEta после принятия — отсчёт от принятия заказа",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}/eta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('ETA по свежей загрузке производства: approximate=false', () => pm.expect(j.approximate).to.be.false);",
+                  "pm.test('readyAt ≈ сейчас + 25 минут (±2 мин)', () => { const d = Math.abs(new Date(j.readyAt).getTime() - (Date.now() + 25 * 60000)); pm.expect(d).to.be.below(120000); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: ждём статус cooking (производство приступило, orders.dish.status → cooking)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_abb1d2'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'cooking');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в cooking\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: ждём статус ready (все блюда ready)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_efc633'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в ready\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getOrderEta готового заказа — 0 минут",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}/eta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('готов: estimateMinutes=0, approximate=false', () => { pm.expect(j.estimateMinutes).to.eql(0); pm.expect(j.approximate).to.be.false; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: mock производства — заказ в работе один раз, 2 блюда ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().orders.filter(o => o.orderId === pm.collectionVariables.get('aOrder'));",
+                  "pm.test('заказ взят в производство ровно один раз', () => pm.expect(mine).to.have.lengthOf(1));",
+                  "pm.test('блюд: 2, все ready', () => { pm.expect(mine[0].dishes).to.have.lengthOf(2); pm.expect(mine[0].dishes.every(d => d.status === 'ready')).to.be.true; pm.expect(mine[0].done).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: mock шлюза — ровно одна операция на заказ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_inspect/payments"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const ops = pm.response.json().operations.filter(o => o.orderId === pm.collectionVariables.get('aOrder'));",
+                  "pm.test('одна операция шлюза, сумма совпадает', () => { pm.expect(ops).to.have.lengthOf(1); pm.expect(ops[0].amount).to.eql(Number(pm.collectionVariables.get('aTotal'))); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Заказ без предоплаты (pos) идёт в производство сразу",
+      "item": [
+        {
+          "name": "b: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('bCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{bCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('bTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{bCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: createOrder (оплата в ресторане → accepted сразу)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{bKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{bCart}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('bKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('bOrder', o.id);",
+                  "pm.test('предоплаты нет: заказ принят сразу', () => { pm.expect(o.status).to.eql('accepted'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: ждём статус ready (производство берёт заказ без предоплаты (ADR-10), оплата не нужна)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{bOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_9cc01c'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в ready\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: mock производства — заказ без предоплаты прошёл производство",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().orders.filter(o => o.orderId === pm.collectionVariables.get('bOrder'));",
+                  "pm.test('заказ взят в производство ровно один раз', () => pm.expect(mine).to.have.lengthOf(1));",
+                  "pm.test('блюд: 1, все ready', () => { pm.expect(mine[0].dishes).to.have.lengthOf(1); pm.expect(mine[0].dishes.every(d => d.status === 'ready')).to.be.true; pm.expect(mine[0].done).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: payment не знает платежей по этому заказу (оплата в ресторане — S6)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{bOrder}}/payments/00000000-0000-4000-8000-000000000000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('платежа нет (404)', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Неоплаченный заказ не уходит в производство, после оплаты — уходит",
+      "item": [
+        {
+          "name": "c: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{cCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('cTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{cCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: createOrder (онлайн-карта → pending_payment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cCart}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('cOrder', o.id);",
+                  "pm.test('ждёт оплаты', () => pm.expect(o.status).to.eql('pending_payment'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: пауза 3,5 с — производство не должно получить неоплаченный заказ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{cOrder}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('неоплаченный заказ не двигается (ADR-10)', () => pm.expect(pm.response.json().status).to.eql('pending_payment'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: mock производства не получал этот заказ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('заказа нет в производстве', () => pm.expect(pm.response.json().orders.filter(o => o.orderId === pm.collectionVariables.get('cOrder'))).to.have.lengthOf(0));",
+                  "pm.test('состояние учтено как игнорированное', () => pm.expect(pm.response.json().ignoredStates).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{cOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_fa292a'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"payment узнал о заказе через Kafka\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: initiatePayment → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cPayKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{paymentUrl}}/orders/{{cOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cPayKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const pay = pm.response.json();",
+                  "pm.test('сумма платежа = сумме заказа (целые копейки)', () => { pm.expect(Number.isInteger(pay.amount.amount)).to.be.true; pm.expect(pay.amount.amount).to.eql(Number(pm.collectionVariables.get('cTotal'))); });",
+                  "pm.collectionVariables.set('cPayId', pay.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: getPayment → paid (вебхук шлюза)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{cOrder}}/payments/{{cPayId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_3b75b8'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"платёж оплачен по вебхуку шлюза\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: orders: pending_payment → accepted, paymentStatus=paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{cOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_43da2b'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted' || j.status === 'cooking' || j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ принят после оплаты (ADR-10) и сразу взят производством, если оно быстрее опроса\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: ждём статус ready (после оплаты заказ пошёл в производство)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{cOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_fed14b'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в ready\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: mock производства — заказ взят в работу после оплаты",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().orders.filter(o => o.orderId === pm.collectionVariables.get('cOrder'));",
+                  "pm.test('заказ взят в производство ровно один раз', () => pm.expect(mine).to.have.lengthOf(1));",
+                  "pm.test('блюд: 1, все ready', () => { pm.expect(mine[0].dishes).to.have.lengthOf(1); pm.expect(mine[0].dishes.every(d => d.status === 'ready')).to.be.true; pm.expect(mine[0].done).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. E3: авария очереди производства — заказ не теряется",
+      "item": [
+        {
+          "name": "d: производство: «авария очереди» (консьюмер orders.state остановлен)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/mode?queue=off"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('dCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{dCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('dTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{dCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: createOrder (оплата в ресторане → accepted)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{dKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{dCart}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('dKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('dOrder', o.id);",
+                  "pm.test('принят сразу', () => pm.expect(o.status).to.eql('accepted'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: пауза 4 с — заказ не теряется и остаётся принятым",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{dOrder}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 4000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('по-прежнему accepted (производство молчит)', () => pm.expect(pm.response.json().status).to.eql('accepted'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: ETA при простое производства остаётся доступным",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{dOrder}}/eta"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('readyAt есть', () => pm.expect(pm.response.json().readyAt).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: orders: метрика зависших заказов растёт",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.text().match(/^orders_stuck_in_accepted_seconds(?:\\{[^}]*\\})? ([0-9.e+-]+)$/m);",
+                  "pm.test('orders_stuck_in_accepted_seconds > 2 (алерт E3)', () => { pm.expect(m, 'метрика не найдена').to.not.be.null; pm.expect(Number(m[1])).to.be.above(2); });",
+                  "const a = pm.response.text().match(/^orders_accepted(?:\\{[^}]*\\})? ([0-9.e+-]+)$/m);",
+                  "pm.test('orders_accepted ≥ 1', () => { pm.expect(a).to.not.be.null; pm.expect(Number(a[1])).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: производство восстановлено",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/mode?queue=on"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: ждём статус ready (после восстановления очереди заказ дошёл до ready)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{dOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_9c0f73'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в ready\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: mock производства — заказ обработан после простоя",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productionUrl}}/_inspect/production"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().orders.filter(o => o.orderId === pm.collectionVariables.get('dOrder'));",
+                  "pm.test('заказ взят в производство ровно один раз', () => pm.expect(mine).to.have.lengthOf(1));",
+                  "pm.test('блюд: 1, все ready', () => { pm.expect(mine[0].dishes).to.have.lengthOf(1); pm.expect(mine[0].dishes.every(d => d.status === 'ready')).to.be.true; pm.expect(mine[0].done).to.be.true; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Метрики и восстановление",
+      "item": [
+        {
+          "name": "orders: метрики производства",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.text();",
+                  "pm.test('события блюд применены', () => pm.expect(t).to.match(/orders_production_events_total\\{[^}]*event=\"dish_status\"[^}]*result=\"applied\"[^}]*\\} [1-9]/));",
+                  "pm.test('события лид-тайма применены', () => pm.expect(t).to.match(/orders_production_events_total\\{[^}]*event=\"lead_time\"[^}]*result=\"applied\"[^}]*\\} [1-9]/));",
+                  "pm.test('переходы cooking и ready посчитаны', () => { pm.expect(t).to.match(/orders_status_transitions_total\\{[^}]*to=\"cooking\"[^}]*\\} [1-9]/); pm.expect(t).to.match(/orders_status_transitions_total\\{[^}]*to=\"ready\"[^}]*\\} [1-9]/); });",
+                  "pm.test('метрика зависших заказов экспортируется', () => pm.expect(t).to.include('orders_stuck_in_accepted_seconds'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: вернуть настройки по умолчанию",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: вернуть настройки по умолчанию",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
