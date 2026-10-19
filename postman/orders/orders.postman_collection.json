@@ -556,7 +556,7 @@
           ]
         },
         {
-          "name": "getOrderEta: типовое время, approximate=true",
+          "name": "getOrderEta: оценка времени (типовая или по загрузке производства)",
           "request": {
             "method": "GET",
             "url": "{{baseUrl}}/orders/{{orderId}}/eta",
@@ -570,7 +570,7 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "const e = pm.response.json();",
-                  "pm.test('приблизительная оценка (до S4)', () => { pm.expect(e.approximate).to.be.true; pm.expect(e.readyAt).to.be.a('string'); pm.expect(e.estimateMinutes).to.be.at.least(1); });"
+                  "pm.test('оценка есть: approximate — boolean (true без свежей загрузки производства, false — по production.lead.time, S4)', () => { pm.expect(e.approximate).to.be.a('boolean'); pm.expect(e.readyAt).to.be.a('string'); pm.expect(e.estimateMinutes).to.be.at.least(1); });"
                 ]
               }
             }

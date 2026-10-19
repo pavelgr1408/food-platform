@@ -15,6 +15,7 @@ env:
   RESTAURANT_URL: http://restaurant:8082
   UPSTREAM_TIMEOUT: 800ms
   PAYMENT_TIMEOUT: 15m
+  LEAD_TIME_TTL: 15m # срок годности production.lead.time для ETA (S4)
   CART_TTL: 168h
 existingSecret: orders-secrets # ключи: DATABASE_URL
 migrations:

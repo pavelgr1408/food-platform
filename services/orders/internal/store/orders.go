@@ -14,7 +14,8 @@ import (
 
 const orderCols = `id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 	payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
-	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at`
+	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at,
+	accepted_at, production_updated_at`
 
 func scanOrder(row pgx.Row) (domain.Order, error) {
 	var (
@@ -26,7 +27,8 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	)
 	err := row.Scan(&o.ID, &o.Number, &o.CartID, &o.RestaurantID, &owner, &o.Channel, &st, &o.StatusReason, &pm,
 		&ps, &ft, &o.Address.Raw, &lat, &lon, &o.Contact.Name, &o.Contact.Phone, &o.Contact.Email,
-		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt)
+		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt,
+		&o.AcceptedAt, &o.ProductionUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}
@@ -37,9 +39,11 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	o.Status, o.PaymentMethod, o.PaymentStatus, o.Fulfillment = domain.Status(st), domain.PaymentMethod(pm), domain.PaymentStatus(ps), domain.FulfillmentType(ft)
 	o.Address.Lat, o.Address.Lon = lat, lon
 	o.CreatedAt, o.UpdatedAt = o.CreatedAt.UTC(), o.UpdatedAt.UTC()
-	if o.PaymentUpdatedAt != nil {
-		t := o.PaymentUpdatedAt.UTC()
-		o.PaymentUpdatedAt = &t
+	for _, p := range []**time.Time{&o.PaymentUpdatedAt, &o.AcceptedAt, &o.ProductionUpdatedAt} {
+		if *p != nil {
+			t := (*p).UTC()
+			*p = &t
+		}
 	}
 	if o.PickupFrom != nil {
 		f, t := o.PickupFrom.UTC(), o.PickupTo.UTC()
@@ -94,8 +98,9 @@ func (s *Store) NextNumber(ctx context.Context, db DBTX, restaurantID string, co
 func (s *Store) InsertOrder(ctx context.Context, db DBTX, o domain.Order, actor string) error {
 	_, err := db.Exec(ctx, `INSERT INTO orders (id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 		payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
-		currency, subtotal, discount_total, total, revision, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23)`,
+		currency, subtotal, discount_total, total, revision, created_at, updated_at, accepted_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23,
+			CASE WHEN $7 = 'accepted' THEN $23::timestamptz END)`,
 		o.ID, o.Number, o.CartID, o.RestaurantID, nilIfEmpty(o.OwnerUserID), o.Channel, string(o.Status), o.StatusReason, string(o.PaymentMethod),
 		string(o.PaymentStatus), string(o.Fulfillment), o.Address.Raw, o.Address.Lat, o.Address.Lon, o.Contact.Name, o.Contact.Phone, o.Contact.Email,
 		o.Currency, o.Subtotal, o.DiscountTotal, o.Total, o.Revision, o.CreatedAt)
@@ -139,7 +144,8 @@ func (s *Store) GetOrder(ctx context.Context, db DBTX, id string, lock bool) (do
 // SetStatus меняет статус и пишет историю. Допустимость перехода проверяет вызывающий
 // (domain.CanTransition) под блокировкой GetOrder(lock=true).
 func (s *Store) SetStatus(ctx context.Context, db DBTX, o domain.Order, to domain.Status, reason, actor string, at time.Time) error {
-	if _, err := db.Exec(ctx, `UPDATE orders SET status = $2, status_reason = $3, updated_at = $4 WHERE id = $1`,
+	if _, err := db.Exec(ctx, `UPDATE orders SET status = $2, status_reason = $3, updated_at = $4,
+			accepted_at = CASE WHEN $2 = 'accepted' THEN $4::timestamptz ELSE accepted_at END WHERE id = $1`,
 		o.ID, string(to), reason, at); err != nil {
 		return err
 	}
@@ -214,4 +220,20 @@ func (s *Store) SetPaymentStatus(ctx context.Context, db DBTX, id string, ps dom
 		return 0, ErrNotFound
 	}
 	return rev, err
+}
+
+// SetProductionUpdatedAt запоминает updatedAt применённого снимка блюд.
+func (s *Store) SetProductionUpdatedAt(ctx context.Context, db DBTX, id string, at time.Time) error {
+	_, err := db.Exec(ctx, `UPDATE orders SET production_updated_at = $2 WHERE id = $1`, id, at)
+	return err
+}
+
+// StatusTime возвращает время первого перехода заказа в статус (по журналу); found=false — не было.
+func (s *Store) StatusTime(ctx context.Context, db DBTX, orderID string, st domain.Status) (t time.Time, found bool, err error) {
+	var p *time.Time
+	if err = db.QueryRow(ctx, `SELECT min(at) FROM order_status_history WHERE order_id = $1 AND to_status = $2`,
+		orderID, string(st)).Scan(&p); err != nil || p == nil {
+		return time.Time{}, false, err
+	}
+	return p.UTC(), true, nil
 }
