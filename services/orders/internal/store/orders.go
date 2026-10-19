@@ -14,7 +14,7 @@ import (
 
 const orderCols = `id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 	payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
-	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at`
+	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at`
 
 func scanOrder(row pgx.Row) (domain.Order, error) {
 	var (
@@ -26,7 +26,7 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	)
 	err := row.Scan(&o.ID, &o.Number, &o.CartID, &o.RestaurantID, &owner, &o.Channel, &st, &o.StatusReason, &pm,
 		&ps, &ft, &o.Address.Raw, &lat, &lon, &o.Contact.Name, &o.Contact.Phone, &o.Contact.Email,
-		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt)
+		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}
@@ -37,6 +37,10 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	o.Status, o.PaymentMethod, o.PaymentStatus, o.Fulfillment = domain.Status(st), domain.PaymentMethod(pm), domain.PaymentStatus(ps), domain.FulfillmentType(ft)
 	o.Address.Lat, o.Address.Lon = lat, lon
 	o.CreatedAt, o.UpdatedAt = o.CreatedAt.UTC(), o.UpdatedAt.UTC()
+	if o.PaymentUpdatedAt != nil {
+		t := o.PaymentUpdatedAt.UTC()
+		o.PaymentUpdatedAt = &t
+	}
 	if o.PickupFrom != nil {
 		f, t := o.PickupFrom.UTC(), o.PickupTo.UTC()
 		o.PickupFrom, o.PickupTo = &f, &t
@@ -179,8 +183,11 @@ func (s *Store) History(ctx context.Context, db DBTX, orderID string) ([]History
 }
 
 // UnpaidBefore возвращает id заказов в pending_payment, созданных раньше before (старые первыми).
-func (s *Store) UnpaidBefore(ctx context.Context, db DBTX, before time.Time, limit int) ([]string, error) {
-	rows, err := db.Query(ctx, `SELECT id FROM orders WHERE status = 'pending_payment' AND created_at < $1 ORDER BY created_at LIMIT $2`, before, limit)
+// Заказы с paymentStatus=unknown (деньги могли уйти, итог неизвестен) отменяются только по истечении
+// более длинного срока unknownBefore: решение за payment-service, а не за таймером.
+func (s *Store) UnpaidBefore(ctx context.Context, db DBTX, before, unknownBefore time.Time, limit int) ([]string, error) {
+	rows, err := db.Query(ctx, `SELECT id FROM orders WHERE status = 'pending_payment' AND created_at < $1
+		AND (payment_status <> 'unknown' OR created_at < $2) ORDER BY created_at LIMIT $3`, before, unknownBefore, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -194,4 +201,17 @@ func (s *Store) UnpaidBefore(ctx context.Context, db DBTX, before time.Time, lim
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// SetPaymentStatus фиксирует статус оплаты, пришедший от payment-service. paid не перезаписывается другим статусом.
+// Для paid revision увеличивается (orders.state публикуется повторно, ADR-10) — bumpRevision=true; новая ревизия возвращается.
+func (s *Store) SetPaymentStatus(ctx context.Context, db DBTX, id string, ps domain.PaymentStatus, at time.Time, bumpRevision bool) (int, error) {
+	var rev int
+	err := db.QueryRow(ctx, `UPDATE orders SET payment_status = $2, payment_updated_at = $3,
+			revision = revision + CASE WHEN $4 THEN 1 ELSE 0 END, updated_at = $3
+		WHERE id = $1 AND payment_status <> 'paid' RETURNING revision`, id, string(ps), at, bumpRevision).Scan(&rev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return rev, err
 }

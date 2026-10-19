@@ -72,7 +72,7 @@ newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
 SCENARIO     ?= catalog
-contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog или orders (см. docs/dev.md)
+contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog, orders или payment (см. docs/dev.md)
 	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
 contract-check-ci: pydeps-check ## contract-check без Docker: сам собирает и запускает restaurant/menu/orders (нужен Postgres на :5432)
 	PYTHON=$(PYTHON) tools/contract-check/ci.sh

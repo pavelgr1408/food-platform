@@ -58,3 +58,14 @@ make contract-check SCENARIO=orders
 ```bash
 docker compose --project-directory . -f deploy/compose/infra.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic orders.state --from-beginning --property print.key=true --property print.headers=true --timeout-ms 5000
 ```
+
+## Деньги (S3): payment
+```bash
+make up SLICE="restaurant menu orders payment mock-externals"
+make newman SERVICE=payment
+make contract-check SCENARIO=payment
+```
+`payment` получает заказы из Kafka (`orders.state`) и ходит в платёжный шлюз `GATEWAY_URL` — в срезе это `mock-externals` (:9091, модуль `payment`),
+который по умолчанию подтверждает оплату вебхуком через `MOCK_DELAY` (2 с). Сценарии Postman «отказ», «таймаут → unknown», «потерянный вебхук» сами
+переключают режимы мока через `/_admin/gateway/*` и возвращают их обратно. Коллекцию можно гонять повторно без пересоздания среза.
+Ручная проверка двойного списания: `curl localhost:9091/_inspect/payments` — на заказ ровно одна операция шлюза.

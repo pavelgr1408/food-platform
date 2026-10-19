@@ -1,0 +1,2615 @@
+{
+  "info": {
+    "name": "payment-service",
+    "description": "Деньги (S3): платёж онлайн-картой, mock-шлюз, вебхуки (HMAC), reconciler, идемпотентность initiatePayment, согласование с orders (ADR-10). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\". Запуск: make newman SERVICE=payment. Ресторан №4 работает 24/7. Сценарии 3–5 управляют mock-шлюзом через /_admin/gateway/*.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "ordersUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "menuUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "mockUrl",
+      "value": "http://localhost:9091"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000004"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Подготовка",
+      "item": [
+        {
+          "name": "меню: id бургера",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const cv = pm.collectionVariables;",
+                  "const it = pm.response.json().categories.flatMap(c => c.items).find(i => i.name === 'BLT Классик');",
+                  "pm.test('бургер есть в меню', () => pm.expect(it).to.exist);",
+                  "cv.set('burgerId', it.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: сброс режимов и операций",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Probes",
+      "item": [
+        {
+          "name": "payment: liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "payment: readiness (БД, Kafka)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/actuator/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('БД и Kafka UP', () => { const c = pm.response.json().components; pm.expect(c.db.status).to.eql('UP'); pm.expect(c.kafka.status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/health"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Онлайн-оплата: заказ → платёж → вебхук → accepted",
+      "item": [
+        {
+          "name": "a: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('aCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: updateCartItems (бургер×1)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{aCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('aTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{aCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: createOrder → pending_payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{aCart}}\",\n  \"paymentMethod\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('aOrder', pm.response.json().id);",
+                  "pm.test('заказ ждёт оплаты', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_712254'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('payment узнал о заказе через Kafka', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: payment-methods: онлайн-картой доступна",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('online_card включён, pos выключен (самовывоз, выбрана онлайн-оплата)', () => { const m = pm.response.json(); pm.expect(m.find(x => x.type === 'online_card').enabled).to.be.true; pm.expect(m.find(x => x.type === 'pos').enabled).to.be.false; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: initiatePayment без Idempotency-Key → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('код IDEMPOTENCY_KEY_REQUIRED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: initiatePayment → 201 (платёж создан, шлюз вызван)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "const TOTAL = 'aTotal';",
+                  "pm.test('сумма в payment = сумме заказа, целые копейки', () => { const a = pm.response.json().amount; pm.expect(Number.isInteger(a.amount)).to.be.true; pm.expect(a.amount).to.eql(Number(cv.get(TOTAL))); pm.expect(a.currency).to.eql('RUB'); });",
+                  "pm.collectionVariables.set('payId', pm.response.json().id);",
+                  "cv.set('aFirstBody', pm.response.text());",
+                  "pm.test('создан, платёжная ссылка шлюза', () => { const p = pm.response.json(); pm.expect(['pending', 'authorized', 'paid']).to.include(p.status); pm.expect(p.attempt).to.eql(1); pm.expect(p.paymentUrl).to.be.a('string'); });",
+                  "pm.test('Location', () => pm.expect(pm.response.headers.get('Location')).to.eql('/orders/' + cv.get('aOrder') + '/payments/' + cv.get('payId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: повтор с тем же ключом → тот же 201 (ДЗ-10)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "pm.test('Idempotent-Replay: true', () => pm.expect(pm.response.headers.get('Idempotent-Replay')).to.eql('true'));",
+                  "pm.test('тот же ответ байт-в-байт: второго платежа и второго вызова шлюза нет', () => pm.expect(pm.response.text()).to.eql(cv.get('aFirstBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: тот же ключ с другим телом → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"courier_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: новый ключ, пока платёж идёт → 409 (двойного списания нет)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey2}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey2', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('платёж уже идёт: PAYMENT_IN_PROGRESS и id живого платежа', () => { const j = pm.response.json(); pm.expect(j.code).to.eql('PAYMENT_IN_PROGRESS'); pm.expect(j.paymentId).to.eql(pm.collectionVariables.get('payId')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: getPayment → paid (вебхук шлюза)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_212199'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('платёж оплачен по вебхуку', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: paid финален: paidAt и сумма",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const cv = pm.collectionVariables;",
+                  "const TOTAL = 'aTotal';",
+                  "pm.test('сумма в payment = сумме заказа, целые копейки', () => { const a = pm.response.json().amount; pm.expect(Number.isInteger(a.amount)).to.be.true; pm.expect(a.amount).to.eql(Number(cv.get(TOTAL))); pm.expect(a.currency).to.eql('RUB'); });",
+                  "pm.test('paid, paidAt заполнен', () => { const p = pm.response.json(); pm.expect(p.status).to.eql('paid'); pm.expect(p.paidAt).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: orders: pending_payment → accepted, paymentStatus=paid (ADR-10)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{aOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_747506'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted' && j.paymentStatus === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('заказ принят после оплаты', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: оплата уже оплаченного заказа → 409 ALREADY_PAID",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey3}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey3', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('ALREADY_PAID', () => pm.expect(pm.response.json().code).to.eql('ALREADY_PAID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: gateway (mock): ровно одна операция на заказ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_inspect/payments"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const cv = pm.collectionVariables;",
+                  "const ops = pm.response.json().operations.filter(o => o.orderId === cv.get('aOrder'));",
+                  "pm.test('одна операция шлюза, сумма в копейках совпадает', () => { pm.expect(ops).to.have.lengthOf(1); pm.expect(ops[0].amount).to.eql(Number(cv.get('aTotal'))); cv.set('aGw', ops[0].id); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: шлюз повторяет вебхук (тот же eventId)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/redeliver?id={{aGw}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: после дубликата вебхука платёж не изменился",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('по-прежнему paid, attempt=1', () => { const p = pm.response.json(); pm.expect(p.status).to.eql('paid'); pm.expect(p.attempt).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Отказ банка → повторная попытка",
+      "item": [
+        {
+          "name": "mock: следующая операция будет отклонена",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/next?outcome=declined"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('dCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: updateCartItems (бургер×1)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{dCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('dTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{dCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: createOrder → pending_payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{dCart}}\",\n  \"paymentMethod\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('dOrder', pm.response.json().id);",
+                  "pm.test('заказ ждёт оплаты', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_367193'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('payment узнал о заказе через Kafka', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: initiatePayment (шлюз отклонит позже)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('payId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: getPayment → declined",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_448227'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'declined');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('платёж отклонён', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: declineReason заполнен, заказ остаётся pending_payment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('declineReason есть', () => pm.expect(pm.response.json().declineReason).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: orders: заказ не отменён, paymentStatus=declined",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{dOrder}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('ещё pending_payment, можно повторить', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('declined'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: новая попытка после отказа → 201, attempt=2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "pm.test('новая попытка attempt=2', () => pm.expect(pm.response.json().attempt).to.eql(2));",
+                  "cv.set('payId2', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: попытка 2 → paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments/{{payId2}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_114336'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('вторая попытка оплачена', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: orders → accepted",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{dOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_120394'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted' && j.paymentStatus === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('заказ принят', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: первая попытка осталась declined (история не переписывается)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{dOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('declined', () => pm.expect(pm.response.json().status).to.eql('declined'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Таймаут шлюза → unknown → reconciler",
+      "item": [
+        {
+          "name": "mock: шлюз «молчит» при создании, не отвечает на опрос и не шлёт вебхуков",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/mode?init=timeout&status=error&webhooks=off"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('uCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: updateCartItems (бургер×1)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{uCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('uTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{uCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: createOrder → pending_payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{uCart}}\",\n  \"paymentMethod\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('uOrder', pm.response.json().id);",
+                  "pm.test('заказ ждёт оплаты', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{uOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_424636'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('payment узнал о заказе через Kafka', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: initiatePayment при таймауте шлюза → 202 unknown",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{uOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));",
+                  "const cv = pm.collectionVariables;",
+                  "pm.collectionVariables.set('payId', pm.response.json().id);",
+                  "pm.test('202: исход неизвестен', () => pm.expect(pm.response.json().status).to.eql('unknown'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: повторная оплата, пока статус неизвестен → 409 (защита от двойного списания)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey2}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{uOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey2', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('PAYMENT_STATUS_UNKNOWN: платить повторно нельзя', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_STATUS_UNKNOWN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock: шлюз снова отвечает",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/mode?init=ok&status=ok&webhooks=on"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: reconciler выяснил исход → paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{uOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_508741'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('reconciler довёл unknown до paid', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: orders → accepted",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{uOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_924727'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted' && j.paymentStatus === 'paid');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('заказ принят', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "u: у шлюза одна операция — дубля списания нет",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_inspect/payments"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const ops = pm.response.json().operations.filter(o => o.orderId === pm.collectionVariables.get('uOrder'));",
+                  "pm.test('ровно одна операция (идемпотентный Create по ключу = paymentId)', () => pm.expect(ops).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Потерянный вебхук → опрос шлюза",
+      "item": [
+        {
+          "name": "mock: вебхуки выключены (потеря доставки)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/mode?webhooks=off"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: updateCartItems (бургер×1)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{lCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('lTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{lCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: createOrder → pending_payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{lCart}}\",\n  \"paymentMethod\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('lOrder', pm.response.json().id);",
+                  "pm.test('заказ ждёт оплаты', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{lOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_532998'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('payment узнал о заказе через Kafka', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: initiatePayment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{lOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('payId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: без вебхука платёж закрывается опросом шлюза → paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{lOrder}}/payments/{{payId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_4034'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 80) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('reconciler нашёл paid без вебхука', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "l: orders → accepted",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{lOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_488353'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'accepted');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('заказ принят', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock: вебхуки включены обратно",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/mode?webhooks=on"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Безопасность вебхуков (HMAC)",
+      "item": [
+        {
+          "name": "вебхук без подписи → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/webhooks/payments/gateway",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-newman-1\",\n  \"orderId\": \"00000000-0000-4000-8000-000000000001\",\n  \"paymentId\": \"00000000-0000-4000-8000-000000000002\",\n  \"status\": \"paid\",\n  \"externalRef\": \"gw_x\",\n  \"amount\": {\n    \"amount\": 100,\n    \"currency\": \"RUB\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SIGNATURE', () => pm.expect(pm.response.json().code).to.eql('INVALID_SIGNATURE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "вебхук с неверной подписью → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Signature",
+                "value": "t=1,v1=deadbeef"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/webhooks/payments/gateway",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-newman-1\",\n  \"orderId\": \"00000000-0000-4000-8000-000000000001\",\n  \"paymentId\": \"00000000-0000-4000-8000-000000000002\",\n  \"status\": \"paid\",\n  \"externalRef\": \"gw_x\",\n  \"amount\": {\n    \"amount\": 100,\n    \"currency\": \"RUB\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "вебхук с верной подписью, но чужой заказ → не 2xx-успех для неизвестного платежа",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/webhooks/payments/gateway",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt-newman-1\",\n  \"orderId\": \"00000000-0000-4000-8000-000000000001\",\n  \"paymentId\": \"00000000-0000-4000-8000-000000000002\",\n  \"status\": \"paid\",\n  \"externalRef\": \"gw_x\",\n  \"amount\": {\n    \"amount\": 100,\n    \"currency\": \"RUB\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const secret = pm.environment.get('gatewaySecret') || 'dev-gateway-webhook-secret';",
+                  "const body = pm.request.body.raw; const t = Math.floor(Date.now() / 1000);",
+                  "const mac = CryptoJS.HmacSHA256(t + '.' + body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Signature', value: 't=' + t + ',v1=' + mac });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('подпись принята (не 401), неизвестный платёж отвергнут 4xx', () => { pm.expect(pm.response.code).to.not.eql(401); pm.expect(pm.response.code).to.be.within(400, 499); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Негативные сценарии и владелец заказа",
+      "item": [
+        {
+          "name": "несуществующий заказ → 404 ORDER_NOT_FOUND + Retry-After",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/00000000-0000-4000-8000-0000000000ff/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('ORDER_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'));",
+                  "pm.test('Retry-After (событие могло не дойти)', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('1'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "initiatePayment: заказ не найден → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/00000000-0000-4000-8000-0000000000ff/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "getPayment: платёж не найден → 404 PAYMENT_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{aOrder}}/payments/00000000-0000-4000-8000-0000000000ff"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('PAYMENT_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('nCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: updateCartItems (бургер×1)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{nCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('nTotal', pm.response.json().total.amount);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{nCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: createOrder → pending_payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{nCart}}\",\n  \"paymentMethod\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const cv = pm.collectionVariables;",
+                  "cv.set('nOrder', pm.response.json().id);",
+                  "pm.test('заказ ждёт оплаты', () => { const o = pm.response.json(); pm.expect(o.status).to.eql('pending_payment'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_23562'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 400); postman.setNextRequest(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test('payment узнал о заказе через Kafka', () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: способ, отличный от выбранного в заказе → 422",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"courier_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('PAYMENT_METHOD_NOT_ALLOWED', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_METHOD_NOT_ALLOWED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: неизвестный способ → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"bitcoin\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: битый JSON → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{not json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: bob не видит заказ alice → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: гость не видит заказ alice → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: bob не может оплатить заказ alice → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idemKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: alice видит свой заказ → 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Метрики",
+      "item": [
+        {
+          "name": "payment /metrics: платежи, шлюз, вебхуки, статусы",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.text();",
+                  "['payment_created_total', 'payment_status_transitions_total', 'payment_gateway_calls_total', 'payment_gateway_call_duration_seconds', 'payment_webhooks_total', 'payment_reconcile_total', 'payment_unknown_payments', 'http_requests_total', 'outbox_pending'].forEach(m => pm.test('метрика ' + m, () => pm.expect(t).to.include(m)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

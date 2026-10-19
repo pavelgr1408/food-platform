@@ -35,6 +35,7 @@ type Waker interface{ Wake() }
 // Config — настройки сценариев.
 type Config struct {
 	PaymentTimeout  time.Duration // pending_payment старше — отменяется (payment_timeout)
+	UnknownGrace    time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
 	CartTTL         time.Duration // открытые корзины без изменений старше — удаляются
 	PrepMinutes     int           // типовое время приготовления (ETA до S4)
 	DeliveryMinutes int           // типовое время доставки поверх приготовления
@@ -44,6 +45,9 @@ type Config struct {
 func (c *Config) defaults() {
 	if c.PaymentTimeout <= 0 {
 		c.PaymentTimeout = 15 * time.Minute
+	}
+	if c.UnknownGrace <= 0 {
+		c.UnknownGrace = time.Hour
 	}
 	if c.CartTTL <= 0 {
 		c.CartTTL = 7 * 24 * time.Hour

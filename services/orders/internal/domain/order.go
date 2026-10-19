@@ -60,8 +60,10 @@ type PaymentStatus string
 
 // Статусы оплаты (PaymentStatus в _common.yaml).
 const (
-	PaymentPending PaymentStatus = "pending"
-	PaymentPaid    PaymentStatus = "paid"
+	PaymentPending  PaymentStatus = "pending"
+	PaymentPaid     PaymentStatus = "paid"
+	PaymentDeclined PaymentStatus = "declined"
+	PaymentUnknown  PaymentStatus = "unknown"
 )
 
 // InitialStatus — начальный статус заказа: онлайн-оплата ждёт платёж, остальное принимается сразу.
@@ -116,6 +118,7 @@ type Order struct {
 	StatusReason                     string
 	PaymentMethod                    PaymentMethod
 	PaymentStatus                    PaymentStatus
+	PaymentUpdatedAt                 *time.Time // время последнего применённого события оплаты
 	Fulfillment                      FulfillmentType
 	Address                          Address
 	Contact                          Contact

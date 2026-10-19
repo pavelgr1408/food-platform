@@ -321,34 +321,45 @@ func ptr[T any](v T) *T { return &v }
 // Запрещённый переход → ErrInvalidTransition. Пишет историю и orders.status в той же транзакции.
 func (s *Service) Transition(ctx context.Context, orderID string, to domain.Status, reason, actor string) (o domain.Order, changed bool, err error) {
 	err = pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
-		cur, err := s.st.GetOrder(ctx, tx, orderID, true)
-		if err != nil {
-			return err
-		}
-		o = cur
-		if cur.Status == to {
-			return nil
-		}
-		if !domain.CanTransition(cur.Status, to) {
-			return fmt.Errorf("%w: %s → %s", ErrInvalidTransition, cur.Status, to)
-		}
-		at := s.now()
-		if err := s.st.SetStatus(ctx, tx, cur, to, reason, actor, at); err != nil {
-			return err
-		}
-		o.Status, o.StatusReason, o.UpdatedAt = to, reason, at
-		changed = true
-		return enqueueStatus(ctx, tx, o, to, reason, at)
+		var err error
+		o, changed, err = s.transitionTx(ctx, tx, orderID, to, reason, actor)
+		return err
 	})
 	if err != nil {
 		return domain.Order{}, false, err
 	}
 	if changed {
 		s.wake()
-		if s.m != nil {
-			s.m.Transitions.WithLabelValues(string(to)).Inc()
-		}
-		s.log.InfoContext(ctx, "order status changed", "order_id", orderID, "status", to, "reason", reason, "actor", actor)
+		s.noteTransition(ctx, o, to, reason, actor)
 	}
 	return o, changed, nil
+}
+
+// transitionTx — Transition внутри чужой транзакции (консьюмеры: эффект и запись inbox атомарны).
+// Побочные эффекты после коммита (wake, метрики, лог) выполняет вызывающий через noteTransition.
+func (s *Service) transitionTx(ctx context.Context, tx pgx.Tx, orderID string, to domain.Status, reason, actor string) (o domain.Order, changed bool, err error) {
+	cur, err := s.st.GetOrder(ctx, tx, orderID, true)
+	if err != nil {
+		return domain.Order{}, false, err
+	}
+	o = cur
+	if cur.Status == to {
+		return o, false, nil
+	}
+	if !domain.CanTransition(cur.Status, to) {
+		return domain.Order{}, false, fmt.Errorf("%w: %s → %s", ErrInvalidTransition, cur.Status, to)
+	}
+	at := s.now()
+	if err := s.st.SetStatus(ctx, tx, cur, to, reason, actor, at); err != nil {
+		return domain.Order{}, false, err
+	}
+	o.Status, o.StatusReason, o.UpdatedAt = to, reason, at
+	return o, true, enqueueStatus(ctx, tx, o, to, reason, at)
+}
+
+func (s *Service) noteTransition(ctx context.Context, o domain.Order, to domain.Status, reason, actor string) {
+	if s.m != nil {
+		s.m.Transitions.WithLabelValues(string(to)).Inc()
+	}
+	s.log.InfoContext(ctx, "order status changed", "order_id", o.ID, "status", to, "reason", reason, "actor", actor)
 }

@@ -2,36 +2,63 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/pavelgr1408/food-platform/pkg/pgxutil"
 	"github.com/pavelgr1408/food-platform/services/orders/internal/domain"
 )
 
 // ReasonPaymentTimeout — причина автоматической отмены неоплаченного заказа.
 const ReasonPaymentTimeout = "payment_timeout"
 
-// ExpireUnpaid отменяет заказы в pending_payment старше PaymentTimeout. Возвращает число отменённых.
-// Гонка с оплатой безопасна: Transition перечитывает статус под блокировкой строки, и если
-// заказ успели принять (accepted), переход cancelled запрещён автоматом — заказ пропускается.
+// ExpireUnpaid отменяет заказы в pending_payment старше PaymentTimeout (с paymentStatus=unknown — старше
+// PaymentTimeout+UnknownGrace). Возвращает число отменённых.
 func (s *Service) ExpireUnpaid(ctx context.Context) (int, error) {
-	ids, err := s.st.UnpaidBefore(ctx, s.pool, s.now().Add(-s.cfg.PaymentTimeout), 100)
+	now := s.now()
+	ids, err := s.st.UnpaidBefore(ctx, s.pool, now.Add(-s.cfg.PaymentTimeout), now.Add(-s.cfg.PaymentTimeout-s.cfg.UnknownGrace), 100)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, id := range ids {
-		_, changed, err := s.Transition(ctx, id, domain.StatusCancelled, ReasonPaymentTimeout, actorSystem)
-		switch {
-		case errors.Is(err, ErrInvalidTransition):
-			continue
-		case err != nil:
+		changed, err := s.cancelIfUnpaid(ctx, id)
+		if err != nil {
 			return n, err
-		case changed:
+		}
+		if changed {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// cancelIfUnpaid отменяет заказ, только если под блокировкой он всё ещё pending_payment. Гонка с оплатой:
+// автомат разрешает accepted → cancelled (отмена принятого заказа), поэтому одной таблицы переходов мало —
+// без этой проверки таймер мог бы отменить заказ, который payment как раз успел принять.
+func (s *Service) cancelIfUnpaid(ctx context.Context, id string) (bool, error) {
+	var o domain.Order
+	var changed bool
+	err := pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		cur, err := s.st.GetOrder(ctx, tx, id, true)
+		if err != nil {
+			return err
+		}
+		if cur.Status != domain.StatusPendingPayment || cur.PaymentStatus == domain.PaymentPaid {
+			return nil
+		}
+		o, changed, err = s.transitionTx(ctx, tx, id, domain.StatusCancelled, ReasonPaymentTimeout, actorSystem)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	if changed {
+		s.wake()
+		s.noteTransition(ctx, o, domain.StatusCancelled, ReasonPaymentTimeout, actorSystem)
+	}
+	return changed, nil
 }
 
 // PurgeCarts удаляет заброшенные корзины.

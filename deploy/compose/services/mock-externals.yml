@@ -1,4 +1,5 @@
-# Срез: внешние системы (моки). Включаемые модули — MOCKS=payment,pos,production,courier,push (появляются с S3…S9).
+# Срез: внешние системы (моки). Включаемые модули — MOCKS=ping,payment,production,courier,push (появляются с S3…S9).
+# payment — платёжный шлюз (:9091): вебхуки с HMAC уходят в payment-service.
 services:
   mock-externals:
     build:
@@ -8,9 +9,10 @@ services:
         SRC: tools/mock-externals
         TARGET: ./tools/mock-externals
     environment:
-      MOCKS: ${MOCKS:-ping}
+      MOCKS: ${MOCKS:-ping,payment}
       MOCK_DELAY: ${MOCK_DELAY:-2s}
       KAFKA_BROKERS: kafka:9092
+      MOCK_PAYMENT_WEBHOOK_URL: http://payment:8085/webhooks/payments/gateway
     ports:
       - "9090-9099:9090-9099"
     depends_on:

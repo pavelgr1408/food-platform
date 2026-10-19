@@ -8,6 +8,7 @@ type Metrics struct {
 	Transitions      *prometheus.CounterVec // to
 	UpstreamFailures *prometheus.CounterVec // upstream
 	CartsPurged      prometheus.Counter
+	PaidAfterCancel  prometheus.Counter
 }
 
 // NewMetrics создаёт метрики; зарегистрируйте их через Collectors().
@@ -21,10 +22,12 @@ func NewMetrics() *Metrics {
 			Help: "Неудачные вызовы menu/restaurant."}, []string{"upstream"}),
 		CartsPurged: prometheus.NewCounter(prometheus.CounterOpts{Name: "orders_carts_purged_total",
 			Help: "Удалённые заброшенные корзины."}),
+		PaidAfterCancel: prometheus.NewCounter(prometheus.CounterOpts{Name: "orders_paid_after_cancel_total",
+			Help: "Оплата пришла по уже отменённому заказу — нужен возврат (тревога)."}),
 	}
 }
 
 // Collectors — для metrics.Registry.MustRegister.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged}
+	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged, m.PaidAfterCancel}
 }
