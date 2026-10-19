@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -193,6 +194,9 @@ func TestCreateOrderRequiresIdempotencyKey(t *testing.T) {
 	}
 }
 
+// номер зависит от текущей даты (часы в HTTP-тестах реальные)
+var numberRe = regexp.MustCompile(`^R1-\d{6}-0001$`)
+
 // DoD S2: повтор того же запроса возвращает тот же 201 без нового заказа (MG2).
 func TestIdempotentReplayReturnsSameOrder(t *testing.T) {
 	srv, _, _, count := newServer(t)
@@ -204,7 +208,7 @@ func TestIdempotentReplayReturnsSameOrder(t *testing.T) {
 	}
 	o := first.json(t)
 	if o["status"] != "pending_payment" || o["paymentStatus"] != "pending" || o["paymentMethod"] != "online_card" ||
-		o["number"] != "R1-261018-0001" {
+		!numberRe.MatchString(o["number"].(string)) {
 		t.Fatalf("order: %s", first.Body)
 	}
 	if first.Header.Get("Location") != "/orders/"+o["id"].(string) {
