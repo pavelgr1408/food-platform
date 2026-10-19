@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: menu-service — REST API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Меню и актуальные цены ресторана, проверка доступности позиций. Хранилище —
     menu-db. (UC-ORD-01/02/03)
@@ -181,6 +181,9 @@ components:
         menuItemId: { type: string, format: uuid }
         quantity: { type: integer }
         available: { type: boolean }
+        name:
+          type: string
+          description: Название позиции (для снапшота в корзине/заказе). Отсутствует для `ITEM_NOT_FOUND`.
         currentPrice:
           allOf:
             - $ref: '_common.yaml#/components/schemas/Money'
