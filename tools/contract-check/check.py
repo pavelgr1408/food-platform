@@ -4,6 +4,7 @@
 Использование (сервисы запущены, SEED_ON_START=true):
   .dev/venv/bin/python tools/contract-check/check.py catalog [--restaurant http://localhost:8082] [--menu http://localhost:8083]
   .dev/venv/bin/python tools/contract-check/check.py orders  [... --orders http://localhost:8084]   # нужен срез restaurant + menu + orders
+  .dev/venv/bin/python tools/contract-check/check.py payment [... --payment http://localhost:8085]  # + payment и mock шлюза (:9091)
 
 Для каждого запроса сценария находится операция по методу и шаблону пути, схема ответа берётся из
 `responses.<status>.content.<media type>.schema` и проверяется jsonschema (Draft 2020-12, форматы uuid/date/…).
@@ -190,16 +191,72 @@ def orders(r, m, o):
     check(S, "GET", o, f"/orders/{ao['id']}", 404, label="getOrder: чужой заказ → 404")
 
 
+def payment(r, m, o, p):
+    """Деньги (S3): живые ответы payment против payment.yaml. Нужен срез restaurant + menu + orders + payment + mock шлюза.
+    С Kafka заказ создаётся через orders и доезжает до payment событием orders.state. Без Kafka (CI) заказ
+    засевается в БД payment скриптом ci.sh: CC_PAYMENT_ORDER=<uuid> (сумма — CC_PAYMENT_AMOUNT, копейки)."""
+    import os, time
+    S = "payment.yaml"
+    run = str(int(time.time() * 1000))
+    oid, amount = os.environ.get("CC_PAYMENT_ORDER"), int(os.environ.get("CC_PAYMENT_AMOUNT", "0"))
+    if not oid:
+        R4 = "a1000000-0000-4000-8000-000000000004"
+        menu = json.loads(urllib.request.urlopen(m + f"/restaurants/{R4}/menu").read())
+        burger = next(i for c in menu["categories"] for i in c["items"] if i["name"] == "BLT Классик")
+        cart = check("orders.yaml", "POST", o, "/carts", 201, {"restaurantId": R4, "guest": True, "contact": {"phone": "+79990000098"}}, label="[подготовка] createCart")
+        check("orders.yaml", "PUT", o, f"/carts/{cart['id']}/items", 200, {"items": [{"menuItemId": burger["id"], "quantity": 1}]}, label="[подготовка] updateCartItems")
+        check("orders.yaml", "PUT", o, f"/carts/{cart['id']}/fulfillment", 200, {"type": "pickup"}, label="[подготовка] setCartFulfillment")
+        order = check("orders.yaml", "POST", o, "/orders", 201, {"cartId": cart["id"], "paymentMethod": "online_card"}, headers={"Idempotency-Key": "pc-" + run}, label="[подготовка] createOrder")
+        oid, amount = order["id"], order["total"]["amount"]
+        for _ in range(30):  # ждём orders.state в payment
+            try:
+                urllib.request.urlopen(p + f"/orders/{oid}/payment-methods")
+                break
+            except urllib.error.HTTPError:
+                time.sleep(0.5)
+    ghost = "a1000000-0000-4000-8000-0000000000ff"
+    check(S, "GET", p, f"/orders/{ghost}/payment-methods", 404, label="getPaymentMethods: заказ не найден → 404")
+    check(S, "GET", p, f"/orders/{oid}/payment-methods", 200, label="getPaymentMethods")
+    body = {"method": "online_card"}
+    check(S, "POST", p, f"/orders/{oid}/payments", 400, body, label="initiatePayment: без Idempotency-Key → 400")
+    check(S, "POST", p, f"/orders/{ghost}/payments", 404, body, headers={"Idempotency-Key": "pc-" + run + "-g"}, label="initiatePayment: заказ не найден → 404")
+    check(S, "POST", p, f"/orders/{oid}/payments", 400, {"method": "bitcoin"}, headers={"Idempotency-Key": "pc-" + run + "-m"}, label="initiatePayment: неизвестный способ → 400")
+    check(S, "POST", p, f"/orders/{oid}/payments", 422, {"method": "courier_card"}, headers={"Idempotency-Key": "pc-" + run + "-c"}, label="initiatePayment: способ не совпадает с заказом → 422")
+    pay = check(S, "POST", p, f"/orders/{oid}/payments", 201, body, headers={"Idempotency-Key": "pc-" + run}, label="initiatePayment")
+    if pay and amount and pay["amount"]["amount"] != amount:
+        FAILS.append("сумма платежа != сумме заказа"); print("FAIL сумма платежа не равна сумме заказа")
+    check(S, "POST", p, f"/orders/{oid}/payments", 201, body, headers={"Idempotency-Key": "pc-" + run}, label="initiatePayment: повтор (replay) → 201")
+    check(S, "POST", p, f"/orders/{oid}/payments", 422, {"method": "pos"}, headers={"Idempotency-Key": "pc-" + run}, label="initiatePayment: тот же ключ, другое тело → 422")
+    if pay:
+        pid = pay["id"]
+        check(S, "POST", p, f"/orders/{oid}/payments", 409, body, headers={"Idempotency-Key": "pc-" + run + "-2"}, label="initiatePayment: платёж уже идёт → 409")
+        check(S, "GET", p, f"/orders/{oid}/payments/{pid}", 200, label="getPayment")
+        check(S, "GET", p, f"/orders/{oid}/payments/{ghost}", 404, label="getPayment: 404")
+        for _ in range(60):  # шлюз подтверждает вебхуком (или опросом reconciler)
+            st = json.loads(urllib.request.urlopen(p + f"/orders/{oid}/payments/{pid}").read())["status"]
+            if st == "paid":
+                break
+            time.sleep(0.5)
+        check(S, "GET", p, f"/orders/{oid}/payments/{pid}", 200, label=f"getPayment: после шлюза ({st})")
+        if st != "paid":
+            FAILS.append("платёж не дошёл до paid"); print("FAIL платёж не дошёл до paid, статус", st)
+        check(S, "POST", p, f"/orders/{oid}/payments", 409, body, headers={"Idempotency-Key": "pc-" + run + "-3"}, label="initiatePayment: уже оплачен → 409")
+    # вебхуки описаны в разделе webhooks контракта (не paths): HMAC и дубликаты проверяет postman/payment
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["catalog", "orders"])
+    ap.add_argument("scenario", choices=["catalog", "orders", "payment"])
     ap.add_argument("--restaurant", default="http://localhost:8082")
     ap.add_argument("--menu", default="http://localhost:8083")
     ap.add_argument("--orders", default="http://localhost:8084")
+    ap.add_argument("--payment", default="http://localhost:8085")
     a = ap.parse_args()
     if a.scenario == "catalog":
         catalog(a.restaurant, a.menu)
-    else:
+    elif a.scenario == "orders":
         orders(a.restaurant, a.menu, a.orders)
+    else:
+        payment(a.restaurant, a.menu, a.orders, a.payment)
     print(f"\nпровалов: {len(FAILS)}")
     sys.exit(1 if FAILS else 0)
