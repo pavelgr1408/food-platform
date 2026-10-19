@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman check-template contract-check
+.PHONY: new-service keys docker-build newman check-template contract-check contract-check-ci
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -74,6 +74,8 @@ newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [
 SCENARIO     ?= catalog
 contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog или orders (см. docs/dev.md)
 	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
+contract-check-ci: pydeps-check ## contract-check без Docker: сам собирает и запускает restaurant/menu/orders (нужен Postgres на :5432)
+	PYTHON=$(PYTHON) tools/contract-check/ci.sh
 check-template: pydeps-check ## Шаблон сервиса генерирует собираемый и тестируемый сервис
 	tools/new-service/check-template.sh
 

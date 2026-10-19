@@ -44,6 +44,8 @@ make contract-check
 `SEED_ON_START=true` в срезе загружает демо-рестораны и меню (идемпотентно). `make contract-check` валидирует живые
 ответы обоих сервисов против `contracts/openapi/*.yaml`.
 
+Без Docker (так же работает CI-job `contract-check`): `make contract-check-ci` — сам собирает restaurant, menu и orders, создаёт БД в локальном Postgres (`DB_ADMIN_URL`, по умолчанию `postgres://postgres:postgres@localhost:5432/postgres`), запускает сервисы и прогоняет сценарии `catalog` и `orders`; нужен `psql` и `make py-deps`.
+
 ## Ядро заказа (S2): orders
 ```bash
 make up SLICE="restaurant menu orders"
