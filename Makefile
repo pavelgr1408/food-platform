@@ -83,7 +83,7 @@ check-template: pydeps-check ## Шаблон сервиса генерирует
 .PHONY: lint-contracts
 lint-contracts: check-topics ## Redocly (OpenAPI) + AsyncAPI validate + topics.txt
 	@for f in contracts/openapi/*.yaml; do npx -y @redocly/cli@1.34.5 lint --config redocly.yaml $$f || exit 1; done
-	npx -y @asyncapi/cli@2 validate contracts/asyncapi/kafka-events.yaml
+	cd tools/validate-asyncapi && npm ci --silent && node validate.mjs ../../contracts/asyncapi/kafka-events.yaml
 
 ## ---------- Kubernetes / Helm ----------
 .PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-clean
