@@ -74,6 +74,9 @@ info:
 
     Источник правды — `x-routes` ниже; в gateway она загружается из `services/gateway/internal/routes/routes.json`.
     Паттерны — синтаксис `net/http.ServeMux` (метод + путь); побеждает самый специфичный.
+    Операции с `x-status: planned` (S6: `searchOrder`, `markOrderIssued`, `initiatePosPayment`) уже закрыты на периметре
+    (`required` + роль персонала), чтобы при появлении в сервисе они не оказались открытыми; до тех пор сервис отвечает на них `404`.
+    Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -100,12 +103,14 @@ x-routes:
   - { pattern: 'PUT /carts/{cartId}/items',                            upstream: orders,     access: optional }
   - { pattern: 'PUT /carts/{cartId}/fulfillment',                      upstream: orders,     access: optional }
   - { pattern: 'POST /orders',                                         upstream: orders,     access: optional, sensitive: true }
-  - { pattern: 'GET /orders',                                          upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder, x-status planned (S6)' }
+  - { pattern: 'GET /orders/search',                                   upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder, x-status planned (S6)' }
   - { pattern: 'GET /orders/{orderId}',                                upstream: orders,     access: optional }
   - { pattern: 'GET /orders/{orderId}/eta',                            upstream: orders,     access: optional }
   - { pattern: 'PUT /orders/{orderId}/pickup-slot',                    upstream: orders,     access: optional }
+  - { pattern: 'POST /orders/{orderId}/issuance',                      upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'markOrderIssued, x-status planned (S6)' }
   - { pattern: 'GET /orders/{orderId}/payment-methods',                upstream: payment,    access: optional }
   - { pattern: 'POST /orders/{orderId}/payments',                      upstream: payment,    access: optional, sensitive: true }
+  - { pattern: 'POST /orders/{orderId}/payments/pos',                  upstream: payment,    access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'initiatePosPayment, x-status planned (S6)' }
   - { pattern: 'GET /orders/{orderId}/payments/{paymentId}',           upstream: payment,    access: optional }
 
 paths: {}

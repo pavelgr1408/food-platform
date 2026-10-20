@@ -56,7 +56,7 @@ paths:
       description: >-
         Создаёт пользователя с ролью `CUSTOMER` и статусом `ACTIVE`. Идентификатор —
         телефон в формате E.164, уникален. Пароль хранится как bcrypt-хэш.
-        Ошибки: `400 VALIDATION_FAILED|MALFORMED_JSON`, `409 PHONE_ALREADY_REGISTERED`.
+        Ошибки: `400 VALIDATION_FAILED|INVALID_JSON`, `409 PHONE_ALREADY_REGISTERED`.
       security: []
       requestBody:
         required: true
@@ -301,7 +301,7 @@ components:
   responses:
     BadRequest:
       description: >-
-        Некорректный запрос: невалидный JSON (`MALFORMED_JSON`) или поля (`VALIDATION_FAILED`:
+        Некорректный запрос: невалидный JSON (`INVALID_JSON`) или поля (`VALIDATION_FAILED`:
         `phone` не E.164, пароль вне 6–72 символов, пустой токен).
       content:
         application/problem+json:
