@@ -82,3 +82,22 @@ make newman SERVICE=e2e
 `orders_stuck_in_accepted_seconds`), `POST /_admin/production/leadtime?restaurantId=<id>&minutes=<n>` (зафиксировать время приготовления ресторана),
 `POST /_admin/production/reset`, `GET /_inspect/production`. Коллекция `postman/e2e/` сама задаёт тайминги и возвращает настройки в конце.
 Заказы без `production` в срезе остаются в `accepted`: orders честно показывает типовой ETA (`approximate=true`).
+
+## Периметр (S5): auth + gateway
+```bash
+make keys SERVICE=auth
+AUTH_MODE=jwks make up SLICE="auth restaurant menu orders payment mock-externals gateway"
+make newman SERVICE=gateway     # через http://localhost:8080
+```
+`AUTH_MODE=jwks` заставляет сервисы среза проверять JWT сами (локально по JWKS auth); без переменной они остаются в dev-режиме
+(личность из заголовков `X-User-*`) — так работают остальные срезы и их Postman-коллекции. За gateway личность берётся **только** из токена.
+Входы: клиент `+79990000000 / 123456`, персонал ресторана №4 `+79993333333 / staff123` (остальные — в `services/auth/README.md`).
+
+Без Docker (CI и песочница): `make perimeter-check` (= `tools/perimeter/ci.sh`) собирает auth, restaurant, menu, orders, payment и gateway,
+поднимает их на Postgres :5432 и прогоняет contract-check (`auth`, `gateway`), newman (`auth`, `gateway`) и сценарии, которые Postman не умеет:
+блокировка пользователя после выдачи токена и отказ auth (fail-closed только на sensitive-маршрутах). `HOLD=1` оставляет стенд поднятым.
+`make check-routes` сверяет таблицу маршрутов gateway с `x-routes` и контрактами сервисов.
+
+В k8s: наружу смотрит только ingress → `gateway` (`/`) и → `payment` (`/webhooks/payments`, мимо gateway; лимиты частоты и размера — аннотациями ingress).
+`/metrics` gateway — на отдельном порту `9100` (в чарте `metrics.port`), через ingress недоступен. `TRUSTED_PROXY_CIDRS` в `deploy/values/gateway.yaml`
+нужно привести к CIDR вашего ingress-контроллера.
