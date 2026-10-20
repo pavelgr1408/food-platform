@@ -2,14 +2,15 @@ openapi: 3.1.0
 
 info:
   title: auth-service — REST API
-  version: 1.2.0
+  version: 1.3.0
   description: |-
     Идентификация и доступ: регистрация, вход по телефону, токены, публичные ключи (JWKS),
     проверка токена и полномочий. Хранилище — auth-db.
     Общие компоненты — `_common.yaml`.
 
     **Статус реализации** (`x-status` на операциях):
-    `implemented` — есть в `services/auth`; `planned` — целевая архитектура, реализуется в S5.
+    `implemented` — есть в `services/auth`; `planned` — целевая архитектура, не реализовано.
+    С S5 (версия 1.3.0) все операции этого контракта — `implemented`.
 
     **Проверка токена (ADR-11).** api-gateway и сервисы проверяют JWT **локально** по
     `GET /auth/.well-known/jwks.json` (RS256, кэш с учётом `kid`), а не вызовом auth на каждый
@@ -17,9 +18,20 @@ info:
     (учитывает блокировку пользователя). Операция `verifyToken` (`/auth/token/verify`) из ДЗ-1
     **удалена**: её заменяют JWKS + `introspect`.
 
-    **Формат ошибок.** Сейчас auth отдаёт `AuthError` (наследие Java-версии:
-    `timestamp/status/error/message/path`). В S5 сервис переходит на Problem Details
-    (RFC 9457, `pkg/httpx`) — тогда `AuthError` заменяется на `Problem` из `_common.yaml`.
+    **Что в токене (S5).** Access-токен несёт всё нужное для авторизации без сетевого вызова:
+    `sub` (userId), `roles[]`, `restaurants[]` (рестораны, к которым привязан сотрудник или
+    владелец франшизы; у `CUSTOMER` и `HQ_STAFF` — пусто), `phone`, `iss`, `aud`, `exp`, `iat`, `jti`.
+    Изменение ролей/привязки действует с выдачей следующего токена (≤ TTL access-токена);
+    немедленный эффект — через `introspect`/`authorize`.
+
+    **Ротация ключа без простоя.** JWKS содержит текущий ключ подписи и предыдущие публичные ключи,
+    пока не истёк их срок (TTL access-токена). Потребители перечитывают набор при неизвестном `kid`.
+
+    **Внутренние операции.** `introspect` и `authorize` предназначены для вызовов из кластера
+    (`x-internal: true`); api-gateway **не публикует** их наружу.
+
+    **Формат ошибок.** С S5 — Problem Details (RFC 9457, `application/problem+json`, схема `Problem`
+    из `_common.yaml`) с машиночитаемым `code`; наследие `AuthError` удалено.
 
 servers:
   - url: https://api.blt.example/v1
@@ -44,6 +56,7 @@ paths:
       description: >-
         Создаёт пользователя с ролью `CUSTOMER` и статусом `ACTIVE`. Идентификатор —
         телефон в формате E.164, уникален. Пароль хранится как bcrypt-хэш.
+        Ошибки: `400 VALIDATION_FAILED|MALFORMED_JSON`, `409 PHONE_ALREADY_REGISTERED`.
       security: []
       requestBody:
         required: true
@@ -60,8 +73,8 @@ paths:
         '409':
           description: Телефон уже зарегистрирован
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/login:
@@ -74,7 +87,8 @@ paths:
         Выдаёт пару токенов: access (JWT RS256, короткий TTL) и refresh (непрозрачный,
         одноразовый). Одинаковый ответ 401 на неверный пароль и неизвестный телефон
         (нет перечисления пользователей). Используется всеми клиентскими и персональными
-        приложениями.
+        приложениями. Коды: `401 INVALID_CREDENTIALS`, `403 USER_NOT_ACTIVE`. На api-gateway
+        для этого пути действует отдельный, более строгий лимит запросов (защита от подбора пароля).
       security: []
       requestBody:
         required: true
@@ -91,13 +105,13 @@ paths:
         '401':
           description: Неверный телефон или пароль
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '403':
           description: Пользователь не активен (заблокирован, удалён, не подтверждён)
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/refresh:
@@ -108,7 +122,8 @@ paths:
       summary: Обновить пару токенов
       description: >-
         Ротация refresh-токена: старый отзывается атомарно, выдаётся новая пара.
-        Повторное использование старого токена — 401.
+        Повторное использование старого токена — `401 INVALID_REFRESH_TOKEN`; просроченный —
+        `401 REFRESH_TOKEN_EXPIRED`.
       security: []
       requestBody:
         required: true
@@ -125,13 +140,13 @@ paths:
         '401':
           description: Refresh-токен неизвестен, отозван или просрочен
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '403':
           description: Пользователь не активен
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /auth/logout:
     post:
@@ -162,8 +177,8 @@ paths:
         '401':
           description: Refresh-токен неизвестен, уже отозван или просрочен
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /auth/me:
     get:
@@ -180,25 +195,27 @@ paths:
         '401':
           description: Токен отсутствует, недействителен или просрочен
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '403':
           description: Пользователь не активен
           content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /auth/introspect:
     post:
       tags: [auth-service]
       operationId: introspectToken
       x-status: implemented
+      x-internal: true
       summary: Онлайн-проверка access-токена (internal)
       description: >-
         Проверяет подпись, срок и **актуальность пользователя** (заблокированный → `active=false`).
         Всегда отвечает 200: недействительный токен — `{"active": false}` без данных субъекта
-        (RFC 7662). Только для вызовов из кластера (в S11 — закрыто NetworkPolicy);
-        gateway использует для чувствительных маршрутов вместо проверки только по JWKS.
+        (RFC 7662). Только для вызовов из кластера (api-gateway не публикует путь наружу; в S11 — NetworkPolicy);
+        gateway использует для чувствительных маршрутов (создание заказа, оплата) вместо проверки
+        только по JWKS.
         Заменяет `verifyToken` из ДЗ-1.
       security: []
       requestBody:
@@ -240,12 +257,26 @@ paths:
     post:
       tags: [auth-service]
       operationId: authorize
-      x-status: planned
-      summary: Проверить полномочия на действие (internal, S5)
-      description: >-
-        **Не реализовано (план S5).** Проверяет полномочия субъекта (из Bearer-токена) на
-        действие/область: уровень акции (local/national) или привязку владельца франшизы к
-        ресторану. (UC-PRM-02/03/04, шаги «Проверить полномочия», «Проверить привязку владельца»).
+      x-status: implemented
+      x-internal: true
+      summary: Проверить полномочия субъекта на действие (internal)
+      description: |-
+        Решает, может ли **владелец Bearer-токена** выполнить действие. Решение принимается по
+        **актуальным данным БД** (статус, роли, привязка к ресторанам), а не по claims токена, —
+        поэтому блокировка и смена привязки действуют сразу. Вызывающий сервис передаёт
+        токен пользователя как есть. Отказ — **не ошибка**: `200`, `allowed=false` и `reason`.
+
+        Каталог действий (`action`):
+
+        | action | scope | Кто допускается |
+        |---|---|---|
+        | `promotion.manage` | `local` + `restaurantId` | `FRANCHISE_OWNER`, привязанный к этому ресторану; `HQ_STAFF` |
+        | `promotion.manage` | `national` | только `HQ_STAFF` |
+        | `order.manage` | `restaurantId` обязателен | `STAFF` или `FRANCHISE_OWNER`, привязанные к ресторану; `HQ_STAFF` |
+
+        `reason` для отказа: `NOT_ACTIVE`, `ROLE_REQUIRED`, `NOT_BOUND_TO_RESTAURANT`, `SCOPE_NOT_ALLOWED`.
+        Неизвестное `action` или неполный запрос (нет `restaurantId`/`scope`, где они обязательны) —
+        `400` (`UNKNOWN_ACTION` / `VALIDATION_FAILED`).
         Для простых проверок по ролям достаточно локального анализа токена (`roles`, `restaurants`).
       requestBody:
         required: true
@@ -258,12 +289,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthorizeDecision' }
-        '401':
-          description: Токен отсутствует или недействителен
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/AuthError' }
-        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
 
 components:
 
@@ -274,29 +301,18 @@ components:
   responses:
     BadRequest:
       description: >-
-        Некорректный запрос: невалидный JSON или поля (`phone` не E.164, пароль вне 6–72 символов,
-        пустой токен).
+        Некорректный запрос: невалидный JSON (`MALFORMED_JSON`) или поля (`VALIDATION_FAILED`:
+        `phone` не E.164, пароль вне 6–72 символов, пустой токен).
       content:
-        application/json:
-          schema: { $ref: '#/components/schemas/AuthError' }
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
     TooManyRequests:
-      description: Превышен лимит запросов (rate limit на gateway, S5)
+      description: Превышен лимит запросов (rate limit на api-gateway; заголовок `Retry-After`, секунды)
       content:
         application/problem+json:
           schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   schemas:
-    AuthError:
-      type: object
-      description: >-
-        Текущий формат ошибки auth (наследие Java-версии). В S5 заменяется на Problem Details.
-      required: [timestamp, status, error, message, path]
-      properties:
-        timestamp: { type: string, format: date-time }
-        status: { type: integer, example: 401 }
-        error: { type: string, description: Стандартная фраза статуса, example: Unauthorized }
-        message: { type: string, example: Invalid phone or password }
-        path: { type: string, example: /auth/login }
     Credentials:
       type: object
       required: [phone, password]
@@ -331,8 +347,9 @@ components:
       description: |
         Роли платформы: `CUSTOMER` — клиент, `STAFF` — сотрудник кафе,
         `FRANCHISE_OWNER` — владелец франшизы, `HQ_STAFF` — сотрудник головной компании.
-        Сейчас в коде auth: `CUSTOMER`, `ADMIN`, `COURIER`, `KITCHEN` (из Java-версии);
-        переход на целевой набор — S5.
+        `STAFF` и `FRANCHISE_OWNER` привязаны к ресторанам (`restaurants[]`); `HQ_STAFF` видит всё.
+        Прежние роли Java-версии (`ADMIN`, `COURIER`, `KITCHEN`) удалены в 1.3.0
+        (`ADMIN` → `HQ_STAFF`; курьер и кухня — внешние системы).
       enum: [CUSTOMER, STAFF, FRANCHISE_OWNER, HQ_STAFF]
     TokenPair:
       type: object
@@ -341,8 +358,8 @@ components:
         accessToken:
           type: string
           description: >-
-            JWT RS256. Заголовок: `kid`; claims: `sub` (userId), `phone`, `roles`, `iss`, `aud`,
-            `exp`, `iat`, `jti`. В S5 добавится `restaurants[]`.
+            JWT RS256. Заголовок: `kid`; claims: `sub` (userId), `phone`, `roles`, `restaurants`
+            (UUID ресторанов привязки; может быть пустым), `iss`, `aud`, `exp`, `iat`, `jti`.
         refreshToken: { type: string, description: Непрозрачный одноразовый токен }
         tokenType: { type: string, enum: [Bearer] }
         expiresIn: { type: integer, description: 'TTL access-токена, сек', example: 900 }
@@ -358,7 +375,7 @@ components:
         status: { $ref: '#/components/schemas/UserStatus' }
         restaurants:
           type: array
-          description: Привязка сотрудника/владельца к ресторанам (S5, `user_restaurants`).
+          description: Привязка сотрудника/владельца к ресторанам (`user_restaurants`); пусто у CUSTOMER и HQ_STAFF.
           items: { type: string, format: uuid }
     IntrospectionResult:
       type: object
@@ -370,6 +387,9 @@ components:
         roles:
           type: array
           items: { $ref: '#/components/schemas/Role' }
+        restaurants:
+          type: array
+          items: { type: string, format: uuid }
     Jwks:
       type: object
       required: [keys]
@@ -392,18 +412,22 @@ components:
       properties:
         action:
           type: string
+          enum: [promotion.manage, order.manage]
           example: promotion.manage
         scope:
           type: string
           enum: [local, national]
-          description: Область действия для акций.
+          description: Область действия; обязательна для `promotion.manage`.
         restaurantId:
           type: string
           format: uuid
-          description: Ресторан, к которому проверяется привязка.
+          description: Ресторан, к которому проверяется привязка (для `local` и `order.manage`).
     AuthorizeDecision:
       type: object
       required: [allowed]
       properties:
         allowed: { type: boolean }
-        reason: { type: string }
+        reason:
+          type: string
+          enum: [NOT_ACTIVE, ROLE_REQUIRED, NOT_BOUND_TO_RESTAURANT, SCOPE_NOT_ALLOWED]
+          description: Причина отказа; у `allowed=true` отсутствует.
