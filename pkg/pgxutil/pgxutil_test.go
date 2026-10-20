@@ -125,3 +125,70 @@ func TestMigrateOnlyFlag(t *testing.T) {
 		t.Fatal("env parsing")
 	}
 }
+
+func TestAdoptLegacyKeepsLiveSchemaAndContinues(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	// БД «как у старого auth»: собственная таблица версий и уже применённые 001/002.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE schema_migrations(version BIGINT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+		INSERT INTO schema_migrations(version) VALUES (1),(2);
+		CREATE TABLE t(id int primary key);
+		INSERT INTO t VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	src := pgxutil.Source{Module: "svc", FS: fsOf(map[string]string{
+		"001_create.sql": `CREATE TABLE t(id int primary key);`,
+		"002_seed.sql":   `INSERT INTO t VALUES (1);`,
+		"003_more.sql":   `ALTER TABLE t ADD COLUMN extra text;`,
+	})}
+	for i := 0; i < 2; i++ { // повтор — no-op
+		if err := pgxutil.AdoptLegacy(ctx, pool, nil, src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 001/002 не применяются повторно (иначе CREATE TABLE t упал бы), 003 применяется.
+	if err := pgxutil.Migrate(ctx, pool, nil, src); err != nil {
+		t.Fatalf("migrate after adopt: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE module='svc'`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("applied rows = %d, err=%v", n, err)
+	}
+	var legacy int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations_legacy`).Scan(&legacy); err != nil || legacy != 2 {
+		t.Fatalf("legacy rows = %d, err=%v", legacy, err)
+	}
+	// после перехода применённые файлы неизменяемы
+	changed := pgxutil.Source{Module: "svc", FS: fsOf(map[string]string{
+		"001_create.sql": `CREATE TABLE t(id int primary key, x int);`,
+		"002_seed.sql":   `INSERT INTO t VALUES (1);`,
+		"003_more.sql":   `ALTER TABLE t ADD COLUMN extra text;`,
+	})}
+	if err := pgxutil.Migrate(ctx, pool, nil, changed); err == nil || !strings.Contains(err.Error(), "modified") {
+		t.Fatalf("drift not detected: %v", err)
+	}
+}
+
+func TestAdoptLegacyNoopForFreshAndRejectsUnknownVersion(t *testing.T) {
+	pool := pgtest.New(t)
+	ctx := context.Background()
+	src := pgxutil.Source{Module: "svc", FS: fsOf(map[string]string{"001_a.sql": `CREATE TABLE a(id int);`})}
+	if err := pgxutil.AdoptLegacy(ctx, pool, nil, src); err != nil { // нет таблицы вообще
+		t.Fatal(err)
+	}
+	if err := pgxutil.Migrate(ctx, pool, nil, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgxutil.AdoptLegacy(ctx, pool, nil, src); err != nil { // уже в новом формате
+		t.Fatal(err)
+	}
+	pool2 := pgtest.New(t)
+	if _, err := pool2.Exec(ctx, `CREATE TABLE schema_migrations(version BIGINT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+		INSERT INTO schema_migrations(version) VALUES (1),(7)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgxutil.AdoptLegacy(ctx, pool2, nil, src); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown legacy version must be rejected: %v", err)
+	}
+}

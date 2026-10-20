@@ -1,18 +1,21 @@
 // Package authclient — интерфейс аутентификации/авторизации для сервисов.
 //
-// S0: контракт (Principal, Authenticator, middleware, RequireRole) и dev-реализация
-// из заголовков. S5: добавится реализация с локальной проверкой JWT по JWKS
-// (ADR-11) — код сервисов не изменится, поменяется только конструктор.
+// Контракт (Principal, Authenticator, middleware, RequireRole), dev-реализация из заголовков (S0)
+// и локальная проверка JWT по JWKS (S5, ADR-11, jwks.go). Код обработчиков сервисов не зависит от
+// режима: меняется только конструктор (New / AUTH_MODE).
 package authclient
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/pavelgr1408/food-platform/pkg/config"
 	"github.com/pavelgr1408/food-platform/pkg/httpx"
 )
 
@@ -112,7 +115,7 @@ const (
 )
 
 // DevAuthenticator читает Principal из X-User-Id / X-User-Roles / X-Restaurant-Ids.
-// Нужен, пока нет gateway (до S5). Создаётся только явно и громко предупреждает в лог;
+// Только для разработки срезов без auth. Создаётся только явно и громко предупреждает в лог;
 // в проде (APP_ENV=prod) сервис обязан отказаться стартовать — см. NewFromMode.
 type DevAuthenticator struct{}
 
@@ -135,19 +138,58 @@ func split(s string) []string {
 	return out
 }
 
-// NewFromMode строит Authenticator по AUTH_MODE: "dev" — заголовки (запрещено в prod).
-// Режим "jwks" появится в S5.
-func NewFromMode(mode, env string, log *slog.Logger) (Authenticator, error) {
-	switch mode {
+// Options — настройки аутентификации сервиса (AUTH_MODE и параметры JWKS).
+type Options struct {
+	Mode     string // dev | jwks
+	Env      string // APP_ENV: в prod режим dev запрещён
+	JWKSURL  string
+	Issuer   string
+	Audience string
+}
+
+// OptionsFromEnv читает AUTH_MODE, AUTH_JWKS_URL, AUTH_ISSUER, AUTH_AUDIENCE.
+// Режим по умолчанию — dev (срезы разработки без auth); в проде обязателен jwks.
+func OptionsFromEnv(r *config.Reader, env string) Options {
+	return Options{
+		Mode:     r.String("AUTH_MODE", "dev"),
+		Env:      env,
+		JWKSURL:  r.String("AUTH_JWKS_URL", ""),
+		Issuer:   r.String("AUTH_ISSUER", "restaurant-auth-service"),
+		Audience: r.String("AUTH_AUDIENCE", "restaurant-api"),
+	}
+}
+
+// New строит Authenticator по настройкам: "dev" — заголовки (запрещено в prod), "jwks" — локальная
+// проверка JWT по JWKS auth-service (ADR-11). В режиме jwks ключи читаются ленивой: если auth ещё не
+// поднят, сервис стартует, а запросы с токеном получают 401, пока набор ключей не будет прочитан.
+func New(o Options, log *slog.Logger) (Authenticator, error) {
+	switch o.Mode {
 	case "dev":
-		if env == "prod" {
+		if o.Env == "prod" {
 			return nil, errors.New("AUTH_MODE=dev is forbidden when APP_ENV=prod")
 		}
 		log.Warn("AUTH_MODE=dev: identity is taken from X-User-* headers — NOT SAFE outside local development")
 		return DevAuthenticator{}, nil
+	case "jwks":
+		v, err := NewJWKSVerifier(JWKSOptions{URL: o.JWKSURL, Issuer: o.Issuer, Audience: o.Audience, Log: log})
+		if err != nil {
+			return nil, fmt.Errorf("AUTH_MODE=jwks: %w (AUTH_JWKS_URL, AUTH_ISSUER, AUTH_AUDIENCE)", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := v.Warmup(ctx); err != nil {
+			log.Warn("jwks is not available yet; keys will be loaded on first token", "error", err, "url", o.JWKSURL)
+		}
+		return v.Authenticator(), nil
 	case "":
 		return nil, errors.New("AUTH_MODE is required (dev | jwks)")
 	default:
-		return nil, errors.New("unsupported AUTH_MODE " + mode + " (jwks is implemented in S5)")
+		return nil, errors.New("unsupported AUTH_MODE " + o.Mode + " (dev | jwks)")
 	}
+}
+
+// NewFromMode — краткая форма New для режима dev (сохранена для совместимости и тестов).
+// Для jwks используйте New с Options.
+func NewFromMode(mode, env string, log *slog.Logger) (Authenticator, error) {
+	return New(Options{Mode: mode, Env: env}, log)
 }
