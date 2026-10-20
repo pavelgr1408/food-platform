@@ -11,7 +11,9 @@ services:
       HTTP_PORT: "__PORT__"
       DATABASE_URL: postgres://__NAME__:__NAME__@postgres:5432/__NAME__?sslmode=disable
       KAFKA_BROKERS: kafka:9092
-      AUTH_MODE: dev
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
     ports:
       - "__PORT__:__PORT__"
     depends_on:

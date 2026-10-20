@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/pavelgr1408/food-platform/pkg/authclient"
 	"github.com/pavelgr1408/food-platform/pkg/config"
 )
 
@@ -20,7 +21,7 @@ const (
 // Config — настройки сервиса.
 type Config struct {
 	config.Base
-	AuthMode     string
+	Auth         authclient.Options // AUTH_MODE (dev|jwks), AUTH_JWKS_URL, AUTH_ISSUER, AUTH_AUDIENCE
 	KafkaBrokers []string
 
 	GatewayURL     string        // платёжный шлюз (в dev — mock-externals)
@@ -42,7 +43,6 @@ func Load() (Config, error) {
 	r := config.FromEnv()
 	c := Config{
 		Base:              config.LoadBase(r, "payment", "8085", true),
-		AuthMode:          r.String("AUTH_MODE", "dev"),
 		KafkaBrokers:      r.List("KAFKA_BROKERS", nil),
 		GatewayURL:        r.String("GATEWAY_URL", "http://localhost:9091"),
 		GatewayTimeout:    r.Duration("GATEWAY_TIMEOUT", 5*time.Second),
@@ -92,5 +92,6 @@ func Load() (Config, error) {
 	if c.PollMax < c.PollMin {
 		bad = append(bad, errors.New("RECONCILE_BACKOFF_MAX must be >= RECONCILE_BACKOFF_MIN"))
 	}
+	c.Auth = authclient.OptionsFromEnv(r, c.Env)
 	return c, errors.Join(append([]error{err}, bad...)...)
 }

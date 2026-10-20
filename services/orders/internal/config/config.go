@@ -6,13 +6,14 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/pavelgr1408/food-platform/pkg/authclient"
 	"github.com/pavelgr1408/food-platform/pkg/config"
 )
 
 // Config — настройки сервиса.
 type Config struct {
 	config.Base
-	AuthMode     string
+	Auth         authclient.Options // AUTH_MODE (dev|jwks), AUTH_JWKS_URL, AUTH_ISSUER, AUTH_AUDIENCE
 	KafkaBrokers []string
 
 	MenuURL         string        // menu-service
@@ -34,7 +35,6 @@ func Load() (Config, error) {
 	r := config.FromEnv()
 	c := Config{
 		Base:            config.LoadBase(r, "orders", "8084", true),
-		AuthMode:        r.String("AUTH_MODE", "dev"),
 		KafkaBrokers:    r.List("KAFKA_BROKERS", nil),
 		MenuURL:         r.String("MENU_URL", "http://localhost:8083"),
 		RestaurantURL:   r.String("RESTAURANT_URL", "http://localhost:8082"),
@@ -63,5 +63,6 @@ func Load() (Config, error) {
 	if c.PrepMinutes <= 0 || c.DeliveryMinutes < 0 {
 		bad = append(bad, errors.New("ETA_PREP_MINUTES must be positive, ETA_DELIVERY_MINUTES non-negative"))
 	}
+	c.Auth = authclient.OptionsFromEnv(r, c.Env)
 	return c, errors.Join(append([]error{err}, bad...)...)
 }

@@ -57,7 +57,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return nil
 	}
 
-	auth, err := authclient.NewFromMode(cfg.AuthMode, cfg.Env, log)
+	auth, err := authclient.New(cfg.Auth, log)
 	if err != nil {
 		return err
 	}

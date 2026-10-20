@@ -12,7 +12,7 @@ func TestLoadDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.HTTPPort != "8084" || c.PaymentTimeout != 15*time.Minute || c.MenuURL == "" || c.PrepMinutes != 20 || c.AuthMode != "dev" {
+	if c.HTTPPort != "8084" || c.PaymentTimeout != 15*time.Minute || c.MenuURL == "" || c.PrepMinutes != 20 || c.Auth.Mode != "dev" {
 		t.Fatalf("%+v", c)
 	}
 	t.Setenv("MENU_URL", "menu:8083")
