@@ -310,8 +310,8 @@ def gateway(g):
     probe("POST", "/webhooks/payments/gateway", 404, "ROUTE_NOT_FOUND", body={})
     t = json.loads(urllib.request.urlopen(urllib.request.Request(g + "/auth/login", data=json.dumps({"phone": "+79990000000", "password": "123456"}).encode(), headers={"Content-Type": "application/json"})).read())
     probe("GET", "/orders/search?number=1", 403, "FORBIDDEN", headers={"Authorization": "Bearer " + t["accessToken"]})
-    big = {"restaurantId": "x", "pad": "x" * 1_100_000}
-    probe("POST", "/carts", 413, "PAYLOAD_TOO_LARGE", body=big)
+    # 413 здесь не проверяем: gateway отвечает сразу и закрывает соединение, а urllib ещё досылает 1 МиБ тела и
+    # получает ConnectionResetError (зависит от буферов ОС). Эту проверку делает Postman (postman/gateway, «Ограничения»).
 
 
 if __name__ == "__main__":
