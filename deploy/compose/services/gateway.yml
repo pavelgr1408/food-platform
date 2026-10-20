@@ -1,5 +1,6 @@
 # Срез периметра: api-gateway (ADR-11). Своей БД и Kafka нет.
 # Полный сквозной срез:  AUTH_MODE=jwks make up SLICE="auth restaurant menu orders payment mock-externals gateway"
+# Gateway стартует без auth: ключи JWKS подтягиваются в фоне, до этого readiness = 503.
 # (AUTH_MODE=jwks заставляет и сами сервисы проверять JWT; без переменной они остаются в dev-режиме.)
 services:
   gateway:
@@ -29,6 +30,4 @@ services:
       AUTH_RATE_BURST: ${AUTH_RATE_BURST:-30}
     ports:
       - "8080:8080"
-    depends_on:
-      - auth
     mem_limit: 64m
