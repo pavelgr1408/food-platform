@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2d85a86b-4fd0-5233-8b92-f5453456e6f8",
     "name": "auth-service",
-    "description": "Food Platform / auth-service. Контракт: contracts/openapi/auth.yaml. baseUrl: локально http://localhost:8081, для сдачи ДЗ http://arch.homework.\nЗапуск: make newman SERVICE=auth [BASE_URL=http://arch.homework]",
+    "description": "Food Platform / auth-service. Контракт: contracts/openapi/auth.yaml. baseUrl: локально http://localhost:8081, для сдачи ДЗ http://arch.homework.\nОшибки — RFC 9457 Problem (application/problem+json, поле code), с S5. Запуск: make newman SERVICE=auth [BASE_URL=http://arch.homework]",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -417,13 +417,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                  "pm.test('code = INVALID_REFRESH_TOKEN', () => pm.expect(e.code).to.eql('INVALID_REFRESH_TOKEN'));"
                 ]
               }
             }
@@ -508,13 +509,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                  "pm.test('code = INVALID_REFRESH_TOKEN', () => pm.expect(e.code).to.eql('INVALID_REFRESH_TOKEN'));"
                 ]
               }
             }
@@ -562,13 +564,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('статус 409', () => pm.response.to.have.status(409));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(409);",
                   "});",
-                  "pm.test('message: Phone is already registered', () => pm.expect(pm.response.json().message).to.include(\"Phone is already registered\"));"
+                  "pm.test('code = PHONE_ALREADY_REGISTERED', () => pm.expect(e.code).to.eql('PHONE_ALREADY_REGISTERED'));"
                 ]
               }
             }
@@ -610,13 +613,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
                   "});",
-                  "pm.test('message: phone must be a valid E.164 number', () => pm.expect(pm.response.json().message).to.include(\"phone must be a valid E.164 number\"));"
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
@@ -658,13 +662,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
                   "});",
-                  "pm.test('message: password size must be between 6 and 72', () => pm.expect(pm.response.json().message).to.include(\"password size must be between 6 and 72\"));"
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
@@ -706,13 +711,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
                   "});",
-                  "pm.test('message: Malformed JSON request', () => pm.expect(pm.response.json().message).to.include(\"Malformed JSON request\"));"
+                  "pm.test('code = INVALID_JSON', () => pm.expect(e.code).to.eql('INVALID_JSON'));"
                 ]
               }
             }
@@ -754,13 +760,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid phone or password', () => pm.expect(pm.response.json().message).to.include(\"Invalid phone or password\"));"
+                  "pm.test('code = INVALID_CREDENTIALS', () => pm.expect(e.code).to.eql('INVALID_CREDENTIALS'));"
                 ]
               }
             }
@@ -802,13 +809,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid phone or password', () => pm.expect(pm.response.json().message).to.include(\"Invalid phone or password\"));"
+                  "pm.test('code = INVALID_CREDENTIALS', () => pm.expect(e.code).to.eql('INVALID_CREDENTIALS'));"
                 ]
               }
             }
@@ -850,12 +858,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
-                  "});"
+                  "});",
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
@@ -883,13 +893,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid access token', () => pm.expect(pm.response.json().message).to.include(\"Invalid access token\"));"
+                  "pm.test('code = INVALID_TOKEN', () => pm.expect(e.code).to.eql('INVALID_TOKEN'));"
                 ]
               }
             }
@@ -922,13 +933,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid access token', () => pm.expect(pm.response.json().message).to.include(\"Invalid access token\"));"
+                  "pm.test('code = INVALID_TOKEN', () => pm.expect(e.code).to.eql('INVALID_TOKEN'));"
                 ]
               }
             }
@@ -961,12 +973,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
-                  "});"
+                  "});",
+                  "pm.test('code = INVALID_TOKEN', () => pm.expect(e.code).to.eql('INVALID_TOKEN'));"
                 ]
               }
             }
@@ -1051,12 +1065,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
-                  "});"
+                  "});",
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
@@ -1098,13 +1114,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('статус 401', () => pm.response.to.have.status(401));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(401);",
                   "});",
-                  "pm.test('message: Invalid refresh token', () => pm.expect(pm.response.json().message).to.include(\"Invalid refresh token\"));"
+                  "pm.test('code = INVALID_REFRESH_TOKEN', () => pm.expect(e.code).to.eql('INVALID_REFRESH_TOKEN'));"
                 ]
               }
             }
@@ -1146,12 +1163,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
-                  "});"
+                  "});",
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }
@@ -1193,12 +1212,14 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('статус 400', () => pm.response.to.have.status(400));",
+                  "pm.test('application/problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
                   "const e = pm.response.json();",
-                  "pm.test('error body: timestamp/status/error/message/path', () => {",
-                  "  pm.expect(e).to.include.all.keys('timestamp','status','error','message','path');",
+                  "pm.test('Problem: type/title/status/detail/instance/code', () => {",
+                  "  pm.expect(e).to.include.all.keys('type','title','status','detail','instance','code');",
                   "  pm.expect(e.status).to.eql(400);",
-                  "});"
+                  "});",
+                  "pm.test('code = VALIDATION_FAILED', () => pm.expect(e.code).to.eql('VALIDATION_FAILED'));"
                 ]
               }
             }

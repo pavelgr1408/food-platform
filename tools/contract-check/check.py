@@ -5,6 +5,8 @@
   .dev/venv/bin/python tools/contract-check/check.py catalog [--restaurant http://localhost:8082] [--menu http://localhost:8083]
   .dev/venv/bin/python tools/contract-check/check.py orders  [... --orders http://localhost:8084]   # нужен срез restaurant + menu + orders
   .dev/venv/bin/python tools/contract-check/check.py payment [... --payment http://localhost:8085]  # + payment и mock шлюза (:9091)
+  .dev/venv/bin/python tools/contract-check/check.py auth    [... --auth http://localhost:8081]     # auth (SEED_ON_START=true)
+  .dev/venv/bin/python tools/contract-check/check.py gateway [... --gateway http://localhost:8080]  # ответы периметра (Problem) через gateway
 
 Для каждого запроса сценария находится операция по методу и шаблону пути, схема ответа берётся из
 `responses.<status>.content.<media type>.schema` и проверяется jsonschema (Draft 2020-12, форматы uuid/date/…).
@@ -244,9 +246,79 @@ def payment(r, m, o, p):
     # вебхуки описаны в разделе webhooks контракта (не paths): HMAC и дубликаты проверяет postman/payment
 
 
+def auth(a):
+    S = "auth.yaml"
+    phone = "+7999" + str(int(__import__("time").time()) % 10_000_000).zfill(7)
+    check(S, "POST", a, "/auth/register", 201, {"phone": phone, "password": "Passw0rd!x"})
+    check(S, "POST", a, "/auth/register", 409, {"phone": phone, "password": "Passw0rd!x"}, label="register: дубль телефона → 409 Problem")
+    check(S, "POST", a, "/auth/register", 400, {"phone": "abc", "password": "x"}, label="register: валидация → 400 Problem")
+    t = check(S, "POST", a, "/auth/login", 200, {"phone": phone, "password": "Passw0rd!x"})
+    check(S, "POST", a, "/auth/login", 401, {"phone": phone, "password": "wrong-password"}, label="login: неверный пароль → 401 Problem")
+    check(S, "POST", a, "/auth/login", 403, {"phone": "+79992222222", "password": "blocked123"}, label="login: заблокирован → 403 Problem")
+    bearer = {"Authorization": "Bearer " + t["accessToken"]}
+    check(S, "GET", a, "/auth/me", 200, headers=bearer)
+    check(S, "GET", a, "/auth/me", 401, label="me: без токена → 401 Problem")
+    check(S, "POST", a, "/auth/introspect", 200, {"token": t["accessToken"]}, label="introspect: active")
+    check(S, "POST", a, "/auth/introspect", 200, {"token": "garbage"}, label="introspect: inactive")
+    check(S, "POST", a, "/auth/authorize", 200, {"action": "order.manage", "restaurantId": "a1000000-0000-4000-8000-000000000004"}, headers=bearer, label="authorize: клиент → allowed=false")
+    staff = check(S, "POST", a, "/auth/login", 200, {"phone": "+79993333333", "password": "staff123"}, label="login: сотрудник")
+    check(S, "POST", a, "/auth/authorize", 200, {"action": "order.manage", "restaurantId": "a1000000-0000-4000-8000-000000000004"},
+          headers={"Authorization": "Bearer " + staff["accessToken"]}, label="authorize: сотрудник своего ресторана → allowed=true")
+    check(S, "POST", a, "/auth/authorize", 400, {"action": "nope"}, headers=bearer, label="authorize: неизвестное действие → 400 Problem")
+    check(S, "GET", a, "/auth/.well-known/jwks.json", 200)
+    r = check(S, "POST", a, "/auth/refresh", 200, {"refreshToken": t["refreshToken"]})
+    check(S, "POST", a, "/auth/refresh", 401, {"refreshToken": t["refreshToken"]}, label="refresh: повтор использованного → 401 Problem")
+    check(S, "POST", a, "/auth/logout", 200, {"refreshToken": r["refreshToken"]})
+    check(S, "POST", a, "/auth/logout", 401, {"refreshToken": r["refreshToken"]}, label="logout: повтор → 401 Problem")
+
+
+def gateway(g):
+    """Ответы периметра: схемы Problem из _common.yaml (у gateway.yaml нет paths — только таблица маршрутов)."""
+    problem = {"$ref": "_common.yaml#/components/schemas/Problem"}
+    v = Draft202012Validator(wrap(problem, "_common.yaml"), registry=REG, format_checker=FormatChecker())
+
+    def probe(method, path, status, code, headers=None, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(g + path, data=data, method=method, headers={**({"Content-Type": "application/json"} if data else {}), **(headers or {})})
+        try:
+            resp = urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            resp = e
+        st = resp.status if hasattr(resp, "status") else resp.code
+        raw, ctype = resp.read(), resp.headers.get("Content-Type", "")
+        errs = []
+        if st != status:
+            errs.append(f"status {st}, ожидался {status}")
+        if not ctype.startswith("application/problem+json"):
+            errs.append(f"Content-Type {ctype!r}")
+        else:
+            doc = json.loads(raw)
+            errs += ["/" + "/".join(map(str, e.absolute_path)) + ": " + e.message[:200] for e in v.iter_errors(doc)]
+            if doc.get("code") != code:
+                errs.append(f"code {doc.get('code')!r}, ожидался {code!r}")
+        if len(resp.headers.get_all("X-Request-Id") or []) != 1:
+            errs.append("X-Request-Id должен быть ровно один")
+        label = f"{method} {path} → {status} {code}"
+        print(("OK   " if not errs else "FAIL ") + label + ("" if not errs else "\n       " + "\n       ".join(errs)))
+        if errs:
+            FAILS.append(label)
+
+    probe("GET", "/auth/me", 401, "UNAUTHORIZED")
+    probe("GET", "/auth/me", 401, "UNAUTHORIZED", headers={"Authorization": "Bearer garbage"})
+    probe("POST", "/auth/introspect", 404, "ROUTE_NOT_FOUND", body={"token": "x"})
+    probe("GET", "/metrics", 404, "ROUTE_NOT_FOUND")
+    probe("POST", "/webhooks/payments/gateway", 404, "ROUTE_NOT_FOUND", body={})
+    t = json.loads(urllib.request.urlopen(urllib.request.Request(g + "/auth/login", data=json.dumps({"phone": "+79990000000", "password": "123456"}).encode(), headers={"Content-Type": "application/json"})).read())
+    probe("GET", "/orders/search?number=1", 403, "FORBIDDEN", headers={"Authorization": "Bearer " + t["accessToken"]})
+    big = {"restaurantId": "x", "pad": "x" * 1_100_000}
+    probe("POST", "/carts", 413, "PAYLOAD_TOO_LARGE", body=big)
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["catalog", "orders", "payment"])
+    ap.add_argument("scenario", choices=["catalog", "orders", "payment", "auth", "gateway"])
+    ap.add_argument("--auth", default="http://localhost:8081")
+    ap.add_argument("--gateway", default="http://localhost:8080")
     ap.add_argument("--restaurant", default="http://localhost:8082")
     ap.add_argument("--menu", default="http://localhost:8083")
     ap.add_argument("--orders", default="http://localhost:8084")
@@ -254,6 +326,10 @@ if __name__ == "__main__":
     a = ap.parse_args()
     if a.scenario == "catalog":
         catalog(a.restaurant, a.menu)
+    elif a.scenario == "auth":
+        auth(a.auth)
+    elif a.scenario == "gateway":
+        gateway(a.gateway)
     elif a.scenario == "orders":
         orders(a.restaurant, a.menu, a.orders)
     else:
