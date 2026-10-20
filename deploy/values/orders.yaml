@@ -9,10 +9,11 @@ replicas: 2
 env:
   APP_ENV: dev
   LOG_LEVEL: info
-  AUTH_MODE: dev
+  AUTH_MODE: jwks # личность — только из JWT, проверенного локально по JWKS (ADR-11)
+  AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
   KAFKA_BROKERS: kafka:9092
-  MENU_URL: http://menu:8083
-  RESTAURANT_URL: http://restaurant:8082
+  MENU_URL: http://menu
+  RESTAURANT_URL: http://restaurant
   UPSTREAM_TIMEOUT: 800ms
   PAYMENT_TIMEOUT: 15m
   LEAD_TIME_TTL: 15m # срок годности production.lead.time для ETA (S4)
@@ -24,4 +25,4 @@ resources:
   requests: { cpu: 50m, memory: 64Mi }
   limits: { memory: 192Mi }
 ingress:
-  paths: [] # публичные пути добавляются, когда готов gateway (S5)
+  paths: [] # снаружи сервис доступен только через gateway

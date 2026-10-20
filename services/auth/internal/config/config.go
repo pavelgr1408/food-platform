@@ -1,14 +1,17 @@
+// Package config — конфигурация auth-service из окружения (12-factor).
 package config
 
 import (
+	"errors"
 	"fmt"
-	"os"
+	"strings"
 	"time"
+
+	"github.com/pavelgr1408/food-platform/pkg/config"
 )
 
 type Config struct {
-	HTTPPort       string
-	DatabaseURL    string
+	config.Base
 	Issuer         string
 	Audience       string
 	AccessTTL      time.Duration
@@ -16,42 +19,54 @@ type Config struct {
 	KeyID          string
 	PrivateKeyPath string
 	PublicKeyPath  string
+	// PreviousKeys — публичные ключи прежних подписей для ротации без простоя: JWT_PREVIOUS_PUBLIC_KEYS="kid=path,kid2=path2".
+	PreviousKeys map[string]string
+	BcryptCost   int
+	SeedOnStart  bool // dev-пользователи всех ролей (запрещено вне dev)
 }
 
-func Load() (Config, error) {
-	accessTTL, err := duration("JWT_ACCESS_TTL", "15m")
-	if err != nil {
-		return Config{}, err
+func Load() (Config, error) { return load(config.FromEnv()) }
+
+func load(r *config.Reader) (Config, error) {
+	c := Config{
+		Base:           config.LoadBase(r, "auth", "8081", true),
+		Issuer:         r.String("JWT_ISSUER", "restaurant-auth-service"),
+		Audience:       r.String("JWT_AUDIENCE", "restaurant-api"),
+		AccessTTL:      r.Duration("JWT_ACCESS_TTL", 15*time.Minute),
+		RefreshTTL:     r.Duration("REFRESH_TOKEN_TTL", 720*time.Hour),
+		KeyID:          r.String("JWT_KEY_ID", "local-dev-key"),
+		PrivateKeyPath: r.String("JWT_PRIVATE_KEY_PATH", "./config/keys/private.pem"),
+		PublicKeyPath:  r.String("JWT_PUBLIC_KEY_PATH", "./config/keys/public.pem"),
+		BcryptCost:     r.Int("BCRYPT_COST", 12),
+		SeedOnStart:    r.Bool("SEED_ON_START", false),
 	}
-	refreshTTL, err := duration("REFRESH_TOKEN_TTL", "720h")
-	if err != nil {
-		return Config{}, err
+	prev, perr := parseKeyList(r.String("JWT_PREVIOUS_PUBLIC_KEYS", ""))
+	c.PreviousKeys = prev
+	var bad []error
+	if perr != nil {
+		bad = append(bad, perr)
 	}
-	return Config{
-		HTTPPort:       env("HTTP_PORT", "8081"),
-		DatabaseURL:    env("DATABASE_URL", "postgres://restaurant_auth:restaurant_auth@localhost:5432/restaurant_auth?sslmode=disable"),
-		Issuer:         env("JWT_ISSUER", "restaurant-auth-service"),
-		Audience:       env("JWT_AUDIENCE", "restaurant-api"),
-		AccessTTL:      accessTTL,
-		RefreshTTL:     refreshTTL,
-		KeyID:          env("JWT_KEY_ID", "local-dev-key"),
-		PrivateKeyPath: env("JWT_PRIVATE_KEY_PATH", "./config/keys/private.pem"),
-		PublicKeyPath:  env("JWT_PUBLIC_KEY_PATH", "./config/keys/public.pem"),
-	}, nil
+	if c.BcryptCost < 10 || c.BcryptCost > 15 {
+		bad = append(bad, errors.New("BCRYPT_COST must be between 10 and 15"))
+	}
+	if c.Env == "prod" && c.SeedOnStart {
+		bad = append(bad, errors.New("SEED_ON_START=true is forbidden when APP_ENV=prod (dev passwords)"))
+	}
+	return c, errors.Join(append(bad, r.Err())...)
 }
 
-func env(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// parseKeyList разбирает "kid=path,kid2=path2".
+func parseKeyList(s string) (map[string]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
 	}
-	return fallback
-}
-
-func duration(key, fallback string) (time.Duration, error) {
-	value := env(key, fallback)
-	d, err := time.ParseDuration(value)
-	if err != nil {
-		return 0, fmt.Errorf("parse %s=%q: %w", key, value, err)
+	out := map[string]string{}
+	for _, part := range strings.Split(s, ",") {
+		kid, path, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || kid == "" || path == "" {
+			return nil, fmt.Errorf("JWT_PREVIOUS_PUBLIC_KEYS: %q must be kid=path", part)
+		}
+		out[kid] = path
 	}
-	return d, nil
+	return out, nil
 }

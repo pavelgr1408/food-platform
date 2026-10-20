@@ -11,7 +11,9 @@ services:
       HTTP_PORT: "8085"
       DATABASE_URL: postgres://payment:payment@postgres:5432/payment?sslmode=disable
       KAFKA_BROKERS: kafka:9092
-      AUTH_MODE: dev
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
       GATEWAY_URL: http://mock-externals:9091
       WEBHOOK_WAIT: ${WEBHOOK_WAIT:-10s}
       PENDING_EXPIRY: ${PENDING_EXPIRY:-10m}

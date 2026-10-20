@@ -1,46 +1,62 @@
+// Package httpapi — HTTP-слой auth-service (contracts/openapi/auth.yaml). Ошибки — problem+json (pkg/httpx).
 package httpapi
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/pavelgr1408/food-platform/pkg/authclient"
+	"github.com/pavelgr1408/food-platform/pkg/httpx"
+	"github.com/pavelgr1408/food-platform/pkg/metrics"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/service"
-	"github.com/pavelgr1408/food-platform/services/auth/internal/store"
 )
 
-type API struct {
-	service *service.Service
-	store   *store.Postgres
-	log     *slog.Logger
-}
-type ctxKey string
-
-const userIDKey ctxKey = "userID"
+// Коды ошибок (auth.yaml, Problem.code).
+const (
+	codeValidation    = "VALIDATION_FAILED"
+	codeUnknownAction = "UNKNOWN_ACTION"
+	codeInvalidToken  = "INVALID_TOKEN"
+)
 
 var phonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 
-func New(svc *service.Service, st *store.Postgres, log *slog.Logger) http.Handler {
-	a := &API{service: svc, store: st, log: log}
+// Deps — зависимости HTTP-слоя.
+type Deps struct {
+	Log     *slog.Logger
+	Metrics *metrics.Registry
+	Checks  []httpx.Check
+	Service *service.Service
+}
+
+type API struct {
+	service *service.Service
+	log     *slog.Logger
+}
+
+// New собирает маршруты и стандартную цепочку middleware.
+func New(d Deps) http.Handler {
+	a := &API{service: d.Service, log: d.Log}
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux, d.Checks...)
+	mux.Handle("GET /metrics", d.Metrics.Handler())
+
 	mux.HandleFunc("POST /auth/register", a.register)
 	mux.HandleFunc("POST /auth/login", a.login)
 	mux.HandleFunc("POST /auth/refresh", a.refresh)
 	mux.HandleFunc("POST /auth/logout", a.logout)
-	mux.Handle("GET /auth/me", a.authenticate(http.HandlerFunc(a.me)))
+	mux.HandleFunc("GET /auth/me", a.me)
 	mux.HandleFunc("POST /auth/introspect", a.introspect)
+	mux.HandleFunc("POST /auth/authorize", a.authorize)
 	mux.HandleFunc("GET /auth/.well-known/jwks.json", a.jwks)
-	mux.HandleFunc("GET /actuator/health", a.health)
-	return a.recover(a.jsonContent(mux))
+
+	return httpx.Chain(httpx.TrackRoute(mux),
+		httpx.RequestContext(), httpx.Recover(d.Log), httpx.AccessLog(d.Log), d.Metrics.Middleware())
 }
 
 type credentials struct {
@@ -53,134 +69,172 @@ type refreshRequest struct {
 type introspectRequest struct {
 	Token string `json:"token"`
 }
-type errorResponse struct {
-	Timestamp time.Time `json:"timestamp"`
-	Status    int       `json:"status"`
-	Error     string    `json:"error"`
-	Message   string    `json:"message"`
-	Path      string    `json:"path"`
+type authorizeRequest struct {
+	Action       string `json:"action"`
+	Scope        string `json:"scope"`
+	RestaurantID string `json:"restaurantId"`
 }
 
 func (a *API) register(w http.ResponseWriter, r *http.Request) {
 	var req credentials
-	if !a.decode(w, r, &req) {
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	if msg := validateCredentials(req); msg != "" {
-		a.problem(w, r, 400, msg)
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, msg)
 		return
 	}
 	u, err := a.service.Register(r.Context(), strings.TrimSpace(req.Phone), req.Password)
 	if err != nil {
-		a.handle(w, r, err)
+		a.fail(w, r, err)
 		return
 	}
-	a.write(w, 201, map[string]any{"userId": u.ID, "phone": u.Phone, "status": u.Status})
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"userId": u.ID, "phone": u.Phone, "status": u.Status})
 }
+
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	var req credentials
-	if !a.decode(w, r, &req) {
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	if msg := validateCredentials(req); msg != "" {
-		a.problem(w, r, 400, msg)
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, msg)
 		return
 	}
 	pair, err := a.service.Login(r.Context(), strings.TrimSpace(req.Phone), req.Password)
 	if err != nil {
-		a.handle(w, r, err)
+		a.fail(w, r, err)
 		return
 	}
-	a.write(w, 200, pair)
+	httpx.WriteJSON(w, http.StatusOK, pair)
 }
+
 func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
-	if !a.decode(w, r, &req) {
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.RefreshToken) == "" {
-		a.problem(w, r, 400, "Validation failed: refreshToken must not be blank")
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, "Validation failed: refreshToken must not be blank")
 		return
 	}
 	pair, err := a.service.Refresh(r.Context(), req.RefreshToken)
 	if err != nil {
-		a.handle(w, r, err)
+		a.fail(w, r, err)
 		return
 	}
-	a.write(w, 200, pair)
+	httpx.WriteJSON(w, http.StatusOK, pair)
 }
+
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
-	if !a.decode(w, r, &req) {
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.RefreshToken) == "" {
-		a.problem(w, r, 400, "Validation failed: refreshToken must not be blank")
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, "Validation failed: refreshToken must not be blank")
 		return
 	}
 	if err := a.service.Logout(r.Context(), req.RefreshToken); err != nil {
-		a.handle(w, r, err)
+		a.fail(w, r, err)
 		return
 	}
-	a.write(w, 200, map[string]string{"message": "Logged out successfully"})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"message": "Logged out successfully"})
 }
+
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
-	id, _ := r.Context().Value(userIDKey).(uuid.UUID)
+	raw, ok := bearer(w, r)
+	if !ok {
+		return
+	}
+	id, err := a.service.ValidateAccess(raw)
+	if err != nil {
+		a.fail(w, r, err)
+		return
+	}
 	u, err := a.service.Me(r.Context(), id)
 	if err != nil {
-		a.handle(w, r, err)
+		a.fail(w, r, err)
 		return
 	}
-	a.write(w, 200, map[string]any{"userId": u.ID, "phone": u.Phone, "roles": u.Roles, "status": u.Status})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"userId": u.ID, "phone": u.Phone, "roles": u.Roles, "status": u.Status, "restaurants": ids(u.Restaurants)})
 }
+
 func (a *API) introspect(w http.ResponseWriter, r *http.Request) {
 	var req introspectRequest
-	if !a.decode(w, r, &req) {
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Token) == "" {
-		a.problem(w, r, 400, "Validation failed: token must not be blank")
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, "Validation failed: token must not be blank")
 		return
 	}
 	u, active := a.service.Introspect(r.Context(), req.Token)
 	if !active {
-		a.write(w, 200, map[string]any{"active": false})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
-	a.write(w, 200, map[string]any{"active": true, "userId": u.ID, "phone": u.Phone, "roles": u.Roles})
-}
-func (a *API) jwks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	a.write(w, 200, a.service.JWKS())
-}
-func (a *API) health(w http.ResponseWriter, r *http.Request) {
-	if err := a.store.Ping(r.Context()); err != nil {
-		a.write(w, 503, map[string]string{"status": "DOWN"})
-		return
-	}
-	a.write(w, 200, map[string]string{"status": "UP"})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"active": true, "userId": u.ID, "phone": u.Phone, "roles": u.Roles, "restaurants": ids(u.Restaurants)})
 }
 
-func (a *API) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if !strings.HasPrefix(header, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")) == "" {
-			a.problem(w, r, 401, "Invalid access token")
-			return
-		}
-		id, err := a.service.ValidateAccess(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
+func (a *API) authorize(w http.ResponseWriter, r *http.Request) {
+	raw, ok := bearer(w, r)
+	if !ok {
+		return
+	}
+	var req authorizeRequest
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	ar := domain.AuthzRequest{Action: req.Action, Scope: req.Scope}
+	if req.RestaurantID != "" {
+		id, err := uuid.Parse(req.RestaurantID)
 		if err != nil {
-			a.problem(w, r, 401, "Invalid access token")
+			httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, "Validation failed: restaurantId must be a UUID")
 			return
 		}
-		u, err := a.service.Me(r.Context(), id)
-		if err != nil {
-			a.handle(w, r, err)
-			return
+		ar.RestaurantID = &id
+	}
+	d, err := a.service.Authorize(r.Context(), raw, ar)
+	switch {
+	case errors.Is(err, domain.ErrUnknownAction):
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeUnknownAction, "Unknown action: "+req.Action)
+	case errors.Is(err, domain.ErrInvalidAuthz):
+		httpx.WriteProblem(w, r, http.StatusBadRequest, codeValidation, "Validation failed: "+err.Error())
+	case err != nil:
+		a.fail(w, r, err)
+	default:
+		resp := map[string]any{"allowed": d.Allowed}
+		if !d.Allowed {
+			resp["reason"] = d.Reason
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, u.ID)))
-	})
+		httpx.WriteJSON(w, http.StatusOK, resp)
+	}
 }
+
+func (a *API) jwks(w http.ResponseWriter, r *http.Request) {
+	// Потребители кэшируют сами (по kid); минута — чтобы не бить в auth при каждом неизвестном kid.
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	httpx.WriteJSON(w, http.StatusOK, a.service.JWKS())
+}
+
+func bearer(w http.ResponseWriter, r *http.Request) (string, bool) {
+	raw, ok := authclient.BearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, codeInvalidToken, domain.ErrInvalidAccessToken.Error())
+		return "", false
+	}
+	return raw, true
+}
+
+func ids(in []uuid.UUID) []uuid.UUID {
+	if in == nil {
+		return []uuid.UUID{}
+	}
+	return in
+}
+
 func validateCredentials(req credentials) string {
 	if !phonePattern.MatchString(req.Phone) {
 		return "Validation failed: phone must be a valid E.164 number"
@@ -192,51 +246,23 @@ func validateCredentials(req credentials) string {
 	return ""
 }
 
-func (a *API) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err := dec.Decode(dst); err != nil {
-		a.problem(w, r, 400, "Malformed JSON request")
-		return false
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		a.problem(w, r, 400, "Malformed JSON request")
-		return false
-	}
-	return true
-}
-func (a *API) write(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
-}
-func (a *API) problem(w http.ResponseWriter, r *http.Request, status int, message string) {
-	a.write(w, status, errorResponse{Timestamp: time.Now().UTC(), Status: status, Error: http.StatusText(status), Message: message, Path: r.URL.Path})
-}
-func (a *API) handle(w http.ResponseWriter, r *http.Request, err error) {
+// fail превращает доменные ошибки в problem с кодом из контракта; остальное — 500 без утечки деталей.
+func (a *API) fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrDuplicatePhone):
-		a.problem(w, r, 409, err.Error())
-	case errors.Is(err, domain.ErrInvalidCredentials), errors.Is(err, domain.ErrInvalidAccessToken), errors.Is(err, domain.ErrInvalidRefreshToken), errors.Is(err, domain.ErrExpiredRefreshToken):
-		a.problem(w, r, 401, err.Error())
+		httpx.WriteProblem(w, r, http.StatusConflict, "PHONE_ALREADY_REGISTERED", err.Error())
+	case errors.Is(err, domain.ErrInvalidCredentials):
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", err.Error())
+	case errors.Is(err, domain.ErrInvalidAccessToken):
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, codeInvalidToken, err.Error())
+	case errors.Is(err, domain.ErrInvalidRefreshToken):
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", err.Error())
+	case errors.Is(err, domain.ErrExpiredRefreshToken):
+		httpx.WriteProblem(w, r, http.StatusUnauthorized, "REFRESH_TOKEN_EXPIRED", err.Error())
 	case errors.Is(err, domain.ErrUserNotActive):
-		a.problem(w, r, 403, err.Error())
+		httpx.WriteProblem(w, r, http.StatusForbidden, "USER_NOT_ACTIVE", err.Error())
 	default:
-		a.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
-		a.problem(w, r, 500, "Internal server error")
+		httpx.HandleError(w, r, a.log, err)
 	}
-}
-func (a *API) recover(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if value := recover(); value != nil {
-				a.log.Error("panic", "value", value)
-				a.problem(w, r, 500, "Internal server error")
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
-}
-func (a *API) jsonContent(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
 }

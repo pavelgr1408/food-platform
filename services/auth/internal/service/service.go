@@ -16,10 +16,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// DefaultBcryptCost — стоимость bcrypt в проде (тесты понижают, чтобы не ждать).
+const DefaultBcryptCost = 12
+
 type Service struct {
 	store      *store.Postgres
 	tokens     *token.Manager
 	refreshTTL time.Duration
+	bcryptCost int
 	now        func() time.Time
 }
 type TokenPair struct {
@@ -29,8 +33,17 @@ type TokenPair struct {
 	ExpiresIn    int64  `json:"expiresIn"`
 }
 
-func New(st *store.Postgres, tokens *token.Manager, refreshTTL time.Duration) *Service {
-	return &Service{store: st, tokens: tokens, refreshTTL: refreshTTL, now: time.Now}
+func New(st *store.Postgres, tokens *token.Manager, refreshTTL time.Duration, bcryptCost int) *Service {
+	if bcryptCost < bcrypt.MinCost {
+		bcryptCost = DefaultBcryptCost
+	}
+	return &Service{store: st, tokens: tokens, refreshTTL: refreshTTL, bcryptCost: bcryptCost, now: time.Now}
+}
+
+// HashPassword — bcrypt-хэш с настроенной стоимостью (для seed).
+func (s *Service) HashPassword(plain string) (string, error) {
+	h, err := bcrypt.GenerateFromPassword([]byte(plain), s.bcryptCost)
+	return string(h), err
 }
 
 func (s *Service) Register(ctx context.Context, phone, password string) (domain.User, error) {
@@ -46,7 +59,7 @@ func (s *Service) Register(ctx context.Context, phone, password string) (domain.
 	if exists {
 		return domain.User{}, domain.ErrDuplicatePhone
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.bcryptCost)
 	if err != nil {
 		return domain.User{}, err
 	}
@@ -160,6 +173,25 @@ func (s *Service) Introspect(ctx context.Context, raw string) (domain.User, bool
 	}
 	return u, true
 }
+
+// Authorize решает, может ли владелец токена выполнить действие, по актуальным данным БД (ролям, привязке,
+// статусу), а не по claims: блокировка и смена привязки действуют сразу. Недействительный токен →
+// ErrInvalidAccessToken; отказ по полномочиям — Decision{Allowed:false}, не ошибка.
+func (s *Service) Authorize(ctx context.Context, raw string, req domain.AuthzRequest) (domain.Decision, error) {
+	id, err := s.tokens.Validate(raw)
+	if err != nil {
+		return domain.Decision{}, domain.ErrInvalidAccessToken
+	}
+	u, err := s.store.UserByID(ctx, id)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.Decision{}, domain.ErrInvalidAccessToken
+	}
+	if err != nil {
+		return domain.Decision{}, err
+	}
+	return domain.Authorize(u, req)
+}
+
 func (s *Service) ValidateAccess(raw string) (uuid.UUID, error) { return s.tokens.Validate(raw) }
 func (s *Service) JWKS() map[string]any                         { return s.tokens.JWKS() }
 

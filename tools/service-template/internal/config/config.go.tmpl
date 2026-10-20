@@ -1,12 +1,15 @@
 // Package config — конфигурация __NAME__-service из окружения (12-factor).
 package config
 
-import "__MODPATH__/pkg/config"
+import (
+	"__MODPATH__/pkg/authclient"
+	"__MODPATH__/pkg/config"
+)
 
 // Config — настройки сервиса.
 type Config struct {
 	config.Base
-	AuthMode     string
+	Auth         authclient.Options // AUTH_MODE (dev|jwks), AUTH_JWKS_URL, AUTH_ISSUER, AUTH_AUDIENCE
 	KafkaBrokers []string
 }
 
@@ -15,8 +18,8 @@ func Load() (Config, error) {
 	r := config.FromEnv()
 	c := Config{
 		Base:         config.LoadBase(r, "__NAME__", "__PORT__", true),
-		AuthMode:     r.String("AUTH_MODE", "dev"),
 		KafkaBrokers: r.List("KAFKA_BROKERS", nil),
 	}
+	c.Auth = authclient.OptionsFromEnv(r, c.Env)
 	return c, r.Err()
 }

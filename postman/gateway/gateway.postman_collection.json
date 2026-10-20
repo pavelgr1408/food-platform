@@ -1,0 +1,1985 @@
+{
+  "info": {
+    "_postman_id": "b7f1f911-aa6e-5810-a8cc-94a14f055771",
+    "name": "gateway",
+    "description": "Food Platform / api-gateway (S5). Периметр: локальная проверка JWT по JWKS, роли, introspect для sensitive-маршрутов, лимиты, CORS, ограничение тела, непубликуемые пути. Контракт: contracts/openapi/gateway.yaml (+ контракты сервисов).\nСрез: `AUTH_MODE=jwks make up SLICE=\"auth restaurant menu orders payment mock-externals gateway\"` (или tools/perimeter/ci.sh без Docker). Запуск: `make newman SERVICE=gateway [BASE_URL=http://arch.homework]`.\nПоследний запрос папки «Ограничения» намеренно исчерпывает лимит `auth` для одного IP (X-Forwarded-For из доверенного прокси). За ingress этот заголовок перезаписывается, и лимит исчерпывается для IP клиента — повторный прогон возможен через минуту.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0. Пробы и ключи",
+      "item": [
+        {
+          "name": "liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status OK\", () => pm.expect(pm.response.json().status).to.eql(\"OK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "readiness: ключи JWKS загружены",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"UP, компонент jwks\", () => { pm.expect(j.status).to.eql(\"UP\"); pm.expect(j.components.jwks.status).to.eql(\"UP\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "JWKS через gateway (публичный)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/.well-known/jwks.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                ".well-known",
+                "jwks.json"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const k = pm.response.json().keys;",
+                  "pm.test(\"RS256-ключи с kid\", () => { pm.expect(k).to.be.an(\"array\").that.is.not.empty; k.forEach(x => { pm.expect(x.kty).to.eql(\"RSA\"); pm.expect(x.kid).to.be.a(\"string\"); pm.expect(x).to.not.have.property(\"d\"); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CORS: предзапрос разрешённого источника",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{corsOrigin}}"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "POST"
+              },
+              {
+                "key": "Access-Control-Request-Headers",
+                "value": "authorization,idempotency-key,content-type"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204\", () => pm.response.to.have.status(204));",
+                  "pm.test(\"origin разрешён\", () => pm.expect(pm.response.headers.get(\"Access-Control-Allow-Origin\")).to.eql(pm.variables.get(\"corsOrigin\")));",
+                  "pm.test(\"Authorization и Idempotency-Key разрешены\", () => { const h = pm.response.headers.get(\"Access-Control-Allow-Headers\"); pm.expect(h).to.include(\"Authorization\"); pm.expect(h).to.include(\"Idempotency-Key\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "CORS: чужой источник не получает разрешения",
+          "request": {
+            "method": "OPTIONS",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "https://evil.example"
+              },
+              {
+                "key": "Access-Control-Request-Method",
+                "value": "POST"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"нет Access-Control-Allow-Origin\", () => pm.expect(pm.response.headers.has(\"Access-Control-Allow-Origin\")).to.be.false);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Вход и токены",
+      "item": [
+        {
+          "name": "login: клиент",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990000000\",\n  \"password\": \"123456\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"access + refresh токены\", () => { pm.expect(j.accessToken).to.be.a(\"string\"); pm.expect(j.refreshToken).to.be.a(\"string\"); });",
+                  "pm.collectionVariables.set(\"customerToken\", j.accessToken);",
+                  "pm.collectionVariables.set(\"customerRefresh\", j.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "login: сотрудник ресторана №4",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79993333333\",\n  \"password\": \"staff123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"access + refresh токены\", () => { pm.expect(j.accessToken).to.be.a(\"string\"); pm.expect(j.refreshToken).to.be.a(\"string\"); });",
+                  "pm.collectionVariables.set(\"staffToken\", j.accessToken);",
+                  "pm.collectionVariables.set(\"staffRefresh\", j.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "me: клиент",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"userId и роль из токена\", () => { pm.expect(j.userId).to.eql(\"00000000-0000-0000-0000-000000000001\"); pm.expect(j.roles).to.eql([\"CUSTOMER\"]); });",
+                  "pm.collectionVariables.set(\"customerId\", j.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "me: сотрудник — привязка к ресторану в токене",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staffToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"STAFF и ресторан №4\", () => { pm.expect(j.roles).to.eql([\"STAFF\"]); pm.expect(j.restaurants).to.include(\"a1000000-0000-4000-8000-000000000004\"); });",
+                  "pm.collectionVariables.set(\"staffId\", j.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "login: неверный пароль → 401 INVALID_CREDENTIALS",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990000000\",\n  \"password\": \"wrong-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = INVALID_CREDENTIALS\", () => pm.expect(pm.response.json().code).to.eql(\"INVALID_CREDENTIALS\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "login: заблокированный пользователь → 403 USER_NOT_ACTIVE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79992222222\",\n  \"password\": \"blocked123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = USER_NOT_ACTIVE\", () => pm.expect(pm.response.json().code).to.eql(\"USER_NOT_ACTIVE\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "register: новый пользователь",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{newPhone}}\",\n  \"password\": \"Passw0rd!x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"newPhone\", \"+7999\" + String(Math.floor(1000000 + Math.random() * 8999999)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 201\", () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"создан активный пользователь\", () => { pm.expect(j.userId).to.be.a(\"string\"); pm.expect(j.status).to.eql(\"ACTIVE\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "register: тот же телефон → 409 PHONE_ALREADY_REGISTERED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{newPhone}}\",\n  \"password\": \"Passw0rd!x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = PHONE_ALREADY_REGISTERED\", () => pm.expect(pm.response.json().code).to.eql(\"PHONE_ALREADY_REGISTERED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "refresh: ротация токенов",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{customerRefresh}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"выдана новая пара, refresh изменился\", () => { pm.expect(j.accessToken).to.be.a(\"string\"); pm.expect(j.refreshToken).to.not.eql(pm.collectionVariables.get(\"customerRefresh\")); });",
+                  "pm.collectionVariables.set(\"oldRefresh\", pm.collectionVariables.get(\"customerRefresh\"));",
+                  "pm.collectionVariables.set(\"customerToken\", j.accessToken);",
+                  "pm.collectionVariables.set(\"customerRefresh\", j.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "refresh: использованный токен → 401 INVALID_REFRESH_TOKEN",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{oldRefresh}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = INVALID_REFRESH_TOKEN\", () => pm.expect(pm.response.json().code).to.eql(\"INVALID_REFRESH_TOKEN\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{customerRefresh}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204/200\", () => pm.expect(pm.response.code).to.be.oneOf([200, 204]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "refresh после logout → 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{customerRefresh}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = INVALID_REFRESH_TOKEN\", () => pm.expect(pm.response.json().code).to.eql(\"INVALID_REFRESH_TOKEN\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Отказы на периметре (до сервисов)",
+      "item": [
+        {
+          "name": "me без токена → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);",
+                  "pm.test(\"WWW-Authenticate: Bearer\", () => pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.include(\"Bearer\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "me с мусорным токеном → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "токен с alg=none → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{noneToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b64 = o => btoa(JSON.stringify(o)).replace(/\\+/g, \"-\").replace(/\\//g, \"_\").replace(/=+$/, \"\");",
+                  "pm.collectionVariables.set(\"noneToken\", b64({ alg: \"none\", typ: \"JWT\" }) + \".\" + b64({ sub: \"00000000-0000-0000-0000-000000000002\", roles: [\"HQ_STAFF\"], exp: 4102444800, iss: \"restaurant-auth-service\", aud: \"restaurant-api\" }) + \".\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "токен с испорченной подписью → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tamperedToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get(\"staffToken\").split(\".\"); t[2] = t[2].slice(0, -6) + (t[2].slice(-6) === \"AAAAAA\" ? \"BBBBBB\" : \"AAAAAA\"); pm.collectionVariables.set(\"tamperedToken\", t.join(\".\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "токен с подменённой ролью (payload) → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{forgedToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get(\"customerToken\").split(\".\"); const p = JSON.parse(atob(t[1].replace(/-/g, \"+\").replace(/_/g, \"/\"))); p.roles = [\"HQ_STAFF\"]; t[1] = btoa(JSON.stringify(p)).replace(/\\+/g, \"-\").replace(/\\//g, \"_\").replace(/=+$/, \"\"); pm.collectionVariables.set(\"forgedToken\", t.join(\".\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "подмена личности заголовками X-User-* без токена → 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "00000000-0000-0000-0000-000000000002"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "HQ_STAFF"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент на маршруте персонала → 403 FORBIDDEN",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/search?number=R4-1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "number",
+                  "value": "R4-1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = FORBIDDEN\", () => pm.expect(pm.response.json().code).to.eql(\"FORBIDDEN\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "персонал проходит периметр (сервис: операция planned S6 → 404/501)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staffToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/search?number=R4-1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "number",
+                  "value": "R4-1"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"не 401/403: периметр пропустил\", () => pm.expect(pm.response.code).to.not.be.oneOf([401, 403, 429, 502, 504]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Не публикуется через gateway",
+      "item": [
+        {
+          "name": "introspect — внутренний → 404 ROUTE_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/introspect",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "introspect"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "authorize — внутренний → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/authorize",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "authorize"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/metrics → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "metrics"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "вебхук платежей идёт мимо gateway → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/payments/gateway",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "payments",
+                "gateway"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "метод вне таблицы → 404",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/restaurants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "restaurants"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "неизвестный путь → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Заказ клиента через периметр (владелец — из JWT)",
+      "item": [
+        {
+          "name": "меню ресторана (публично, гость)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/restaurants/{{restaurantId}}/menu",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "restaurants",
+                "{{restaurantId}}",
+                "menu"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json();",
+                  "const it = m.categories.flatMap(c => c.items).filter(i => i.available);",
+                  "pm.test(\"есть доступная позиция\", () => pm.expect(it.length).to.be.above(0));",
+                  "pm.collectionVariables.set(\"itemId\", it[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент: createCart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"cartId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "items"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{itemId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}/fulfillment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}",
+                "fulfillment"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "чужая корзина (сотрудник) → 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staffToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts/{{cartId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts",
+                "{{cartId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = CART_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"CART_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент: createOrder (sensitive → introspect) → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"pos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"idemKey\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 201\", () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json();",
+                  "pm.test(\"заказ принадлежит клиенту, оплата в ресторане → accepted\", () => pm.expect(o.status).to.be.oneOf([\"accepted\", \"pending_payment\"]));",
+                  "pm.collectionVariables.set(\"orderId\", o.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "клиент: getOrder → 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"тот же заказ\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"orderId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "чужой заказ (сотрудник) → 404, существование не раскрывается",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{staffToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ORDER_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ORDER_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "заказ без токена (гость) → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "{{orderId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = ORDER_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ORDER_NOT_FOUND\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "повтор createOrder с тем же Idempotency-Key → тот же заказ",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"pos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"2xx\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test(\"тот же id\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"orderId\")));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "createOrder с протухшим/мусорным токеном → 401 (не гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idemKey}}"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer garbage"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{cartId}}\",\n  \"paymentMethod\": \"pos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = UNAUTHORIZED\", () => pm.expect(pm.response.json().code).to.eql(\"UNAUTHORIZED\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "X-Request-Id: корректный входящий сохраняется",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "pm-gateway-1234"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/restaurants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "restaurants"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"эхо X-Request-Id\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.eql(\"pm-gateway-1234\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Ограничения",
+      "item": [
+        {
+          "name": "тело больше MAX_BODY_BYTES → 413 PAYLOAD_TOO_LARGE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/carts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "carts"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{bigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"bigBody\", JSON.stringify({ restaurantId: \"x\", pad: \"x\".repeat(1100000) }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 413\", () => pm.response.to.have.status(413));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = PAYLOAD_TOO_LARGE\", () => pm.expect(pm.response.json().code).to.eql(\"PAYLOAD_TOO_LARGE\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "перебор пароля с одного IP → 429 RATE_LIMITED + Retry-After",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{bruteIp}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phone\": \"+79990000000\", \"password\": \"wrong-password\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get(\"bruteIp\")) { pm.collectionVariables.set(\"bruteIp\", \"203.0.113.\" + (1 + Math.floor(Math.random() * 250))); pm.collectionVariables.set(\"bruteN\", 0); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = Number(pm.collectionVariables.get(\"bruteN\")) + 1;",
+                  "pm.collectionVariables.set(\"bruteN\", n);",
+                  "if (pm.response.code === 401 && n < 80) { postman.setNextRequest(\"перебор пароля с одного IP → 429 RATE_LIMITED + Retry-After\"); return; }",
+                  "pm.test(\"лимит сработал (429) раньше 80-й попытки\", () => pm.expect(pm.response.code).to.eql(429));",
+                  "pm.test(\"Retry-After > 0\", () => pm.expect(Number(pm.response.headers.get(\"Retry-After\"))).to.be.above(0));",
+                  "pm.test(\"Problem RATE_LIMITED\", () => pm.expect(pm.response.json().code).to.eql(\"RATE_LIMITED\"));",
+                  "pm.test(\"до лимита было больше одной попытки (burst)\", () => pm.expect(n).to.be.above(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "другой IP не затронут лимитом первого",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "198.51.100.{{otherIp}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+79990000000\",\n  \"password\": \"wrong-password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"otherIp\", 1 + Math.floor(Math.random() * 250));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"code = INVALID_CREDENTIALS\", () => pm.expect(pm.response.json().code).to.eql(\"INVALID_CREDENTIALS\"));",
+                  "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000004"
+    },
+    {
+      "key": "corsOrigin",
+      "value": "http://localhost:3000"
+    }
+  ]
+}

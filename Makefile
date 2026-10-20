@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman check-template contract-check contract-check-ci
+.PHONY: new-service keys docker-build newman check-template contract-check contract-check-ci check-routes perimeter-check
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -81,9 +81,14 @@ check-template: pydeps-check ## Шаблон сервиса генерирует
 
 ## ---------- контракты ----------
 .PHONY: lint-contracts
-lint-contracts: check-topics ## Redocly (OpenAPI) + AsyncAPI validate + topics.txt
+lint-contracts: check-topics check-routes ## Redocly (OpenAPI) + AsyncAPI validate + topics.txt + таблица маршрутов gateway
 	@for f in contracts/openapi/*.yaml; do npx -y @redocly/cli@1.34.5 lint --config redocly.yaml $$f || exit 1; done
 	cd tools/validate-asyncapi && npm ci --silent && node validate.mjs ../../contracts/asyncapi/kafka-events.yaml
+
+check-routes: pydeps-check ## Таблица маршрутов gateway ↔ x-routes ↔ контракты сервисов (без запуска)
+	$(PYTHON) tools/contract-check/check_routes.py
+perimeter-check: ## Периметр без Docker: auth+restaurant+menu+orders+payment+gateway на Postgres, newman auth+gateway, chaos (нужны Go, openssl, psql, newman/npx)
+	tools/perimeter/ci.sh
 
 ## ---------- Kubernetes / Helm ----------
 .PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-clean

@@ -9,7 +9,8 @@ replicas: 2
 env:
   APP_ENV: dev
   LOG_LEVEL: info
-  AUTH_MODE: dev
+  AUTH_MODE: jwks # личность — только из JWT, проверенного локально по JWKS (ADR-11)
+  AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
   KAFKA_BROKERS: kafka:9092
   GATEWAY_URL: http://mock-externals:9091 # dev: мок шлюза; в prod — адрес реального шлюза
   GATEWAY_TIMEOUT: 5s
@@ -22,4 +23,11 @@ resources:
   requests: { cpu: 50m, memory: 64Mi }
   limits: { memory: 192Mi }
 ingress:
-  paths: [] # публичные пути добавляются, когда готов gateway (S5)
+  # Единственный путь мимо gateway: вебхуки платёжного шлюза (подпись HMAC вместо токена).
+  # Ограничения — на ingress, до сервиса: частота по IP отправителя и размер тела.
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/proxy-body-size: 64k
+  paths:
+    - { path: /webhooks/payments, pathType: Prefix }

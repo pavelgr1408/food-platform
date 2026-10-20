@@ -25,7 +25,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- if .Values.metrics.enabled }}
         prometheus.io/scrape: "true"
-        prometheus.io/port: {{ .Values.port | quote }}
+        prometheus.io/port: {{ default .Values.port .Values.metrics.port | quote }}
         prometheus.io/path: {{ .Values.metrics.path | quote }}
         {{- end }}
         {{- with .Values.podAnnotations }}
@@ -57,6 +57,11 @@ spec:
             - name: http
               containerPort: {{ .Values.port }}
               protocol: TCP
+            {{- if and .Values.metrics.enabled .Values.metrics.port }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ .Values.name }}-config

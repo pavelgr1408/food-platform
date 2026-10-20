@@ -66,6 +66,7 @@ podDisruptionBudget:
 metrics:
   enabled: true
   path: /metrics
+  # port: 9100   # отдельный порт метрик (gateway: /metrics не должен быть доступен через ingress); пусто → порт приложения
   serviceMonitor:
     enabled: false
     interval: 15s

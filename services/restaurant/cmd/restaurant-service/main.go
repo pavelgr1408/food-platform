@@ -68,7 +68,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		log.Info("seed applied", "restaurants", len(rs))
 	}
 
-	auth, err := authclient.NewFromMode(cfg.AuthMode, cfg.Env, log)
+	auth, err := authclient.New(cfg.Auth, log)
 	if err != nil {
 		return err
 	}

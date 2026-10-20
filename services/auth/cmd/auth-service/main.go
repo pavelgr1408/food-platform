@@ -1,17 +1,22 @@
+// auth-service: идентификация и доступ — регистрация, вход по телефону, JWT RS256 (+JWKS), refresh,
+// introspect и authorize (контракт contracts/openapi/auth.yaml). Эталон слоёв платформы.
 package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/pavelgr1408/food-platform/pkg/httpx"
+	"github.com/pavelgr1408/food-platform/pkg/logging"
+	"github.com/pavelgr1408/food-platform/pkg/metrics"
+	"github.com/pavelgr1408/food-platform/pkg/pgxutil"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/config"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/httpapi"
+	"github.com/pavelgr1408/food-platform/services/auth/internal/seed"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/service"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/store"
 	"github.com/pavelgr1408/food-platform/services/auth/internal/token"
@@ -19,43 +24,67 @@ import (
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	ctx := context.Background()
 	cfg, err := config.Load()
+	log := logging.New(logging.Options{Service: "auth", Env: cfg.Env, Level: cfg.LogLevel})
 	if err != nil {
 		log.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
-	db, err := store.Open(ctx, cfg.DatabaseURL)
+	if err := run(cfg, log); err != nil {
+		log.Error("service stopped with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(cfg config.Config, log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := pgxutil.Open(ctx, cfg.DatabaseURL, pgxutil.Options{AppName: "auth-service", MaxConns: 20, MinConns: 2})
 	if err != nil {
-		log.Error("database connection failed", "error", err)
-		os.Exit(1)
+		return err
 	}
-	defer db.Close()
-	if err := migrations.Apply(ctx, db.Pool); err != nil {
-		log.Error("database migration failed", "error", err)
-		os.Exit(1)
+	defer pool.Close()
+
+	// Миграции. До S5 у auth была своя таблица schema_migrations(version): усыновляем её в формат по модулям,
+	// иначе мигратор повторно применил бы 001/002 к живой БД. В k8s — отдельной Job: `--migrate-only`.
+	src := pgxutil.Source{Module: "auth", FS: migrations.FS}
+	if err := pgxutil.AdoptLegacy(ctx, pool, log, src); err != nil {
+		return err
 	}
-	tokens, err := token.New(cfg.PrivateKeyPath, cfg.PublicKeyPath, cfg.Issuer, cfg.Audience, cfg.KeyID, cfg.AccessTTL)
+	if err := pgxutil.Migrate(ctx, pool, log, src); err != nil {
+		return err
+	}
+	if pgxutil.MigrateOnly(os.Args[1:]) {
+		log.Info("migrations applied, exiting (--migrate-only)")
+		return nil
+	}
+
+	tokens, err := token.New(token.Config{PrivatePath: cfg.PrivateKeyPath, PublicPath: cfg.PublicKeyPath, Issuer: cfg.Issuer,
+		Audience: cfg.Audience, KeyID: cfg.KeyID, TTL: cfg.AccessTTL, Previous: cfg.PreviousKeys})
 	if err != nil {
-		log.Error("JWT initialization failed", "error", err)
-		os.Exit(1)
+		return err
 	}
-	svc := service.New(db, tokens, cfg.RefreshTTL)
-	server := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: httpapi.New(svc, db, log), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	go func() {
-		log.Info("auth service started", "address", server.Addr)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("HTTP server failed", "error", err)
-			os.Exit(1)
+	st := store.New(pool)
+	svc := service.New(st, tokens, cfg.RefreshTTL, cfg.BcryptCost)
+
+	switch {
+	case cfg.SeedOnStart:
+		if err := seed.Apply(ctx, st, svc, log); err != nil {
+			return err
 		}
-	}()
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdown); err != nil {
-		log.Error("graceful shutdown failed", "error", err)
+	case cfg.Env == "prod":
+		// Учётки из миграции 002 создаются при любом окружении — в проде их быть не должно.
+		if n, err := st.DeleteUsers(ctx, seed.LegacyDevIDs()); err != nil {
+			return err
+		} else if n > 0 {
+			log.Warn("legacy dev users removed", "count", n)
+		}
 	}
+
+	reg := metrics.New("auth")
+	checks := []httpx.Check{{Name: "db", Fn: pgxutil.Ping(pool)}}
+	handler := httpapi.New(httpapi.Deps{Log: log, Metrics: reg, Checks: checks, Service: svc})
+	srv := httpx.NewServer(":"+cfg.HTTPPort, handler)
+	return httpx.Run(ctx, srv, log, 10*time.Second)
 }

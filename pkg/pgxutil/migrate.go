@@ -19,6 +19,14 @@ import (
 // advisoryLockID — константа блокировки мигратора (одна БД на сервис, коллизий нет).
 const advisoryLockID int64 = 0x666f6f64 // "food"
 
+const createMigrationsTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
+		module     TEXT        NOT NULL,
+		version    BIGINT      NOT NULL,
+		name       TEXT        NOT NULL,
+		checksum   TEXT        NOT NULL,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (module, version))`
+
 // Source — набор миграций одного модуля. Файлы вида NNN_name.sql в корне FS.
 // Module — пространство имён версий: "service" для миграций сервиса, "kafka" для
 // outbox/inbox из pkg/kafka и т.д. Так версии разных источников не конфликтуют.
@@ -57,13 +65,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, sources 
 	}
 	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, advisoryLockID)
 
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		module     TEXT        NOT NULL,
-		version    BIGINT      NOT NULL,
-		name       TEXT        NOT NULL,
-		checksum   TEXT        NOT NULL,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		PRIMARY KEY (module, version))`); err != nil {
+	if _, err := conn.Exec(ctx, createMigrationsTable); err != nil {
 		return err
 	}
 	for _, m := range all {
