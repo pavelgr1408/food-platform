@@ -1,0 +1,191 @@
+openapi: 3.1.0
+
+info:
+  title: api-gateway — единая точка входа
+  version: 1.0.0
+  description: |-
+    Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
+    это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`), проксируемые
+    по таблице маршрутов ниже без изменения пути, метода, тела и кодов ответов сервиса.
+    Собственные эндпоинты gateway — только пробы (в `paths` не описаны: у проб нет клиентских ошибок 4xx):
+    `GET /health/` → `200 {"status":"OK"}` (живость, ADR-2) и `GET /actuator/health` → `200|503`
+    `{"status":"UP|DOWN","components":{…}}` (готовность: загружена таблица маршрутов и получен хотя бы
+    один набор ключей JWKS; недоступность отдельных сервисов готовность **не** снимает, иначе отказ одного
+    сервиса вывел бы из балансировки весь периметр — для них `502/504` на их маршрутах). Здесь описано то, что gateway **добавляет**:
+    аутентификацию на входе, лимиты, CORS, сквозные заголовки и ошибки периметра.
+
+    ## Аутентификация (ADR-11)
+
+    Gateway проверяет JWT **локально** по JWKS auth-service (RS256, кэш по `kid`, перечитывание при
+    неизвестном `kid`, работа на устаревшем кэше при недоступности auth) и **не** вызывает auth на каждый
+    запрос. Для маршрутов с `sensitive: true` (создание заказа, инициация оплаты) при наличии токена
+    дополнительно вызывается `POST /auth/introspect` (результат кэшируется на `INTROSPECT_CACHE_TTL`,
+    по умолчанию 10 с): заблокированный пользователь отсекается сразу, а не по истечении access-токена.
+    Если auth недоступен, такие запросы отклоняются `503 AUTH_UNAVAILABLE` (fail-closed); гостевые
+    запросы (без токена) это не затрагивает.
+
+    Режимы доступа маршрута (`access`):
+
+    | access | Поведение |
+    |---|---|
+    | `public` | токен не проверяется, заголовок `Authorization` передаётся сервису как есть |
+    | `optional` | нет токена — гость; токен есть, но недействителен — `401`; действителен — передаётся сервису |
+    | `required` | нет токена или он недействителен — `401`; нет нужной роли (`roles`) — `403` |
+
+    Заголовки `X-User-Id`, `X-User-Roles`, `X-Restaurant-Ids` из внешних запросов **удаляются**: сервисы в
+    рабочем режиме (`AUTH_MODE=jwks`) сами проверяют тот же JWT и берут личность только из токена.
+    Gateway не подставляет эти заголовки.
+
+    ## Сквозные заголовки
+
+    `X-Request-Id` (корректный входящий сохраняется, иначе генерируется; возвращается в ответе и передаётся
+    сервису), `traceparent` (передаётся). Заголовок `Forwarded`/`X-Forwarded-*` формируется gateway;
+    входящие значения учитываются только от доверенных прокси (`TRUSTED_PROXY_CIDRS`).
+
+    ## Лимиты
+
+    * Лимит запросов — token bucket в памяти реплики: ключ — `userId` (если токен действителен) или IP клиента.
+      Класс `default` — для всех маршрутов; класс `auth` — строже, **по IP**, для `register`, `login`, `refresh`
+      (защита от подбора пароля и перебора). Превышение — `429 RATE_LIMITED` с `Retry-After` (секунды).
+      Лимит считается **на реплику**: при N репликах эффективный предел до N раз выше (общий лимит — Redis, S11).
+    * Тело запроса — не более `MAX_BODY_BYTES` (по умолчанию 1 МиБ): `413 PAYLOAD_TOO_LARGE`.
+    * Таймаут ожидания сервиса — `UPSTREAM_TIMEOUT` (по умолчанию 10 с): `504 UPSTREAM_TIMEOUT`;
+      сервис недоступен — `502 UPSTREAM_UNAVAILABLE`.
+
+    ## CORS
+
+    Разрешённые источники — список `CORS_ALLOWED_ORIGINS` (точное совпадение, без `*` вместе с учётными
+    данными). Предзапрос `OPTIONS` обрабатывается gateway (`204`). Разрешены заголовки `Authorization`,
+    `Content-Type`, `Idempotency-Key`, `If-None-Match`, `X-Request-Id`; открыты `ETag`, `Location`,
+    `Retry-After`, `Idempotent-Replay`, `X-Request-Id`.
+
+    ## Вебхуки
+
+    `/webhooks/payments/*` **не проходят через gateway**: отдельный путь ingress ведёт прямо в payment-service
+    (подпись HMAC вместо токена, ограничение частоты и размера тела — аннотации ingress). Так отказ gateway не
+    блокирует приём уведомлений шлюза (недостающее добирает reconciler payment-service).
+
+    ## Не публикуется
+
+    `POST /auth/introspect`, `POST /auth/authorize` (внутренние), `/metrics` всех сервисов, `/actuator/*`
+    сервисов, `/webhooks/*`. Любой путь вне таблицы — `404 ROUTE_NOT_FOUND`.
+
+    ## Таблица маршрутов
+
+    Источник правды — `x-routes` ниже; в gateway она загружается из `services/gateway/internal/routes/routes.json`.
+    Паттерны — синтаксис `net/http.ServeMux` (метод + путь); побеждает самый специфичный.
+    Операции с `x-status: planned` (S6: `searchOrder`, `markOrderIssued`, `initiatePosPayment`) уже закрыты на периметре
+    (`required` + роль персонала), чтобы при появлении в сервисе они не оказались открытыми; до тех пор сервис отвечает на них `404`.
+    Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
+
+servers:
+  - url: https://api.blt.example/v1
+    description: Единая точка входа
+  - url: http://localhost:8080
+    description: Локальный запуск (`make up SLICE="… gateway"`)
+
+tags:
+  - name: gateway
+
+x-routes:
+  - { pattern: 'POST /auth/register',                                  upstream: auth,       access: public,   limit: auth }
+  - { pattern: 'POST /auth/login',                                     upstream: auth,       access: public,   limit: auth }
+  - { pattern: 'POST /auth/refresh',                                   upstream: auth,       access: public,   limit: auth }
+  - { pattern: 'POST /auth/logout',                                    upstream: auth,       access: public }
+  - { pattern: 'GET /auth/me',                                         upstream: auth,       access: required }
+  - { pattern: 'GET /auth/.well-known/jwks.json',                      upstream: auth,       access: public }
+  - { pattern: 'GET /restaurants',                                     upstream: restaurant, access: public }
+  - { pattern: 'GET /restaurants/{restaurantId}',                      upstream: restaurant, access: public }
+  - { pattern: 'GET /restaurants/{restaurantId}/menu',                 upstream: menu,       access: public }
+  - { pattern: 'POST /restaurants/{restaurantId}/menu/validation',     upstream: menu,       access: public }
+  - { pattern: 'POST /carts',                                          upstream: orders,     access: optional }
+  - { pattern: 'GET /carts/{cartId}',                                  upstream: orders,     access: optional }
+  - { pattern: 'PUT /carts/{cartId}/items',                            upstream: orders,     access: optional }
+  - { pattern: 'PUT /carts/{cartId}/fulfillment',                      upstream: orders,     access: optional }
+  - { pattern: 'POST /orders',                                         upstream: orders,     access: optional, sensitive: true }
+  - { pattern: 'GET /orders/search',                                   upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder, x-status planned (S6)' }
+  - { pattern: 'GET /orders/{orderId}',                                upstream: orders,     access: optional }
+  - { pattern: 'GET /orders/{orderId}/eta',                            upstream: orders,     access: optional }
+  - { pattern: 'PUT /orders/{orderId}/pickup-slot',                    upstream: orders,     access: optional }
+  - { pattern: 'POST /orders/{orderId}/issuance',                      upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'markOrderIssued, x-status planned (S6)' }
+  - { pattern: 'GET /orders/{orderId}/payment-methods',                upstream: payment,    access: optional }
+  - { pattern: 'POST /orders/{orderId}/payments',                      upstream: payment,    access: optional, sensitive: true }
+  - { pattern: 'POST /orders/{orderId}/payments/pos',                  upstream: payment,    access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'initiatePosPayment, x-status planned (S6)' }
+  - { pattern: 'GET /orders/{orderId}/payments/{paymentId}',           upstream: payment,    access: optional }
+
+paths: {}
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+
+  headers:
+    RetryAfter:
+      description: Через сколько секунд повторить запрос.
+      schema: { type: integer, minimum: 1 }
+    XRequestId:
+      description: Идентификатор запроса (для корреляции логов).
+      schema: { type: string, maxLength: 64 }
+
+  responses:
+    Unauthorized:
+      description: |-
+        `UNAUTHORIZED` — токен отсутствует на маршруте `required`, просрочен, подпись неверна, неизвестный
+        `kid`, не тот `iss`/`aud`, либо (для `sensitive`) пользователь неактивен по `introspect`.
+        Заголовок `WWW-Authenticate: Bearer error="invalid_token"`.
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    Forbidden:
+      description: '`FORBIDDEN` — у субъекта нет роли, требуемой маршрутом.'
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    NotFound:
+      description: '`ROUTE_NOT_FOUND` — маршрут или метод вне таблицы (в том числе внутренние пути сервисов).'
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    PayloadTooLarge:
+      description: '`PAYLOAD_TOO_LARGE` — тело больше `MAX_BODY_BYTES`.'
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    TooManyRequests:
+      description: '`RATE_LIMITED` — превышен лимит запросов.'
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    BadGateway:
+      description: '`UPSTREAM_UNAVAILABLE` — сервис не принял соединение или оборвал ответ.'
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    ServiceUnavailable:
+      description: >-
+        `AUTH_UNAVAILABLE` — для `sensitive`-маршрута не удалось выполнить `introspect` (fail-closed).
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    GatewayTimeout:
+      description: '`UPSTREAM_TIMEOUT` — сервис не ответил за `UPSTREAM_TIMEOUT`.'
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  schemas:
+    Readiness:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN] }
+        components:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status: { type: string, enum: [UP, DOWN] }
