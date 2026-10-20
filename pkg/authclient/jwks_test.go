@@ -314,7 +314,8 @@ func TestLazyStartWhenAuthIsLate(t *testing.T) {
 		t.Fatalf("no keys yet: %v", err)
 	}
 	srv.set(func(s *jwksServer) { s.fail = false })
-	clk.Add(11 * time.Second)
+	// ключей нет вовсе — пауза между попытками короткая (1 с), а не MinRefresh (10 с)
+	clk.Add(1500 * time.Millisecond)
 	if _, err := v.Verify(context.Background(), tok); err != nil {
 		t.Fatalf("keys must be loaded once auth is back: %v", err)
 	}

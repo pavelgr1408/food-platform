@@ -151,7 +151,7 @@ type tokenClaims struct {
 }
 
 // key возвращает ключ по kid. Набор перечитывается: (а) если он старше CacheTTL — при ошибке служит
-// прежний; (б) если kid неизвестен — не чаще MinRefresh (ротация ключа без простоя).
+// прежний; (б) если kid неизвестен — не чаще MinRefresh (ротация ключа без простоя); пока нет ни одного ключа — не чаще раза в секунду.
 func (v *JWKSVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	now := v.o.Now()
 	k, stale := v.lookup(kid, now)
@@ -166,8 +166,14 @@ func (v *JWKSVerifier) key(ctx context.Context, kid string) (*rsa.PublicKey, err
 	}
 	v.mu.RLock()
 	since := v.o.Now().Sub(v.lastAttempt)
+	threshold := v.o.MinRefresh
+	if len(v.keys) == 0 && threshold > time.Second {
+		// Ключей нет вовсе (auth поднялся позже сервиса): беречь нечего, повторяем чаще — иначе после старта
+		// пришлось бы до MinRefresh отвечать 401 на валидные токены.
+		threshold = time.Second
+	}
 	v.mu.RUnlock()
-	if since >= v.o.MinRefresh {
+	if since >= threshold {
 		if err := v.fetch(ctx); err != nil {
 			v.o.Log.WarnContext(ctx, "jwks refresh failed", "error", err, "url", v.o.URL)
 		}
