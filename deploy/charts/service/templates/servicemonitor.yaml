@@ -10,7 +10,7 @@ spec:
     matchLabels:
       {{- include "svc.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: {{ ternary "metrics" "http" (gt (int (default 0 .Values.metrics.port)) 0) }}
       path: {{ .Values.metrics.path }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
 {{- end }}

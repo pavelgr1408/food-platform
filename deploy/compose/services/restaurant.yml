@@ -11,7 +11,9 @@ services:
       HTTP_PORT: "8082"
       DATABASE_URL: postgres://restaurant:restaurant@postgres:5432/restaurant?sslmode=disable
       SEED_ON_START: "true"
-      AUTH_MODE: dev
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
     ports:
       - "8082:8082"
     depends_on:

@@ -15,16 +15,14 @@ env:
   REFRESH_TOKEN_TTL: 720h
   JWT_PRIVATE_KEY_PATH: /run/keys/private.pem
   JWT_PUBLIC_KEY_PATH: /run/keys/public.pem
+  BCRYPT_COST: 12
+  SEED_ON_START: "true" # dev-пользователи (демо-пароли); в prod запрещено, сервис не стартует
 existingSecret: auth-secrets
 secretVolumes:
   - { name: jwt, secretName: auth-jwt, mountPath: /run/keys }
-probes:
-  # До S5 у auth нет /health/ и /metrics (ДЗ-3): обе пробы — на существующий /actuator/health.
-  liveness: { path: /actuator/health }
 metrics:
-  enabled: false
+  enabled: true
 migrations:
-  enabled: false # миграции применяются при старте; --migrate-only появится в S5
+  enabled: true # Job `auth-service --migrate-only` (pre-install/pre-upgrade hook)
 ingress:
-  paths:
-    - { path: /auth, pathType: Prefix }
+  paths: [] # снаружи — только через gateway; introspect/authorize наружу не публикуются

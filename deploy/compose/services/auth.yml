@@ -18,6 +18,8 @@ services:
       JWT_KEY_ID: local-dev-key
       JWT_ACCESS_TTL: 15m
       REFRESH_TOKEN_TTL: 720h
+      SEED_ON_START: "true" # dev-пользователи (+79990000000 и др.); в prod запрещено
+      BCRYPT_COST: "10"
     ports:
       - "8081:8081"
     volumes:

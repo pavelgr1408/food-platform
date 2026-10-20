@@ -21,6 +21,14 @@
       "type": "array",
       "items": { "type": "object", "required": ["name", "secretName", "mountPath"] }
     },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "path": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
     "migrations": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
     "ingress": {
       "type": "object",
