@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman check-template contract-check contract-check-ci check-routes perimeter-check
+.PHONY: new-service keys docker-build newman newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -71,8 +71,10 @@ docker-build: ## Образ сервиса: make docker-build SERVICE=auth [TAG=
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
+newman-staff-timeout: ## S6: not_received по таймеру (orders запущен с NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s, см. docs/dev.md)
+	npx -y newman@6 run postman/staff/not-received.postman_collection.json
 SCENARIO     ?= catalog
-contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog, orders или payment (см. docs/dev.md)
+contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog, orders, payment или staff (см. docs/dev.md)
 	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
 contract-check-ci: pydeps-check ## contract-check без Docker: сам собирает и запускает restaurant/menu/orders (нужен Postgres на :5432)
 	PYTHON=$(PYTHON) tools/contract-check/ci.sh
