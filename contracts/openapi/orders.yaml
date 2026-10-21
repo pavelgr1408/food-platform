@@ -2,16 +2,17 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.4.0
+  version: 1.5.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
-    отметка выдачи персоналом. Хранилище — orders-db. (UC-ORD-*, UC-RCV-*)
+    отметка выдачи и отмена персоналом. Хранилище — orders-db. (UC-ORD-*, UC-RCV-*)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
 
 
     **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
-    `services/orders` (S2); `planned` — целевое поведение, появится в указанном этапе.
+    `services/orders`; `planned` — целевое поведение, появится в указанном этапе. С S6 все
+    операции контракта реализованы.
 
 
     **Жизненный цикл (ADR-10).** Заказ создаётся *до* оплаты: онлайн-оплата →
@@ -24,7 +25,32 @@ info:
     **Доступ.** Корзина и заказ принадлежат пользователю (`userId`) либо гостю.
     Гость владеет ресурсом, пока знает его UUID (`cartId`/`orderId` — ссылочный токен,
     UUIDv4); ресурс пользователя виден только ему — чужой запрос получает `404`
-    (существование не раскрывается). Роли персонала — S6.
+    (существование не раскрывается).
+
+
+    **Персонал (S6).** Операции персонала (`staff_fax`-заказ, `searchOrder`, `markOrderIssued`,
+    `cancelOrder`) доступны ролям `STAFF`, `FRANCHISE_OWNER` (только заказы ресторанов из
+    claim `restaurants[]` токена) и `HQ_STAFF` (любой ресторан). Гость — `401 UNAUTHORIZED`,
+    `CUSTOMER` — `403 FORBIDDEN`, сотрудник другого ресторана видит чужой заказ как `404
+    ORDER_NOT_FOUND` (существование не раскрывается). Заказ, созданный сотрудником по факсу,
+    принадлежит клиенту-гостю: по знанию UUID его видит и клиент (`getOrder`), а `createdBy`
+    фиксирует сотрудника в журнале статусов.
+
+
+    **Выдача и неполучение (S6).** `markOrderIssued` проводит `ready → handed_over → closed` одной
+    транзакцией (в `orders.status` оба шага) и только для самовывоза и оплаченного заказа
+    (`paymentStatus=paid`; оплата `pos` принимается на кассе до выдачи — `initiatePosPayment`).
+    Повторная выдача уже закрытого выданного заказа — `200` без эффекта. Заказ самовывоза, который
+    не забрали за `NOT_RECEIVED_AFTER` (по умолчанию 2 ч) после `ready`, автоматически переходит
+    в `not_received` (`reason=pickup_timeout`); дальнейшая судьба такого заказа (списание, возврат)
+    — правило ресторана вне платформы.
+
+
+    **Отмена и возврат (S6).** Сотрудник может отменить заказ в `pending_payment` и `accepted`
+    (до начала приготовления): `cancelled` публикуется в `orders.status`, payment-service
+    возвращает деньги по оплаченному заказу (или отменяет неоплаченную операцию у шлюза) и
+    публикует `refundStatus` в `orders.payments.status`; orders отражает его в `Order.refundStatus`.
+    `paid`, пришедший по уже отменённому заказу, также ведёт к возврату.
 
 
     **Оплата (S3).** orders потребляет `orders.payments.status`: `paid` переводит
@@ -60,8 +86,9 @@ info:
     `CART_NOT_FOUND`, `CART_EMPTY`, `CART_CLOSED`, `CART_CHANGED`, `ITEMS_UNAVAILABLE`,
     `PRICE_CHANGED`, `RESTAURANT_CLOSED`, `DELIVERY_NOT_AVAILABLE`, `ADDRESS_REQUIRED`,
     `FULFILLMENT_REQUIRED`, `CONTACT_REQUIRED`, `PAYMENT_METHOD_NOT_ALLOWED`,
-    `CHANNEL_NOT_AVAILABLE`, `ORDER_NOT_FOUND`, `ORDER_STATE_CONFLICT`, `INVALID_SLOT`,
-    `MENU_UNAVAILABLE`, `RESTAURANT_UNAVAILABLE`.
+    `ORDER_NOT_FOUND`, `ORDER_STATE_CONFLICT`, `INVALID_SLOT`, `MENU_UNAVAILABLE`,
+    `RESTAURANT_UNAVAILABLE`, `UNAUTHORIZED`, `FORBIDDEN`, `ORDER_NOT_PAID`,
+    `NOT_PICKUP_ORDER`, `INVALID_ORDER_NUMBER`. (`CHANNEL_NOT_AVAILABLE` с S6 не используется.)
 
 servers:
   - url: https://api.blt.example/v1
@@ -235,7 +262,11 @@ paths:
         Если цены изменились с момента расчёта корзины — `409 PRICE_CHANGED`, корзина
         обновлена, клиент подтверждает новую сумму и повторяет запрос с новым ключом.
         Может создаваться клиентом (UC-ORD-03) или сотрудником от имени клиента
-        (`channel=staff_fax`, UC-ORD-02 — S6).
+        (`channel=staff_fax`, UC-ORD-02, S6): нужна роль персонала с доступом к ресторану корзины
+        (корзину сотрудник создаёт сам, `POST /carts`), `contact.phone` клиента обязателен,
+        способ оплаты — только `pos` (самовывоз) или `courier_card` (доставка): клиента у кассы
+        нет, онлайн-оплата невозможна. Заказ принадлежит клиенту-гостю, сотрудник записывается
+        в журнал статусов; в `orders.state` `source=fax`.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
@@ -255,6 +286,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Order' }
         '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401':
+          description: '`UNAUTHORIZED` — `channel=staff_fax` без аутентификации'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '403':
+          description: '`FORBIDDEN` — `channel=staff_fax` без роли персонала или для ресторана вне привязки сотрудника'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '404':
           description: Корзина не найдена (`CART_NOT_FOUND`)
           content:
@@ -271,7 +312,7 @@ paths:
         '422':
           description: >-
             `CART_EMPTY`, `FULFILLMENT_REQUIRED`, `CONTACT_REQUIRED`,
-            `PAYMENT_METHOD_NOT_ALLOWED`, `CHANNEL_NOT_AVAILABLE`, `IDEMPOTENCY_KEY_REUSED`
+            `PAYMENT_METHOD_NOT_ALLOWED` (для `staff_fax` — и `online_card`), `IDEMPOTENCY_KEY_REUSED`
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -362,28 +403,37 @@ paths:
     get:
       tags: [orders-service]
       operationId: searchOrder
-      x-status: planned
+      x-status: implemented
       summary: Поиск заказа по номеру (персонал)
       description: >-
-        **Planned (S6).** Поиск заказа сотрудником кафе по номеру для выдачи; только
-        заказы своего ресторана (по токену). Если заказ не найден — уточнить данные
-        клиента или эскалировать (E1). (UC-RCV-03)
+        Поиск заказа сотрудником кафе по номеру для выдачи; только заказы ресторанов,
+        к которым привязан сотрудник (`HQ_STAFF` — любые). Номер сопоставляется без учёта
+        регистра и пробелов по краям. Заказ чужого ресторана неотличим от несуществующего:
+        `404 ORDER_NOT_FOUND` — уточнить данные клиента или эскалировать (E1). В ответ,
+        в отличие от `getOrder`, входят контакты клиента (для сверки при выдаче). (UC-RCV-03)
       security:
         - bearerAuth: [orders:staff]
       parameters:
         - name: number
           in: query
           required: true
-          description: Номер заказа
-          schema: { type: string }
+          description: 'Номер заказа, формат `R<код>-<YYMMDD>-<NNNN>`'
+          schema: { type: string, example: R1-261021-0007 }
       responses:
         '200':
           description: Заказ найден
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Order' }
+              schema: { $ref: '#/components/schemas/StaffOrder' }
+        '400':
+          description: '`INVALID_PARAMETER` / `INVALID_ORDER_NUMBER` — номер не указан или не соответствует формату'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
         '404':
-          description: Заказ не найден (E1)
+          description: Заказ не найден или принадлежит другому ресторану (E1, `ORDER_NOT_FOUND`)
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -392,11 +442,15 @@ paths:
     post:
       tags: [orders-service]
       operationId: markOrderIssued
-      x-status: planned
+      x-status: implemented
       summary: Отметить выдачу заказа (персонал)
       description: >-
-        **Planned (S6).** Фиксирует факт выдачи заказа клиенту (`ready → handed_over →
-        closed`). Доступно сотруднику кафе при получении в ресторане. (UC-RCV-03)
+        Фиксирует факт выдачи заказа клиенту (`ready → handed_over → closed`, одна транзакция,
+        два события `orders.status`). Доступно сотруднику ресторана заказа при получении в
+        ресторане (самовывоз). Условия: статус `ready`, `paymentStatus=paid`. Если оплата
+        `pos` ещё не принята — `409 ORDER_NOT_PAID`: сначала `initiatePosPayment`. Повтор для
+        уже выданного (`closed` через `handed_over`) заказа — `200` без эффекта.
+        (UC-RCV-03, UC-RCV-01)
       security:
         - bearerAuth: [orders:staff]
       parameters:
@@ -407,9 +461,55 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Order' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
         '404': { $ref: '_common.yaml#/components/responses/NotFound' }
         '409':
-          description: Заказ нельзя выдать в текущем статусе (например, не оплачен)
+          description: >-
+            `ORDER_STATE_CONFLICT` (заказ не `ready`: ещё готовится, отменён, не получен),
+            `ORDER_NOT_PAID` (оплата не принята)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '422':
+          description: '`NOT_PICKUP_ORDER` — заказ с доставкой выдаёт курьер (S7)'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+
+  /orders/{orderId}/cancellation:
+    post:
+      tags: [orders-service]
+      operationId: cancelOrder
+      x-status: implemented
+      summary: Отменить заказ (персонал)
+      description: >-
+        Отменяет заказ в статусе `pending_payment` или `accepted` (до начала приготовления;
+        дальше — `409 ORDER_STATE_CONFLICT`). Публикует `orders.status` (`cancelled`,
+        `reason` = код причины). Оплаченный заказ возвращает деньги payment-service
+        (`Order.refundStatus`: `pending` → `refunded`); неоплаченную онлайн-операцию он
+        отменяет у шлюза. Повтор для уже отменённого заказа — `200` без эффекта.
+      security:
+        - bearerAuth: [orders:staff]
+      parameters:
+        - { $ref: '_common.yaml#/components/parameters/OrderId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelOrderRequest' }
+      responses:
+        '200':
+          description: Заказ отменён
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Order' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '409':
+          description: Заказ нельзя отменить в текущем статусе (`ORDER_STATE_CONFLICT`)
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -559,8 +659,8 @@ components:
           enum: [online, staff_fax]
           default: online
           description: >-
-            Канал оформления (клиент онлайн / сотрудник по факсу). `staff_fax` —
-            **planned (S6)**: до тех пор `422 CHANNEL_NOT_AVAILABLE`.
+            Канал оформления (клиент онлайн / сотрудник по факсу). `staff_fax` — только для
+            персонала (см. описание `createOrder`).
     OrderStatus:
       type: string
       enum: [pending_payment, accepted, cooking, ready, on_delivery, delivered, handed_over, closed, not_received, cancelled]
@@ -580,8 +680,19 @@ components:
           example: R2-261018-0007
         restaurantId: { type: string, format: uuid }
         status: { $ref: '#/components/schemas/OrderStatus' }
-        statusReason: { type: string, description: 'Причина нештатного статуса, например `payment_timeout`.' }
+        statusReason:
+          type: string
+          description: >-
+            Причина статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued` или код причины
+            отмены персоналом (`customer_request`, `out_of_stock`, `restaurant_closed`, `other`).
+        channel:
+          type: string
+          enum: [online, staff_fax]
         paymentStatus: { $ref: '_common.yaml#/components/schemas/PaymentStatus' }
+        refundStatus:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/RefundStatus'
+          description: Есть только у оплаченного заказа, по которому возвращаются деньги.
         paymentMethod: { $ref: '_common.yaml#/components/schemas/PaymentMethodType' }
         items:
           type: array
@@ -593,6 +704,25 @@ components:
         total: { $ref: '_common.yaml#/components/schemas/Money' }
         eta: { $ref: '#/components/schemas/Eta' }
         createdAt: { type: string, format: date-time }
+    StaffOrder:
+      description: Заказ с контактами клиента — ответ `searchOrder`.
+      allOf:
+        - $ref: '#/components/schemas/Order'
+        - type: object
+          properties:
+            contact: { $ref: '#/components/schemas/ContactInfo' }
+            createdBy:
+              type: string
+              description: Сотрудник, оформивший заказ (только `channel=staff_fax`).
+    CancelOrderRequest:
+      type: object
+      required: [reason]
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          enum: [customer_request, out_of_stock, restaurant_closed, other]
+          description: Код причины; попадает в `orders.status.reason` и в журнал статусов.
     PickupSlot:
       type: object
       required: [from, to]

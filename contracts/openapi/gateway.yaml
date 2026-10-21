@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: api-gateway — единая точка входа
-  version: 1.0.0
+  version: 1.1.0
   description: |-
     Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
     это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`), проксируемые
@@ -18,7 +18,7 @@ info:
 
     Gateway проверяет JWT **локально** по JWKS auth-service (RS256, кэш по `kid`, перечитывание при
     неизвестном `kid`, работа на устаревшем кэше при недоступности auth) и **не** вызывает auth на каждый
-    запрос. Для маршрутов с `sensitive: true` (создание заказа, инициация оплаты) при наличии токена
+    запрос. Для маршрутов с `sensitive: true` (создание заказа, инициация оплаты, оплата на кассе, отмена заказа) при наличии токена
     дополнительно вызывается `POST /auth/introspect` (результат кэшируется на `INTROSPECT_CACHE_TTL`,
     по умолчанию 10 с): заблокированный пользователь отсекается сразу, а не по истечении access-токена.
     Если auth недоступен, такие запросы отклоняются `503 AUTH_UNAVAILABLE` (fail-closed); гостевые
@@ -74,9 +74,9 @@ info:
 
     Источник правды — `x-routes` ниже; в gateway она загружается из `services/gateway/internal/routes/routes.json`.
     Паттерны — синтаксис `net/http.ServeMux` (метод + путь); побеждает самый специфичный.
-    Операции с `x-status: planned` (S6: `searchOrder`, `markOrderIssued`, `initiatePosPayment`) уже закрыты на периметре
-    (`required` + роль персонала), чтобы при появлении в сервисе они не оказались открытыми; до тех пор сервис отвечает на них `404`.
-    Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
+    Операции персонала (S6: `searchOrder`, `markOrderIssued`, `cancelOrder`, `initiatePosPayment`) на периметре закрыты
+    (`required` + роль персонала; `cancelOrder` и `initiatePosPayment` — ещё и `sensitive`); привязку к ресторану проверяет
+    сам сервис по claim `restaurants[]`. Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -103,14 +103,15 @@ x-routes:
   - { pattern: 'PUT /carts/{cartId}/items',                            upstream: orders,     access: optional }
   - { pattern: 'PUT /carts/{cartId}/fulfillment',                      upstream: orders,     access: optional }
   - { pattern: 'POST /orders',                                         upstream: orders,     access: optional, sensitive: true }
-  - { pattern: 'GET /orders/search',                                   upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder, x-status planned (S6)' }
+  - { pattern: 'GET /orders/search',                                   upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder (S6)' }
   - { pattern: 'GET /orders/{orderId}',                                upstream: orders,     access: optional }
   - { pattern: 'GET /orders/{orderId}/eta',                            upstream: orders,     access: optional }
   - { pattern: 'PUT /orders/{orderId}/pickup-slot',                    upstream: orders,     access: optional }
-  - { pattern: 'POST /orders/{orderId}/issuance',                      upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'markOrderIssued, x-status planned (S6)' }
+  - { pattern: 'POST /orders/{orderId}/issuance',                      upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'markOrderIssued (S6)' }
+  - { pattern: 'POST /orders/{orderId}/cancellation',                  upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'cancelOrder (S6): запускает возврат денег' }
   - { pattern: 'GET /orders/{orderId}/payment-methods',                upstream: payment,    access: optional }
   - { pattern: 'POST /orders/{orderId}/payments',                      upstream: payment,    access: optional, sensitive: true }
-  - { pattern: 'POST /orders/{orderId}/payments/pos',                  upstream: payment,    access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'initiatePosPayment, x-status planned (S6)' }
+  - { pattern: 'POST /orders/{orderId}/payments/pos',                  upstream: payment,    access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'initiatePosPayment (S6)' }
   - { pattern: 'GET /orders/{orderId}/payments/{paymentId}',           upstream: payment,    access: optional }
 
 paths: {}

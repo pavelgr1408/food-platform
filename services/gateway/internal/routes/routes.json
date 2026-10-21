@@ -19,6 +19,7 @@
   {"pattern": "GET /orders/{orderId}/eta",                        "upstream": "orders",     "access": "optional"},
   {"pattern": "PUT /orders/{orderId}/pickup-slot",                "upstream": "orders",     "access": "optional"},
   {"pattern": "POST /orders/{orderId}/issuance",                  "upstream": "orders",     "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"]},
+  {"pattern": "POST /orders/{orderId}/cancellation",              "upstream": "orders",     "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
   {"pattern": "GET /orders/{orderId}/payment-methods",            "upstream": "payment",    "access": "optional"},
   {"pattern": "POST /orders/{orderId}/payments",                  "upstream": "payment",    "access": "optional", "sensitive": true},
   {"pattern": "POST /orders/{orderId}/payments/pos",              "upstream": "payment",    "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
