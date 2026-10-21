@@ -57,6 +57,7 @@ func (r *received) waitFor(t *testing.T, n int) {
 }
 
 type gw struct {
+	key  string
 	t    *testing.T
 	srv  *httptest.Server
 	hook *received
@@ -75,13 +76,13 @@ func newGW(t *testing.T) *gw {
 	m.Register(mux, env)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &gw{t: t, srv: srv, hook: hook}
+	return &gw{key: "dev-gateway-api-key", t: t, srv: srv, hook: hook}
 }
 
 func (g *gw) call(method, path string, body string, hdr map[string]string) (int, map[string]any) {
 	g.t.Helper()
 	req, _ := http.NewRequest(method, g.srv.URL+path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer dev-gateway-api-key")
+	req.Header.Set("Authorization", "Bearer "+g.key)
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
@@ -275,5 +276,164 @@ func TestCancel(t *testing.T) {
 	}
 	if code, _ := g.call("POST", "/v1/payments/nope/cancel", "", nil); code != 404 {
 		t.Fatal("unknown")
+	}
+}
+
+// ---- возвраты ----
+
+func (g *gw) refund(opID, key string, amount int64) (int, map[string]any) {
+	return g.call("POST", "/v1/payments/"+opID+"/refund", `{"amount":{"amount":`+itoa(amount)+`,"currency":"RUB"}}`,
+		map[string]string{"Idempotency-Key": key})
+}
+
+func TestRefundIsIdempotentAndFullAmountOnly(t *testing.T) {
+	g := newGW(t)
+	_, op := g.create("r1", 54900)
+	id := op["id"].(string)
+	g.hook.waitFor(t, 1)
+
+	if code, _ := g.refund(id, "rk", 100); code != 422 {
+		t.Fatalf("partial refund must be refused: %d", code)
+	}
+	code, a := g.refund(id, "rk", 54900)
+	if code != 201 || a["status"] != "refunded" || !strings.HasPrefix(a["id"].(string), "rf_") {
+		t.Fatalf("%d %v", code, a)
+	}
+	code, b := g.refund(id, "rk", 54900)
+	if code != 200 || b["id"] != a["id"] {
+		t.Fatalf("replay must return the same refund: %d %v", code, b)
+	}
+	if code, e := g.refund(id, "another", 54900); code != 422 || e["code"] != "already_refunded" {
+		t.Fatalf("a second refund of the operation: %d %v", code, e)
+	}
+	if code, _ := g.call("POST", "/v1/payments/"+id+"/refund", `{"amount":{"amount":54900,"currency":"RUB"}}`, nil); code != 400 {
+		t.Fatalf("no key: %d", code)
+	}
+	if code, _ := g.refund("gw_nope", "x", 1); code != 404 {
+		t.Fatalf("unknown operation: %d", code)
+	}
+}
+
+func TestRefundRequiresPaidOperation(t *testing.T) {
+	g := newGW(t)
+	_, op := g.create("r2", 54913) // declined
+	g.hook.waitFor(t, 1)
+	if code, e := g.refund(op["id"].(string), "k", 54913); code != 422 || e["code"] != "not_paid" {
+		t.Fatalf("%d %v", code, e)
+	}
+}
+
+func TestRefundModes(t *testing.T) {
+	g := newGW(t)
+	_, op := g.create("r3", 1000)
+	id := op["id"].(string)
+	g.hook.waitFor(t, 1)
+	g.call("POST", "/_admin/gateway/mode?refund=error", "", nil)
+	if code, _ := g.refund(id, "k", 1000); code != 503 {
+		t.Fatalf("%d", code)
+	}
+	g.call("POST", "/_admin/gateway/mode?refund=reject", "", nil)
+	if code, _ := g.refund(id, "k", 1000); code != 422 {
+		t.Fatalf("%d", code)
+	}
+	if code, _ := g.call("POST", "/_admin/gateway/mode?refund=nope", "", nil); code != 400 {
+		t.Fatalf("bad mode: %d", code)
+	}
+	g.call("POST", "/_admin/gateway/mode?refund=ok", "", nil)
+	if code, _ := g.refund(id, "k", 1000); code != 201 {
+		t.Fatalf("after recovery: %d", code)
+	}
+	_, ins := g.call("GET", "/_inspect/payments", "", nil)
+	if rs, _ := ins["refunds"].([]any); len(rs) != 1 {
+		t.Fatalf("%v", ins)
+	}
+}
+
+// ---- касса ----
+
+func newPOS(t *testing.T) *gw {
+	t.Helper()
+	hook := &received{}
+	hs := httptest.NewServer(hook.handler([]byte("dev-pos-webhook-secret")))
+	t.Cleanup(hs.Close)
+	t.Setenv("MOCK_POS_WEBHOOK_URL", hs.URL)
+	m := &paymentMock{pos: true}
+	mux := http.NewServeMux()
+	m.Register(mux, newEnv())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &gw{key: "dev-pos-api-key", t: t, srv: srv, hook: hook}
+}
+
+func (g *gw) createPOS(key, tender string, amount int64) (int, map[string]any) {
+	body := `{"amount":{"amount":` + itoa(amount) + `,"currency":"RUB"},"reference":"pay-` + key + `","tender":"` + tender + `","metadata":{"orderId":"ord-1"}}`
+	return g.call("POST", "/v1/payments", body, map[string]string{"Idempotency-Key": key})
+}
+
+func TestPOSProfile(t *testing.T) {
+	if (&paymentMock{pos: true}).Name() != "pos" || (&paymentMock{pos: true}).DefaultAddr() != ":9093" ||
+		(&paymentMock{}).Name() != "payment" || (&paymentMock{}).DefaultAddr() != ":9091" {
+		t.Fatal("profiles")
+	}
+	if _, err := Build([]string{"payment", "pos"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPOSPaidWebhookCarriesFiscalData(t *testing.T) {
+	g := newPOS(t)
+	code, op := g.createPOS("p1", "cash", 25000)
+	if code != 201 || op["status"] != "pending" || op["confirmationUrl"] != nil {
+		t.Fatalf("%d %v", code, op)
+	}
+	g.hook.waitFor(t, 1)
+	ev := g.hook.list[0]
+	fd, _ := ev["fiscalData"].(map[string]any)
+	if ev["status"] != "paid" || fd["receiptNumber"] == nil || fd["fn"] == nil || fd["tender"] != "cash" || fd["total"] != float64(25000) {
+		t.Fatalf("%v", ev)
+	}
+	_, st := g.call("GET", "/v1/payments/"+op["id"].(string), "", nil)
+	sfd, _ := st["fiscalData"].(map[string]any)
+	if st["status"] != "paid" || sfd["receiptNumber"] != fd["receiptNumber"] {
+		t.Fatalf("status must expose the same fiscal document: %v", st)
+	}
+}
+
+func TestPOSRequiresTenderAndOwnKey(t *testing.T) {
+	g := newPOS(t)
+	if code, _ := g.createPOS("p2", "crypto", 1000); code != 400 {
+		t.Fatalf("bad tender: %d", code)
+	}
+	g.key = "dev-gateway-api-key" // ключ шлюза кассе не подходит
+	if code, _ := g.createPOS("p3", "card", 1000); code != 401 {
+		t.Fatalf("%d", code)
+	}
+}
+
+func TestPOSDeclinedHasNoFiscalData(t *testing.T) {
+	g := newPOS(t)
+	_, op := g.createPOS("p4", "card", 25013)
+	g.hook.waitFor(t, 1)
+	if g.hook.list[0]["status"] != "declined" || g.hook.list[0]["fiscalData"] != nil {
+		t.Fatalf("%v", g.hook.list[0])
+	}
+	if _, st := g.call("GET", "/v1/payments/"+op["id"].(string), "", nil); st["fiscalData"] != nil {
+		t.Fatalf("%v", st)
+	}
+}
+
+func TestPOSAdminPathsAndRefund(t *testing.T) {
+	g := newPOS(t)
+	_, op := g.createPOS("p5", "card", 1000)
+	g.hook.waitFor(t, 1)
+	if code, _ := g.call("POST", "/_admin/pos/mode?refund=error", "", nil); code != 200 {
+		t.Fatalf("pos admin path: %d", code)
+	}
+	if code, _ := g.refund(op["id"].(string), "k", 1000); code != 503 {
+		t.Fatalf("%d", code)
+	}
+	g.call("POST", "/_admin/pos/reset", "", nil)
+	if code, _ := g.call("GET", "/_inspect/pos", "", nil); code != 200 {
+		t.Fatalf("pos inspect path: %d", code)
 	}
 }
