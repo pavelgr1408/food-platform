@@ -23,6 +23,7 @@ type CreateOrderInput struct {
 	PaymentMethod domain.PaymentMethod
 	Contact       domain.Contact
 	Channel       string // "" | online | staff_fax
+	Actor         Actor  // субъект запроса; для staff_fax должен быть персоналом ресторана корзины (S6)
 }
 
 // CommitFunc вызывается ВНУТРИ транзакции создания заказа: HTTP-слой сохраняет здесь
@@ -37,10 +38,14 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 	if _, err := uuid.Parse(in.CartID); err != nil {
 		return domain.Order{}, badParam("cartId must be a UUID")
 	}
+	fax := false
 	switch in.Channel {
 	case "", "online":
-	case "staff_fax":
-		return domain.Order{}, unprocessable("CHANNEL_NOT_AVAILABLE", "channel staff_fax is not available yet (planned, S6)")
+	case domain.ChannelStaffFax:
+		if err := in.Actor.requireStaff(); err != nil {
+			return domain.Order{}, err
+		}
+		fax = true
 	default:
 		return domain.Order{}, badParam("channel must be online or staff_fax")
 	}
@@ -56,6 +61,9 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 	if cart.Status != domain.CartOpen {
 		return domain.Order{}, errCartClosed
 	}
+	if fax && !in.Actor.Can(cart.RestaurantID) {
+		return domain.Order{}, errForbidden
+	}
 	switch {
 	case len(cart.Items) == 0:
 		return domain.Order{}, unprocessable("CART_EMPTY", "the cart is empty")
@@ -64,10 +72,12 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 	case !in.PaymentMethod.Allowed(cart.Fulfillment):
 		return domain.Order{}, unprocessable("PAYMENT_METHOD_NOT_ALLOWED",
 			fmt.Sprintf("payment method %q is not allowed for %s", in.PaymentMethod, cart.Fulfillment))
+	case fax && in.PaymentMethod.Prepaid():
+		return domain.Order{}, unprocessable("PAYMENT_METHOD_NOT_ALLOWED", "a fax order cannot be paid online: the customer is not present (use pos or courier_card)")
 	}
 	contact := cart.Contact.Merge(reqContact)
-	if cart.OwnerUserID == "" && contact.Phone == "" {
-		return domain.Order{}, unprocessable("CONTACT_REQUIRED", "a guest order needs contact.phone")
+	if (cart.OwnerUserID == "" || fax) && contact.Phone == "" {
+		return domain.Order{}, unprocessable("CONTACT_REQUIRED", "a guest or fax order needs contact.phone")
 	}
 
 	// E2: ресторан должен быть открыт; доставка — по-прежнему включена.
@@ -108,6 +118,12 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 		Currency: cart.Currency, Items: lines, Subtotal: sub, DiscountTotal: discount, Total: total,
 		Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
+	actor := actorCustomer
+	if fax {
+		// заказ по факсу принадлежит клиенту-гостю (владельца нет); сотрудник фиксируется в журнале и created_by
+		order.Channel, order.OwnerUserID, order.CreatedBy = domain.ChannelStaffFax, "", in.Actor.UserID
+		actor = in.Actor.label()
+	}
 
 	rcode, err := s.st.RestaurantCode(ctx, s.pool, cart.RestaurantID)
 	if err != nil {
@@ -127,7 +143,7 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 		if order.Number, err = s.st.NextNumber(ctx, tx, cart.RestaurantID, rcode, now.In(loc)); err != nil {
 			return err
 		}
-		if err := s.st.InsertOrder(ctx, tx, order, actorCustomer); err != nil {
+		if err := s.st.InsertOrder(ctx, tx, order, actor); err != nil {
 			return err
 		}
 		if err := s.st.CloseCart(ctx, tx, cart.ID, order.ID); err != nil {

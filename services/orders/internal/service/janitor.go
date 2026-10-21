@@ -70,7 +70,7 @@ func (s *Service) PurgeCarts(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-// RunJanitor периодически отменяет неоплаченные заказы и чистит корзины, пока ctx не отменён.
+// RunJanitor периодически отменяет неоплаченные заказы, помечает не забранные заказы (not_received) и чистит корзины, пока ctx не отменён.
 func (s *Service) RunJanitor(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -83,6 +83,11 @@ func (s *Service) RunJanitor(ctx context.Context, interval time.Duration) {
 			s.log.Error("expire unpaid orders failed", "error", err)
 		} else if n > 0 {
 			s.log.Info("unpaid orders cancelled", "count", n, "reason", ReasonPaymentTimeout)
+		}
+		if n, err := s.ExpireNotReceived(ctx); err != nil && ctx.Err() == nil {
+			s.log.Error("expire not received orders failed", "error", err)
+		} else if n > 0 {
+			s.log.Info("pickup orders marked not received", "count", n, "reason", ReasonPickupTimeout)
 		}
 		if time.Since(lastPurge) > 10*time.Minute {
 			lastPurge = time.Now()

@@ -28,6 +28,8 @@ type Config struct {
 	PrepMinutes     int           // типовое время приготовления для ETA без свежей оценки производства
 	DeliveryMinutes int           // типовое время доставки
 	LeadTimeTTL     time.Duration // срок годности production.lead.time (S4)
+
+	NotReceivedAfter time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
 }
 
 // Load читает окружение; возвращает все найденные ошибки разом.
@@ -46,6 +48,8 @@ func Load() (Config, error) {
 		PrepMinutes:     r.Int("ETA_PREP_MINUTES", 20),
 		DeliveryMinutes: r.Int("ETA_DELIVERY_MINUTES", 30),
 		LeadTimeTTL:     r.Duration("LEAD_TIME_TTL", 15*time.Minute),
+
+		NotReceivedAfter: r.Duration("NOT_RECEIVED_AFTER", 2*time.Hour),
 	}
 	err := r.Err()
 	var bad []error
@@ -55,7 +59,7 @@ func Load() (Config, error) {
 		}
 	}
 	for k, v := range map[string]time.Duration{"UPSTREAM_TIMEOUT": c.UpstreamTimeout, "PAYMENT_TIMEOUT": c.PaymentTimeout, "PAYMENT_UNKNOWN_GRACE": c.UnknownGrace,
-		"CART_TTL": c.CartTTL, "JANITOR_INTERVAL": c.JanitorInterval, "LEAD_TIME_TTL": c.LeadTimeTTL} {
+		"CART_TTL": c.CartTTL, "JANITOR_INTERVAL": c.JanitorInterval, "LEAD_TIME_TTL": c.LeadTimeTTL, "NOT_RECEIVED_AFTER": c.NotReceivedAfter} {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))
 		}

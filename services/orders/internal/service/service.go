@@ -34,13 +34,14 @@ type Waker interface{ Wake() }
 
 // Config — настройки сценариев.
 type Config struct {
-	PaymentTimeout  time.Duration // pending_payment старше — отменяется (payment_timeout)
-	UnknownGrace    time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
-	CartTTL         time.Duration // открытые корзины без изменений старше — удаляются
-	PrepMinutes     int           // типовое время приготовления (ETA, если свежей оценки производства нет)
-	LeadTimeTTL     time.Duration // срок годности реплики production.lead.time
-	DeliveryMinutes int           // типовое время доставки поверх приготовления
-	DefaultCurrency string
+	PaymentTimeout   time.Duration // pending_payment старше — отменяется (payment_timeout)
+	UnknownGrace     time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
+	CartTTL          time.Duration // открытые корзины без изменений старше — удаляются
+	PrepMinutes      int           // типовое время приготовления (ETA, если свежей оценки производства нет)
+	LeadTimeTTL      time.Duration // срок годности реплики production.lead.time
+	DeliveryMinutes  int           // типовое время доставки поверх приготовления
+	NotReceivedAfter time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
+	DefaultCurrency  string
 }
 
 func (c *Config) defaults() {
@@ -61,6 +62,9 @@ func (c *Config) defaults() {
 	}
 	if c.DeliveryMinutes <= 0 {
 		c.DeliveryMinutes = 30
+	}
+	if c.NotReceivedAfter <= 0 {
+		c.NotReceivedAfter = 2 * time.Hour
 	}
 	if c.DefaultCurrency == "" {
 		c.DefaultCurrency = "RUB"

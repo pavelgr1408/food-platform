@@ -114,7 +114,9 @@ type orderDTO struct {
 	RestaurantID  string         `json:"restaurantId"`
 	Status        string         `json:"status"`
 	StatusReason  string         `json:"statusReason,omitempty"`
+	Channel       string         `json:"channel"`
 	PaymentStatus string         `json:"paymentStatus"`
+	RefundStatus  string         `json:"refundStatus,omitempty"`
 	PaymentMethod string         `json:"paymentMethod"`
 	Items         []itemDTO      `json:"items"`
 	Fulfillment   fulfillmentDTO `json:"fulfillment"`
@@ -123,6 +125,25 @@ type orderDTO struct {
 	DiscountTotal money          `json:"discountTotal"`
 	Total         money          `json:"total"`
 	CreatedAt     time.Time      `json:"createdAt"`
+}
+
+// staffOrderDTO — ответ searchOrder: заказ с контактами клиента (StaffOrder в orders.yaml).
+type staffOrderDTO struct {
+	orderDTO
+	Contact   *contactDTO `json:"contact,omitempty"`
+	CreatedBy string      `json:"createdBy,omitempty"`
+}
+
+func toStaffOrder(o domain.Order) staffOrderDTO {
+	d := staffOrderDTO{orderDTO: toOrder(o), CreatedBy: o.CreatedBy}
+	if c := o.Contact; c.Name != "" || c.Phone != "" || c.Email != "" {
+		d.Contact = &contactDTO{Name: c.Name, Phone: c.Phone, Email: c.Email}
+	}
+	return d
+}
+
+type cancelRequest struct {
+	Reason string `json:"reason"`
 }
 
 type etaDTO struct {
@@ -178,7 +199,7 @@ func toCart(v service.CartView) cartDTO {
 
 func toOrder(o domain.Order) orderDTO {
 	d := orderDTO{ID: o.ID, Number: o.Number, RestaurantID: o.RestaurantID, Status: string(o.Status), StatusReason: o.StatusReason,
-		PaymentStatus: string(o.PaymentStatus), PaymentMethod: string(o.PaymentMethod), Items: toItems(o.Items, o.Currency),
+		Channel: o.Channel, PaymentStatus: string(o.PaymentStatus), RefundStatus: string(o.RefundStatus), PaymentMethod: string(o.PaymentMethod), Items: toItems(o.Items, o.Currency),
 		Fulfillment: fulfillmentDTO{Type: string(o.Fulfillment), Address: toAddress(o.Address)},
 		Subtotal:    money{o.Subtotal, o.Currency}, DiscountTotal: money{o.DiscountTotal, o.Currency}, Total: money{o.Total, o.Currency},
 		CreatedAt: o.CreatedAt}
