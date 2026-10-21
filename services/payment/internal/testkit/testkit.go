@@ -58,6 +58,10 @@ type Op struct {
 	Amount int64
 	Status string // pending | paid | declined
 	Reason string
+	Tender string
+	Fiscal []byte
+	// Refunded — число созданных возвратов (идемпотентность: повтор с тем же ключом не увеличивает).
+	Refunded int
 }
 
 // FakeGateway — управляемая подделка шлюза: идемпотентное Create по ключу, настраиваемые сбои.
@@ -70,7 +74,10 @@ type FakeGateway struct {
 	StatusErr error
 	// PaidOnCancel: к моменту Cancel операцию успели оплатить (гонка «истечение ↔ оплата»).
 	PaidOnCancel bool
-	Calls        struct{ Create, Status, Cancel int }
+	// RefundErr — что вернуть из Refund (nil — успех); RefundPendingOnce — первый ответ «pending».
+	RefundErr         error
+	RefundPendingOnce bool
+	Calls             struct{ Create, Status, Cancel, Refund int }
 }
 
 // NewGateway создаёт подделку.
@@ -88,7 +95,7 @@ func (g *FakeGateway) Create(_ context.Context, r gateway.CreateRequest) (gatewa
 	}
 	op, ok := g.ops[r.Key]
 	if !ok {
-		op = &Op{Ref: "gw_" + strconv.Itoa(len(g.ops)+1), Key: r.Key, Amount: r.Amount, Status: gateway.StatePending}
+		op = &Op{Ref: "gw_" + strconv.Itoa(len(g.ops)+1), Key: r.Key, Amount: r.Amount, Status: gateway.StatePending, Tender: r.Tender}
 		g.ops[r.Key], g.byRef[op.Ref] = op, op
 	}
 	if g.LostReply != nil {
@@ -109,7 +116,7 @@ func (g *FakeGateway) Status(_ context.Context, ref string) (gateway.State, erro
 	if !ok {
 		return gateway.State{}, gateway.ErrNotFound
 	}
-	return gateway.State{Ref: op.Ref, Status: op.Status, Amount: op.Amount, Currency: "RUB", Reason: op.Reason}, nil
+	return gateway.State{Ref: op.Ref, Status: op.Status, Amount: op.Amount, Currency: "RUB", Reason: op.Reason, Fiscal: op.Fiscal}, nil
 }
 
 // Cancel отменяет pending; оплаченную возвращает как есть.
@@ -140,8 +147,52 @@ func (g *FakeGateway) Finish(key, status, reason string) {
 	}
 }
 
+// SetFiscal задаёт фискальный документ операции (его отдаёт Status).
+func (g *FakeGateway) SetFiscal(key string, doc []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if op := g.ops[key]; op != nil {
+		op.Fiscal = doc
+	}
+}
+
+// Refund — идемпотентно по ключу; возвращать можно только оплаченное.
+func (g *FakeGateway) Refund(_ context.Context, ref, key string, _ int64, _ string) (gateway.Refunded, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Calls.Refund++
+	if g.RefundErr != nil {
+		return gateway.Refunded{}, g.RefundErr
+	}
+	op, ok := g.byRef[ref]
+	if !ok {
+		return gateway.Refunded{}, gateway.ErrNotFound
+	}
+	if op.Status != gateway.StatePaid {
+		return gateway.Refunded{}, &gateway.RejectedError{HTTPStatus: 422, Code: "not_paid", Message: "only paid operations can be refunded"}
+	}
+	if g.RefundPendingOnce {
+		g.RefundPendingOnce = false
+		return gateway.Refunded{Ref: "rf_" + key[:8], Status: "pending"}, nil
+	}
+	if op.Refunded == 0 {
+		op.Refunded = 1
+	}
+	return gateway.Refunded{Ref: "rf_" + key[:8], Status: "refunded"}, nil
+}
+
 // Operations — число операций, созданных у шлюза (не вызовов Create).
 func (g *FakeGateway) Operations() int { g.mu.Lock(); defer g.mu.Unlock(); return len(g.ops) }
 
 // ErrTimeout — «сеть оборвалась»: не отказ, а неизвестность.
 var ErrTimeout = errors.New("gateway timeout")
+
+// Ref возвращает идентификатор операции у шлюза по ключу (paymentId); "" — операции нет.
+func (g *FakeGateway) Ref(key string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if op := g.ops[key]; op != nil {
+		return op.Ref
+	}
+	return ""
+}

@@ -82,3 +82,65 @@ func TestStatusAndCancel(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateSendsTender(t *testing.T) {
+	var body createDTO
+	c, stop := client(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id":"pos_1","status":"pending"}`))
+	}))
+	defer stop()
+	if _, err := c.Create(context.Background(), CreateRequest{Key: "p", Reference: "p", Amount: 1, Currency: "RUB", Tender: "cash"}); err != nil {
+		t.Fatal(err)
+	}
+	if body.Tender != "cash" {
+		t.Fatalf("%+v", body)
+	}
+}
+
+func TestStatusReturnsOnlyFiscalObject(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"id":"p","status":"paid","fiscalData":{"receiptNumber":"1"}}`: `{"receiptNumber":"1"}`,
+		`{"id":"p","status":"paid","fiscalData":null}`:                  "",
+		`{"id":"p","status":"paid","fiscalData":"junk"}`:                "",
+		`{"id":"p","status":"paid"}`:                                    "",
+	} {
+		c, stop := client(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		s, err := c.Status(context.Background(), "p")
+		stop()
+		if err != nil || string(s.Fiscal) != want {
+			t.Errorf("%s: fiscal=%q err=%v", body, s.Fiscal, err)
+		}
+	}
+}
+
+func TestRefundIsIdempotentByKeyAndClassifiesErrors(t *testing.T) {
+	var gotKey, gotPath string
+	var gotBody struct {
+		Amount moneyDTO `json:"amount"`
+	}
+	code := 200
+	c, stop := client(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotPath = r.Header.Get("Idempotency-Key"), r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"id":"rf_1","status":"refunded","code":"nope","message":"m"}`))
+	}))
+	defer stop()
+	got, err := c.Refund(context.Background(), "gw 1", "pay-1", 54990, "RUB")
+	if err != nil || got.Ref != "rf_1" || got.Status != "refunded" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if gotKey != "pay-1" || gotPath != "/v1/payments/gw 1/refund" || gotBody.Amount.Amount != 54990 || gotBody.Amount.Currency != "RUB" {
+		t.Fatalf("key=%q path=%q body=%+v", gotKey, gotPath, gotBody)
+	}
+	code = 422
+	if _, err := c.Refund(context.Background(), "gw_1", "pay-1", 1, "RUB"); !IsRejected(err) {
+		t.Fatalf("422 is a definite refusal: %v", err)
+	}
+	code = 503
+	if _, err := c.Refund(context.Background(), "gw_1", "pay-1", 1, "RUB"); err == nil || IsRejected(err) {
+		t.Fatalf("503 is transient: %v", err)
+	}
+}

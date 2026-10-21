@@ -37,9 +37,17 @@ func TestProdRequiresRealSecrets(t *testing.T) {
 		t.Fatalf("weak and dev secrets must be rejected: %v", err)
 	}
 	_, err = load(t, map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "prod", "GATEWAY_API_KEY": "0123456789abcdef0123",
-		"GATEWAY_WEBHOOK_SECRET": "abcdef0123456789abcd", "POS_WEBHOOK_SECRET": "0123456789abcdef0123"})
+		"GATEWAY_WEBHOOK_SECRET": "abcdef0123456789abcd", "POS_WEBHOOK_SECRET": "0123456789abcdef0123", "POS_API_KEY": "pos-key-0123456789ab"})
 	if err != nil {
 		t.Fatalf("strong secrets must pass: %v", err)
+	}
+}
+
+func TestProdRequiresPOSAPIKey(t *testing.T) {
+	_, err := load(t, map[string]string{"DATABASE_URL": "postgres://x", "APP_ENV": "prod", "GATEWAY_API_KEY": "0123456789abcdef0123",
+		"GATEWAY_WEBHOOK_SECRET": "abcdef0123456789abcd", "POS_WEBHOOK_SECRET": "0123456789abcdef0123"})
+	if err == nil || !strings.Contains(err.Error(), "POS_API_KEY") {
+		t.Fatalf("prod without POS_API_KEY must fail, got %v", err)
 	}
 }
 

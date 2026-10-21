@@ -23,7 +23,8 @@ import (
 type Payments interface {
 	Methods(ctx context.Context, userID, orderID string) ([]domain.MethodView, error)
 	Initiate(ctx context.Context, userID, orderID string, in service.InitiateInput) (domain.Payment, error)
-	Get(ctx context.Context, userID, orderID, paymentID string) (domain.Payment, error)
+	GetAs(ctx context.Context, a service.Actor, orderID, paymentID string) (domain.Payment, error)
+	InitiatePos(ctx context.Context, a service.Actor, orderID string, tender domain.Tender) (domain.Payment, error)
 	HandleCallback(ctx context.Context, source domain.Method, cb service.Callback) error
 }
 
@@ -73,6 +74,18 @@ func New(d Deps) http.Handler {
 		})(initiate)
 	}
 	mux.Handle("POST /orders/{orderId}/payments", initiate)
+	// Оплата на кассе — только персонал (401 гостю, 403 не-персоналу); ограничение рестораном — в сервисе (404).
+	var initiatePos http.Handler = http.HandlerFunc(h.initiatePos)
+	if d.Idempotency != nil {
+		initiatePos = d.Idempotency.Middleware(idempotency.Options{
+			Required: true,
+			Log:      d.Log,
+			Scope:    func(r *http.Request) string { return authclient.FromContext(r.Context()).UserID },
+		})(initiatePos)
+	}
+	// роль проверяется снаружи идемпотентности: отказ 401/403 не запоминается под ключом
+	staff := authclient.RequireRole(authclient.RoleStaff, authclient.RoleFranchiseOwner, authclient.RoleHQStaff)
+	mux.Handle("POST /orders/{orderId}/payments/pos", staff(initiatePos))
 	mux.HandleFunc("GET /orders/{orderId}/payments/{paymentId}", h.getPayment)
 
 	// Вебхуки: мимо gateway, защита — подпись, а не токен.
@@ -85,6 +98,16 @@ func New(d Deps) http.Handler {
 }
 
 func userID(r *http.Request) string { return authclient.FromContext(r.Context()).UserID }
+
+func actor(r *http.Request) service.Actor {
+	p := authclient.FromContext(r.Context())
+	return service.Actor{
+		UserID:      p.UserID,
+		Staff:       p.HasRole(authclient.RoleStaff, authclient.RoleFranchiseOwner, authclient.RoleHQStaff),
+		HQ:          p.HasRole(authclient.RoleHQStaff),
+		Restaurants: p.Restaurants,
+	}
+}
 
 // conflictProblem — Problem с расширением paymentId (payment.yaml: PaymentConflictProblem).
 type conflictProblem struct {
@@ -147,8 +170,27 @@ func (h *handlers) initiate(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, status, toPayment(p))
 }
 
+func (h *handlers) initiatePos(w http.ResponseWriter, r *http.Request) {
+	var req posInitRequest
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	orderID := r.PathValue("orderId")
+	p, err := h.svc.InitiatePos(r.Context(), actor(r), orderID, domain.Tender(req.Tender))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/orders/"+orderID+"/payments/"+p.ID)
+	status := http.StatusCreated
+	if p.Status == domain.StatusUnknown {
+		status = http.StatusAccepted
+	}
+	httpx.WriteJSON(w, status, toPayment(p))
+}
+
 func (h *handlers) getPayment(w http.ResponseWriter, r *http.Request) {
-	p, err := h.svc.Get(r.Context(), userID(r), r.PathValue("orderId"), r.PathValue("paymentId"))
+	p, err := h.svc.GetAs(r.Context(), actor(r), r.PathValue("orderId"), r.PathValue("paymentId"))
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -63,6 +63,15 @@ func (f *fixture) order(t *testing.T, method, owner string, amount int64) string
 	return id
 }
 
+// consumeStatus проводит событие orders.status через настоящий обработчик консьюмера.
+func (f *fixture) consumeStatus(t *testing.T, payload string) {
+	t.Helper()
+	ev := kafka.Event{ID: uuid.New(), Topic: service.TopicStatus, Key: "k", Payload: []byte(payload)}
+	if _, err := kafka.ProcessOnce(ctx, f.pool, "payment-service", ev, f.svc.HandleEvent); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type resp struct {
 	Status int
 	Header http.Header
@@ -329,11 +338,11 @@ func TestPOSWebhookOnlyForPOSPayments(t *testing.T) {
 	if r := signedWebhook(t, f, "/webhooks/payments/pos", posSecret, cb(o, p, "paid", 1000), time.Now()); r.Status != 404 {
 		t.Fatalf("%d %s", r.Status, r.Body)
 	}
-	// POS-платёж (создаётся initiatePosPayment в S6) принимается: вставляем напрямую
+	// POS-платёж (создаёт initiatePosPayment) принимается: вставляем напрямую
 	posOrder := f.order(t, "restaurant", "", 2000)
 	pid := uuid.NewString()
-	if _, err := f.pool.Exec(ctx, `INSERT INTO payments (id, order_id, attempt, method, status, amount, currency, created_at, updated_at)
-		VALUES ($1,$2,1,'pos','pending',2000,'RUB',now(),now())`, pid, posOrder); err != nil {
+	if _, err := f.pool.Exec(ctx, `INSERT INTO payments (id, order_id, attempt, method, status, amount, currency, created_at, updated_at, tender)
+		VALUES ($1,$2,1,'pos','pending',2000,'RUB',now(),now(),'card')`, pid, posOrder); err != nil {
 		t.Fatal(err)
 	}
 	if r := signedWebhook(t, f, "/webhooks/payments/pos", posSecret, withRef(cb(posOrder, pid, "paid", 2000), "pos_1"), time.Now()); r.Status != 200 {

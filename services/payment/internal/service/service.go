@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/pavelgr1408/food-platform/pkg/httpx"
+	"github.com/pavelgr1408/food-platform/services/payment/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/gateway"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/store"
 )
@@ -58,8 +59,9 @@ func (c *Config) defaults() {
 // Deps — зависимости сервиса.
 type Deps struct {
 	Pool    *pgxpool.Pool
-	Gateway gateway.Gateway
-	Waker   Waker // nil допустим
+	Gateway gateway.Gateway // онлайн-эквайринг (online_card, courier_card)
+	POS     gateway.Gateway // кассовая система (pos); nil — оплата на кассе недоступна (503)
+	Waker   Waker           // nil допустим
 	Log     *slog.Logger
 	Clock   func() time.Time // nil → time.Now
 	Metrics *Metrics         // nil → без метрик
@@ -71,6 +73,7 @@ type Service struct {
 	pool  *pgxpool.Pool
 	st    *store.Store
 	gw    gateway.Gateway
+	pos   gateway.Gateway
 	waker Waker
 	log   *slog.Logger
 	now   func() time.Time
@@ -81,7 +84,7 @@ type Service struct {
 // New создаёт сервис.
 func New(d Deps) *Service {
 	d.Config.defaults()
-	s := &Service{pool: d.Pool, st: store.New(), gw: d.Gateway, waker: d.Waker, log: d.Log, now: d.Clock, m: d.Metrics, cfg: d.Config}
+	s := &Service{pool: d.Pool, st: store.New(), gw: d.Gateway, pos: d.POS, waker: d.Waker, log: d.Log, now: d.Clock, m: d.Metrics, cfg: d.Config}
 	if s.log == nil {
 		s.log = slog.Default()
 	}
@@ -92,6 +95,14 @@ func New(d Deps) *Service {
 		s.m = NewMetrics()
 	}
 	return s
+}
+
+// gwFor — шлюз способа оплаты: касса для pos, эквайринг для остальных. nil — не настроен.
+func (s *Service) gwFor(m domain.Method) gateway.Gateway {
+	if m == domain.MethodPOS {
+		return s.pos
+	}
+	return s.gw
 }
 
 // Store отдаёт хранилище (для тестов).
@@ -109,7 +120,8 @@ var (
 	errPaymentNotFound = httpx.NewError(http.StatusNotFound, "PAYMENT_NOT_FOUND", "payment not found")
 	errNotPayable      = httpx.NewError(http.StatusConflict, "ORDER_NOT_PAYABLE", "the order is cancelled or does not await online payment")
 	errNotAllowed      = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_ALLOWED", "the method differs from the payment method of the order")
-	errNotSupported    = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_SUPPORTED", "only online_card payments can be initiated here (pos — S6, courier_card — S7)")
+	errNotSupported    = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_SUPPORTED", "only online_card payments can be initiated here (pos — POST /orders/{id}/payments/pos by staff, courier_card — S7)")
+	errPOSUnavailable  = httpx.NewError(http.StatusServiceUnavailable, "POS_UNAVAILABLE", "the POS integration is not configured")
 	errDeclined        = httpx.NewError(http.StatusPaymentRequired, "PAYMENT_DECLINED", "the payment gateway refused to create the payment, try again")
 	errAmountMismatch  = httpx.NewError(http.StatusUnprocessableEntity, "AMOUNT_MISMATCH", "amount in the notification differs from the payment amount")
 	errBadParam        = func(d string) *httpx.Error { return httpx.NewError(http.StatusBadRequest, "INVALID_PARAMETER", d) }

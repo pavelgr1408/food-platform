@@ -32,6 +32,8 @@ type PaymentStatusEvent struct {
 	GatewayReference string     `json:"gatewayReference,omitempty"`
 	Reason           string     `json:"reason,omitempty"`
 	PaidAt           *time.Time `json:"paidAt,omitempty"`
+	RefundStatus     string     `json:"refundStatus,omitempty"` // pending | refunded | failed (S6)
+	RefundedAt       *time.Time `json:"refundedAt,omitempty"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
@@ -42,6 +44,11 @@ func statusEvent(p domain.Payment) PaymentStatusEvent {
 	if p.PaidAt != nil {
 		t := p.PaidAt.UTC()
 		ev.PaidAt = &t
+	}
+	ev.RefundStatus = string(p.RefundStatus)
+	if p.RefundedAt != nil {
+		t := p.RefundedAt.UTC()
+		ev.RefundedAt = &t
 	}
 	return ev
 }
