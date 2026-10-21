@@ -15,10 +15,11 @@ services:
       AUTH_MODE: ${AUTH_MODE:-dev}
       AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
       GATEWAY_URL: http://mock-externals:9091
+      POS_URL: http://mock-externals:9093
       WEBHOOK_WAIT: ${WEBHOOK_WAIT:-10s}
       PENDING_EXPIRY: ${PENDING_EXPIRY:-10m}
       RECONCILE_BACKOFF_MIN: ${RECONCILE_BACKOFF_MIN:-5s}
-      # dev-секреты по умолчанию (APP_ENV=dev): GATEWAY_API_KEY / GATEWAY_WEBHOOK_SECRET / POS_WEBHOOK_SECRET
+      # dev-секреты по умолчанию (APP_ENV=dev): GATEWAY_API_KEY / GATEWAY_WEBHOOK_SECRET / POS_API_KEY / POS_WEBHOOK_SECRET
     ports:
       - "8085:8085"
     depends_on:

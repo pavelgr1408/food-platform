@@ -18,6 +18,9 @@ services:
       RESTAURANT_URL: http://restaurant:8082
       PAYMENT_TIMEOUT: 15m
       LEAD_TIME_TTL: 15m
+      # готовый заказ на самовывоз, который не забрали, → not_received (S6); для проверки таймера: NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s
+      NOT_RECEIVED_AFTER: ${NOT_RECEIVED_AFTER:-2h}
+      JANITOR_INTERVAL: ${JANITOR_INTERVAL:-30s}
     ports:
       - "8084:8084"
     depends_on:
