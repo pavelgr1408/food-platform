@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: payment-service — REST API
-  version: 1.3.0
+  version: 1.3.1
   description: >-
     Обработка платежей: способы оплаты, инициализация онлайн-оплаты, оплаты на
     кассе/терминале, статус платежа. Интеграция с платёжным шлюзом и кассовой
@@ -261,7 +261,9 @@ paths:
       description: >-
         Текущий статус платежа — из БД payment-service (без обращения к шлюзу: итог
         подтягивают вебхук и reconciler). Используется при `202`/`unknown` и для опроса
-        после перехода на страницу оплаты. (UC-PAY-01/02 E2)
+        после перехода на страницу оплаты. (UC-PAY-01/02 E2) Платёж заказа ресторана читает
+        и его сотрудник (`STAFF`/`FRANCHISE_OWNER` с этим рестораном, `HQ_STAFF` — любой): так кассир видит
+        итог оплаты на кассе (`fiscalData`) и ход возврата (`refund`); чужой заказ — `404`.
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
         - { $ref: '#/components/parameters/PaymentId' }
@@ -449,7 +451,9 @@ components:
           description: Платёжная ссылка (онлайн / для оплаты курьеру). Нет у `unknown`, пока шлюз не ответил.
         declineReason:
           type: string
-          description: Причина отказа (`status=declined`), код шлюза.
+          description: >-
+            Причина отказа (`status=declined`): код шлюза, `gateway_rejected`, `expired` (попытка не оплачена
+            за `PENDING_EXPIRY`) или `order_cancelled` (заказ отменён, пока операция была незавершена).
         tender:
           type: string
           enum: [card, cash]
