@@ -45,6 +45,7 @@ results = []
 
 
 def check(name, ok, detail=""):
+    ok = bool(ok)
     results.append(ok)
     print(("  ok    " if ok else "  FAIL  ") + name + (f"   [{detail}]" if detail and not ok else ""))
     return ok
