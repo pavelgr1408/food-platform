@@ -120,3 +120,40 @@ make newman SERVICE=gateway     # через http://localhost:8080
 В k8s: наружу смотрит только ingress → `gateway` (`/`) и → `payment` (`/webhooks/payments`, мимо gateway; лимиты частоты и размера — аннотациями ingress).
 `/metrics` gateway — на отдельном порту `9100` (в чарте `metrics.port`), через ingress недоступен. `TRUSTED_PROXY_CIDRS` в `deploy/values/gateway.yaml`
 нужно привести к CIDR вашего ingress-контроллера.
+
+## Smoke периметра в k8s (долг 37)
+```bash
+make k8s-smoke-perimeter          # собрать образы, поднять стенд, newman + проверки через ingress (~10 мин в первый раз)
+make k8s-smoke-perimeter-checks   # повторить только проверки на поднятом стенде
+make k8s-clean                    # снести (ingress-nginx остаётся)
+```
+Нужны Docker Desktop с включённым Kubernetes (или kind: `KIND_CLUSTER=kind`), `kubectl`, `helm`, `python3`, `curl`, newman/npx. Скрипт отказывается
+работать с нелокальным kube-context (обход: `SMOKE_ANY_CONTEXT=1`). Что поднимается в namespace `food`: Postgres (БД auth/restaurant/menu/orders/payment),
+одноузловой Kafka (KRaft) с топиками из `topics.txt`, auth, restaurant, menu, orders, payment (1 реплика), mock-externals, gateway; в `ingress-nginx` —
+контроллер `INGRESS_NGINX_VERSION` (по умолчанию `controller-v1.15.1`; проект ingress-nginx официально свёрнут, но манифест установим; для прода стоит заранее выбрать
+замену: Gateway API или другой контроллер). Хост ingress — `INGRESS_HOST` (по умолчанию `localhost`, чтобы не править `/etc/hosts`).
+
+Что проверяется (`tools/k8s-smoke/checks.py`):
+
+| Проверка | Как |
+|---|---|
+| ровно два Ingress: `/` → gateway, `/webhooks/payments` → payment; все Service — ClusterIP; ingress смотрит на порт `http` | kubectl |
+| `/metrics` (и `//metrics`, `/%6detrics`, `/webhooks/payments/metrics`) через ingress не отдаётся; `metrics` — отдельный порт Service | HTTP + kubectl |
+| `/auth/introspect`, `/auth/authorize` через gateway — 404 | HTTP |
+| вебхуки идут мимо gateway: без подписи — 401 `INVALID_SIGNATURE` от payment, с верной подписью и неизвестным платежом — 400, просроченная/чужая — 401 | HMAC-подписанные запросы |
+| тело вебхука 100 КБ — 413 на ingress (`proxy-body-size: 64k`) | HTTP |
+| `TRUSTED_PROXY_CIDRS` gateway покрывает IP pod'а controller | kubectl |
+| лимит частоты вебхуков на ingress (503) срабатывает, но не отсекает всё | 600 параллельных запросов |
+| лимит gateway по **реальному** IP: всплеск → 429 + `Retry-After`; подделка и ротация `X-Forwarded-For` его не обходят | 600/300/200 запросов |
+| лимит логина (30/мин) → 429; **другой** реальный клиент (pod `curlimages/curl` в кластере) этим лимитом не затронут | 60 неверных логинов + pod |
+| newman `gateway`, папки 0, 1, 2, 4 — через ingress | newman |
+
+Папки 3 и 5 коллекции `gateway` в этот прогон не входят: они рассчитаны на прямой доступ к gateway (подделка `X-Forwarded-For`, вебхук «через gateway»),
+за настоящим ingress ведут себя иначе — их роль выполняют проверки выше. Лимит логина на стенде поднят до 30/30 (newman входит с одного IP).
+
+**`TRUSTED_PROXY_CIDRS`.** Smoke подставляет `/32` текущего pod'а controller (`--set-string env.TRUSTED_PROXY_CIDRS=<ip>/32`): IP pod'а меняется
+при его перезапуске, поэтому в values лежит подсеть pod'ов (`10.0.0.0/8` — заглушка). В реальном окружении возьмите подсеть pod'ов, откуда ходит controller
+(`kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}'`) или, лучше, выделите controller'у отдельный namespace/подсеть и доверяйте только ей.
+
+Отладка без кластера (эмулируется nginx перед `make perimeter-check` с `HOLD=1`): `checks.py --no-kubectl --source 127.0.0.2 --alt-source 127.0.0.3 --ingress-url http://127.0.0.1:<порт>`;
+gateway при этом запускают с `TRUSTED_PROXY_CIDRS=127.0.0.1/32`.

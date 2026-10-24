@@ -33,6 +33,7 @@ spec:
         {{- end }}
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false # конфигурация — только из ConfigMap/Secret; k8s-env вида KAFKA_PORT=tcp://… не должен пересекаться с нашими переменными
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
