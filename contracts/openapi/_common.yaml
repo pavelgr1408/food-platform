@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Общие компоненты REST API «Заказ еды»
-  version: 1.1.1
+  version: 1.2.0
   description: >-
     Общие схемы, параметры и ответы, на которые ссылаются контракты сервисов
     (`contracts/openapi/<service>.yaml`). Сам по себе документ не описывает операций.
@@ -118,3 +118,11 @@ components:
     PaymentStatus:
       type: string
       enum: [pending, authorized, paid, declined, unknown]
+    RefundStatus:
+      type: string
+      enum: [pending, refunded, failed]
+      description: >-
+        Возврат денег по оплаченному заказу, который не будет исполнен (отмена; `paid` пришёл
+        после отмены). `pending` — возврат запрошен и выполняется (повторяется с паузами);
+        `refunded` — деньги возвращены; `failed` — шлюз/касса определённо отказали, нужна ручная
+        обработка. Для заказа без возврата поле отсутствует.

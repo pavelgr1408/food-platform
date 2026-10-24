@@ -47,8 +47,13 @@ func (s *Service) reconcile(ctx context.Context, p domain.Payment) string {
 	if p.GatewayRef == "" {
 		return s.reconcileInit(ctx, p)
 	}
+	gw := s.gwFor(p.Method)
+	if gw == nil {
+		s.log.ErrorContext(ctx, "reconcile: gateway is not configured", "payment_id", p.ID, "method", p.Method)
+		return "error"
+	}
 	start := time.Now()
-	st, err := s.gw.Status(ctx, p.GatewayRef)
+	st, err := gw.Status(ctx, p.GatewayRef)
 	s.observeGateway("status", start, err)
 	if err != nil {
 		s.log.WarnContext(ctx, "gateway status failed", "payment_id", p.ID, "gateway_ref", p.GatewayRef, "error", err)
@@ -68,16 +73,19 @@ func (s *Service) reconcile(ctx context.Context, p domain.Payment) string {
 	}
 	switch st.Status {
 	case gateway.StatePaid:
-		return s.settle(ctx, p, domain.StatusPaid, "", st.Ref)
+		return s.settleFiscal(ctx, p, domain.StatusPaid, "", st.Ref, st.Fiscal)
 	case gateway.StateDeclined:
 		return s.settle(ctx, p, domain.StatusDeclined, nonEmpty(st.Reason, "declined"), st.Ref)
 	}
 	// у шлюза всё ещё pending
+	if cancelled, err := s.orderCancelled(ctx, p.OrderID); err == nil && cancelled {
+		return s.expire(ctx, p, "order_cancelled") // заказ отменён: незавершённую операцию отменяем у шлюза
+	}
 	if p.Status == domain.StatusUnknown {
 		return s.settle(ctx, p, domain.StatusPending, "", "")
 	}
 	if s.now().Sub(p.CreatedAt) > s.cfg.PendingExpiry {
-		return s.expire(ctx, p)
+		return s.expire(ctx, p, "expired")
 	}
 	return "pending"
 }
@@ -114,9 +122,13 @@ func (s *Service) reconcileInit(ctx context.Context, p domain.Payment) string {
 
 // expire отменяет у шлюза неоплаченную попытку (пользователь ушёл со страницы оплаты). Если за это время
 // платёж успели провести, шлюз вернёт paid — применяем его: деньги важнее.
-func (s *Service) expire(ctx context.Context, p domain.Payment) string {
+func (s *Service) expire(ctx context.Context, p domain.Payment, reason string) string {
+	gw := s.gwFor(p.Method)
+	if gw == nil {
+		return "error"
+	}
 	start := time.Now()
-	st, err := s.gw.Cancel(ctx, p.GatewayRef)
+	st, err := gw.Cancel(ctx, p.GatewayRef)
 	s.observeGateway("cancel", start, err)
 	if err != nil {
 		s.log.WarnContext(ctx, "gateway cancel failed", "payment_id", p.ID, "error", err)
@@ -124,16 +136,26 @@ func (s *Service) expire(ctx context.Context, p domain.Payment) string {
 	}
 	switch st.Status {
 	case gateway.StatePaid:
-		return s.settle(ctx, p, domain.StatusPaid, "", st.Ref)
+		return s.settleFiscal(ctx, p, domain.StatusPaid, "", st.Ref, st.Fiscal)
 	case gateway.StateDeclined:
-		return s.settle(ctx, p, domain.StatusDeclined, "expired", st.Ref)
+		return s.settle(ctx, p, domain.StatusDeclined, reason, st.Ref)
 	}
 	return "pending"
 }
 
+// orderCancelled — заказ отменён (по последнему orders.status).
+func (s *Service) orderCancelled(ctx context.Context, orderID string) (bool, error) {
+	st, err := s.st.OrderStatus(ctx, s.pool, orderID)
+	return st == domain.OrderCancelled, err
+}
+
 // settle применяет статус и возвращает метку результата.
 func (s *Service) settle(ctx context.Context, p domain.Payment, to domain.Status, reason, ref string) string {
-	cur, _, err := s.applyByID(ctx, p.ID, to, reason, ref)
+	return s.settleFiscal(ctx, p, to, reason, ref, nil)
+}
+
+func (s *Service) settleFiscal(ctx context.Context, p domain.Payment, to domain.Status, reason, ref string, fiscal []byte) string {
+	cur, _, err := s.applyByIDFiscal(ctx, p.ID, to, reason, ref, fiscal)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			s.log.ErrorContext(ctx, "reconcile: cannot apply status", "payment_id", p.ID, "to", to, "error", err)

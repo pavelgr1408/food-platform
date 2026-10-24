@@ -66,6 +66,27 @@ const (
 	PaymentUnknown  PaymentStatus = "unknown"
 )
 
+// RefundStatus — ход возврата денег по оплаченному, но не исполняемому заказу (из orders.payments.status).
+type RefundStatus string
+
+// Статусы возврата.
+const (
+	RefundPending  RefundStatus = "pending"
+	RefundRefunded RefundStatus = "refunded"
+	RefundFailed   RefundStatus = "failed"
+)
+
+// Valid — известный статус возврата.
+func (r RefundStatus) Valid() bool {
+	return r == RefundPending || r == RefundRefunded || r == RefundFailed
+}
+
+// ChannelStaffFax — заказ, принятый сотрудником по факсу/телефону (UC-ORD-02).
+const ChannelStaffFax = "staff_fax"
+
+// CancelReasons — коды причин отмены персоналом (contracts: CancelOrderRequest.reason).
+var CancelReasons = []string{"customer_request", "out_of_stock", "restaurant_closed", "other"}
+
 // InitialStatus — начальный статус заказа: онлайн-оплата ждёт платёж, остальное принимается сразу.
 func InitialStatus(m PaymentMethod) Status {
 	if m.Prepaid() {
@@ -118,9 +139,12 @@ type Order struct {
 	StatusReason                     string
 	PaymentMethod                    PaymentMethod
 	PaymentStatus                    PaymentStatus
-	PaymentUpdatedAt                 *time.Time // время последнего применённого события оплаты
-	AcceptedAt                       *time.Time // момент принятия заказа (S4: от него считается ETA)
-	ProductionUpdatedAt              *time.Time // updatedAt последнего применённого снимка блюд (S4)
+	PaymentUpdatedAt                 *time.Time   // время последнего применённого события оплаты
+	AcceptedAt                       *time.Time   // момент принятия заказа (S4: от него считается ETA)
+	ReadyAt                          *time.Time   // момент перехода в ready (S6: от него считается неполучение)
+	CreatedBy                        string       // сотрудник, оформивший заказ по факсу (S6)
+	RefundStatus                     RefundStatus // ход возврата денег (S6), пусто — возврата нет
+	ProductionUpdatedAt              *time.Time   // updatedAt последнего применённого снимка блюд (S4)
 	Fulfillment                      FulfillmentType
 	Address                          Address
 	Contact                          Contact

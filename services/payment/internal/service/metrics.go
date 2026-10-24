@@ -13,6 +13,7 @@ type Metrics struct {
 	PaidAfterCancel prometheus.Counter
 	Conflicts       *prometheus.CounterVec // from, to — противоречащие уведомления (не применены)
 	Reconciled      *prometheus.CounterVec // result (paid|declined|pending|unknown|error|expired)
+	Refunds         *prometheus.CounterVec // result (requested|refunded|failed|retry)
 }
 
 // NewMetrics создаёт метрики; зарегистрируйте их через Collectors().
@@ -36,11 +37,13 @@ func NewMetrics() *Metrics {
 			Help: "Не применённые противоречащие обновления статуса."}, []string{"from", "to"}),
 		Reconciled: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "payment_reconcile_total",
 			Help: "Результаты сверки со шлюзом."}, []string{"result"}),
+		Refunds: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "payment_refunds_total",
+			Help: "Возвраты по результату (failed — ручная обработка, тревога)."}, []string{"result"}),
 	}
 }
 
 // Collectors — для metrics.Registry.MustRegister.
 func (m *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{m.Created, m.Transitions, m.GatewayCalls, m.GatewayDuration, m.Webhooks,
-		m.AmountMismatch, m.PaidAfterCancel, m.Conflicts, m.Reconciled}
+		m.AmountMismatch, m.PaidAfterCancel, m.Conflicts, m.Reconciled, m.Refunds}
 }

@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Система управления заказами — асинхронные взаимодействия
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Асинхронный контракт платформы управления заказами сети кафе.
 
@@ -867,7 +867,11 @@ components:
           description: >-
             `pending_payment` — заказ создан, ждёт онлайн-оплаты (потребители, кроме
             payment, могут игнорировать; уведомление клиенту — с `accepted`).
-            `cancelled` с `reason=payment_timeout` — отмена по таймауту неоплаты.
+            `cancelled`: `reason=payment_timeout` — отмена по таймауту неоплаты; причина персонала
+            (`customer_request|out_of_stock|restaurant_closed|other`) — отмена сотрудником (S6);
+            payment-service по `cancelled` возвращает деньги или отменяет операцию у шлюза.
+            `handed_over` → `closed` с `reason=issued` — выдача в ресторане (оба события публикуются
+            подряд, S6); `not_received` с `reason=pickup_timeout` — самовывоз не забрали.
         etaReadyAt:
           type: string
           format: date-time
@@ -878,7 +882,9 @@ components:
         etaDeliveryAt: { type: string, format: date-time }
         reason:
           type: string
-          description: Пояснение для нештатных статусов (напр. неполучение)
+          description: >-
+            Пояснение статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued` или код причины
+            отмены персоналом.
         updatedAt: { type: string, format: date-time }
 
     PaymentStatus:
@@ -892,8 +898,17 @@ components:
         отражаются в `paymentStatus` заказа (заказ остаётся `pending_payment`, `unknown`
         откладывает автоотмену по таймауту). Событие со старым `updatedAt` игнорируется;
         `paid` не перезаписывается другим статусом. `paid` для уже отменённого заказа —
-        нештатная ситуация (деньги получены, заказ не исполняется): фиксируется в orders
-        метрикой и логом, возврат — S6.
+        нештатная ситуация (деньги получены, заказ не исполняется): payment-service сам
+        запускает возврат (S6), orders фиксирует метрикой и логом.
+
+
+        **Возврат (S6).** payment-service потребляет `orders.status`: `cancelled` по оплаченному
+        платежу запускает возврат, по неоплаченному — отмену операции у шлюза/кассы. Платёж
+        остаётся `paid`; ход возврата передаётся в `refundStatus` (`pending` — запрошен,
+        `refunded` — деньги возвращены, `failed` — отказ, ручная обработка). Событие
+        публикуется при каждой смене `refundStatus` (тот же ключ `orderId`, поэтому после `paid`).
+        orders отражает `refundStatus` в заказе; статус заказа и `paymentStatus` не меняются, а
+        событие `status=paid` с `refundStatus` не повторяет ADR-10-публикацию `orders.state`.
       properties:
         orderId: { type: string, format: uuid }
         paymentId: { type: string, format: uuid }
@@ -916,6 +931,11 @@ components:
           type: string
           description: Код причины отказа (`status=declined`).
         paidAt: { type: string, format: date-time }
+        refundStatus:
+          type: string
+          enum: [pending, refunded, failed]
+          description: Ход возврата денег (S6); поле отсутствует, пока возврат не запрошен.
+        refundedAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
     PaymentLink:
@@ -1045,23 +1065,33 @@ components:
 
     PosPaymentWebhook:
       type: object
-      required: [orderId, receiptId, method, status, timestamp]
+      required: [eventId, orderId, paymentId, status]
+      description: >-
+        Уведомление кассы (`POST /webhooks/payments/pos`); формат совпадает с `PaymentStatusCallback`
+        из payment.yaml (подпись `X-Signature`, дедупликация по `eventId`, сверка `amount`).
+        Приводит схему к реализации S6 (в dz-1: `receiptId`, `method`, `timestamp`).
       properties:
+        eventId: { type: string, format: uuid }
         orderId: { type: string, format: uuid }
-        receiptId: { type: string }
-        method:
+        paymentId:
           type: string
-          enum: [cash, card]
+          format: uuid
+          description: Наш идентификатор платежа (передаётся кассе как reference).
         status:
           type: string
           enum: [paid, declined]
+        externalRef: { type: string, description: Идентификатор операции/чека на кассе. }
+        tender:
+          type: string
+          enum: [cash, card]
         amount:
           $ref: '#/components/schemas/Money'
+        reason: { type: string }
         fiscalData:
           type: object
           description: Данные фискального чека (Д6)
           additionalProperties: true
-        timestamp: { type: string, format: date-time }
+        occurredAt: { type: string, format: date-time }
 
     DeliveryWebhook:
       type: object

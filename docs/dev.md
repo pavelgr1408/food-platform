@@ -75,13 +75,32 @@ make contract-check SCENARIO=payment
 make up SLICE="restaurant menu orders payment mock-externals"
 make newman SERVICE=e2e
 ```
-`mock-externals` (по умолчанию `MOCKS=ping,payment,production`) содержит модуль `production` (:9092): читает `orders.state` (берёт заказ в работу, только если
+`mock-externals` (по умолчанию `MOCKS=ping,payment,pos,production`) содержит модуль `production` (:9092): читает `orders.state` (берёт заказ в работу, только если
 `paymentStatus=paid` или оплата не предоплатная — ADR-10), публикует `orders.dish.status` (`queued → cooking → ready`) и `production.lead.time`.
 Тайминги — `MOCK_PRODUCTION_QUEUE_DELAY` (2s), `MOCK_PRODUCTION_COOK_TIME` (3s) или на лету: `POST :9092/_admin/production/timing?queue=1s&cook=2s`.
 Управление сценариями: `POST /_admin/production/mode?queue=off|on` («авария очереди», E3: заказы остаются `accepted`, растёт метрика
 `orders_stuck_in_accepted_seconds`), `POST /_admin/production/leadtime?restaurantId=<id>&minutes=<n>` (зафиксировать время приготовления ресторана),
 `POST /_admin/production/reset`, `GET /_inspect/production`. Коллекция `postman/e2e/` сама задаёт тайминги и возвращает настройки в конце.
 Заказы без `production` в срезе остаются в `accepted`: orders честно показывает типовой ETA (`approximate=true`).
+
+## Сценарии персонала (S6): касса, факс, выдача, отмена и возврат
+```bash
+make up SLICE="restaurant menu orders payment mock-externals"
+make newman SERVICE=staff
+make contract-check SCENARIO=staff
+```
+Роли персонала в dev-режиме задаются заголовками: `X-User-Id`, `X-User-Roles: STAFF|FRANCHISE_OWNER|HQ_STAFF`, `X-Restaurant-Ids` (HQ видит все рестораны). Матрица прав одинакова
+везде: гость `401`, клиент `403`, сотрудник другого ресторана `404` (существование заказа не раскрывается).
+`mock-externals` получает модуль `pos` (:9093): касса с фискальными данными (чек, ФН, ФД) в статусе и вебхуке, возвраты — как у шлюза.
+Управление: `POST :9093/_admin/pos/mode?refund=error|reject|timeout|ok`, `GET :9093/_inspect/pos`; у шлюза то же: `POST :9091/_admin/gateway/mode?refund=…`.
+Коллекция `staff` сама выключает очередь производства (отмена возможна только до приготовления), снимает задержку итога мока и возвращает всё в конце.
+Автоматический `not_received` (готовый заказ на самовывоз не забрали) проверяется отдельно — таймер по умолчанию 2 часа:
+```bash
+NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s make up SLICE="restaurant menu orders payment mock-externals"
+make newman-staff-timeout
+```
+Возврат вручную: `curl -XPOST localhost:9091/_admin/gateway/mode?refund=error`, отменить оплаченный заказ (`POST /orders/{id}/cancellation`) — возврат остаётся `pending` и
+повторяется с нарастающей паузой; `…?refund=ok` — возврат проходит ровно один раз (ключ идемпотентности = `paymentId`).
 
 ## Периметр (S5): auth + gateway
 ```bash

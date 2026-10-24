@@ -5,6 +5,7 @@
   .dev/venv/bin/python tools/contract-check/check.py catalog [--restaurant http://localhost:8082] [--menu http://localhost:8083]
   .dev/venv/bin/python tools/contract-check/check.py orders  [... --orders http://localhost:8084]   # нужен срез restaurant + menu + orders
   .dev/venv/bin/python tools/contract-check/check.py payment [... --payment http://localhost:8085]  # + payment и mock шлюза (:9091)
+  .dev/venv/bin/python tools/contract-check/check.py staff   [... --orders http://localhost:8084 --payment http://localhost:8085]  # S6: + mock шлюза и кассы (:9091, :9093)
   .dev/venv/bin/python tools/contract-check/check.py auth    [... --auth http://localhost:8081]     # auth (SEED_ON_START=true)
   .dev/venv/bin/python tools/contract-check/check.py gateway [... --gateway http://localhost:8080]  # ответы периметра (Problem) через gateway
 
@@ -36,6 +37,10 @@ FAILS = []
 
 
 def find_operation(spec, method, path):
+    # литеральный путь (/orders/search) важнее шаблонного (/orders/{orderId}), иначе проверяется не та операция
+    exact = DOCS[spec]["paths"].get(path)
+    if exact and method.lower() in exact:
+        return exact[method.lower()]
     for tpl, item in DOCS[spec]["paths"].items():
         rx = "^" + re.sub(r"\{[^/]+\}", "[^/]+", tpl) + "$"
         if re.match(rx, path) and method.lower() in item:
@@ -246,6 +251,150 @@ def payment(r, m, o, p):
     # вебхуки описаны в разделе webhooks контракта (не paths): HMAC и дубликаты проверяет postman/payment
 
 
+def staff(r, m, o, p):
+    """Персонал (S6): живые ответы orders/payment против контрактов. Нужен срез restaurant + menu + orders + payment + mock шлюза и кассы.
+    С Kafka заказ доезжает до payment событием orders.state и проверяется ещё и возврат при отмене. Без Kafka (CI)
+    заказ для кассы засевается в БД payment скриптом ci.sh: CC_POS_ORDER=<uuid> (сумма — CC_POS_AMOUNT) — возврат не проверяется."""
+    import os, time
+    S, P = "orders.yaml", "payment.yaml"
+    R4 = "a1000000-0000-4000-8000-000000000004"
+    ghost = "a1000000-0000-4000-8000-0000000000ff"
+    menu = json.loads(urllib.request.urlopen(m + f"/restaurants/{R4}/menu").read())
+    burger = next(i for c in menu["categories"] for i in c["items"] if i["name"] == "BLT Классик")
+    run = str(int(time.time() * 1000))
+    st = {"X-User-Id": "cc-staff", "X-User-Roles": "STAFF", "X-Restaurant-Ids": R4}
+    other = {"X-User-Id": "cc-other", "X-User-Roles": "STAFF", "X-Restaurant-Ids": ghost}
+    cust = {"X-User-Id": "cc-customer", "X-User-Roles": "CUSTOMER"}
+    contact = {"name": "Клиент по факсу", "phone": "+79995550102"}
+
+    # Производство (mock, :9092), если есть, не должно уводить заказы из accepted: отмена возможна только до приготовления.
+    prod = os.environ.get("CC_PRODUCTION_URL", "http://localhost:9092")
+    def production(mode):
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"{prod}/_admin/production/mode?queue={mode}", method="POST"), timeout=2).read()
+        except Exception:
+            pass
+    production("off")
+    try:
+        _staff(S, P, r, m, o, p, st, other, cust, contact, burger, run, ghost, R4)
+    finally:
+        production("on")
+
+
+def _staff(S, P, r, m, o, p, st, other, cust, contact, burger, run, ghost, R4):
+    import os, time
+
+    def fax_cart(label):
+        c = check(S, "POST", o, "/carts", 201, {"restaurantId": R4, "guest": False, "contact": contact}, headers=st, label=f"[{label}] createCart: сотрудник")
+        check(S, "PUT", o, f"/carts/{c['id']}/items", 200, {"items": [{"menuItemId": burger["id"], "quantity": 1}]}, headers=st, label=f"[{label}] updateCartItems")
+        check(S, "PUT", o, f"/carts/{c['id']}/fulfillment", 200, {"type": "pickup"}, headers=st, label=f"[{label}] setCartFulfillment")
+        return c["id"]
+
+    def fax_order(cid, key, body_extra=None):
+        body = {"cartId": cid, "paymentMethod": "pos", "channel": "staff_fax", "contact": contact, **(body_extra or {})}
+        return body, {"Idempotency-Key": key}
+
+    # --- createOrder (staff_fax): права и правила
+    cid = fax_cart("fax")
+    body, idem = fax_order(cid, f"st-{run}-0")
+    check(S, "POST", o, "/orders", 401, body, headers=idem, label="createOrder staff_fax: гость → 401")
+    check(S, "POST", o, "/orders", 403, body, headers={**cust, **idem}, label="createOrder staff_fax: клиент → 403")
+    check(S, "POST", o, "/orders", 422, {**body, "paymentMethod": "online_card"}, headers={**st, "Idempotency-Key": f"st-{run}-1"}, label="createOrder staff_fax: предоплата → 422")
+    order = check(S, "POST", o, "/orders", 201, body, headers={**st, "Idempotency-Key": f"st-{run}-2"}, label="createOrder staff_fax → 201")
+    oid, number = order["id"], order["number"]
+    if order.get("channel") != "staff_fax":
+        FAILS.append("channel != staff_fax"); print("FAIL channel != staff_fax")
+
+    # --- searchOrder
+    q = "/orders/search?number=" + number
+    check(S, "GET", o, q, 401, label="searchOrder: гость → 401")
+    check(S, "GET", o, q, 403, headers=cust, label="searchOrder: клиент → 403")
+    check(S, "GET", o, q, 404, headers=other, label="searchOrder: чужой ресторан → 404")
+    found = check(S, "GET", o, q, 200, headers=st, label="searchOrder → 200 (StaffOrder)")
+    if found and (found.get("id") != oid or found.get("contact", {}).get("phone") != "+79995550102"):
+        FAILS.append("searchOrder вернул не тот заказ"); print("FAIL searchOrder вернул не тот заказ", found)
+    check(S, "GET", o, "/orders/search?number=bad", 400, headers=st, label="searchOrder: неверный номер → 400")
+    check(S, "GET", o, "/orders/search?number=R9-990101-9999", 404, headers=st, label="searchOrder: нет такого → 404")
+
+    # --- markOrderIssued: права и состояние
+    check(S, "POST", o, f"/orders/{oid}/issuance", 401, label="markOrderIssued: гость → 401")
+    check(S, "POST", o, f"/orders/{oid}/issuance", 403, headers=cust, label="markOrderIssued: клиент → 403")
+    check(S, "POST", o, f"/orders/{oid}/issuance", 404, headers=other, label="markOrderIssued: чужой ресторан → 404")
+    check(S, "POST", o, f"/orders/{oid}/issuance", 409, headers=st, label="markOrderIssued: заказ не готов → 409")
+
+    # --- оплата на кассе
+    pos_order = os.environ.get("CC_POS_ORDER")
+    if not pos_order:
+        cid2 = fax_cart("pos")
+        body2, _ = fax_order(cid2, "")
+        o2 = check(S, "POST", o, "/orders", 201, body2, headers={**st, "Idempotency-Key": f"st-{run}-3"}, label="[подготовка] createOrder staff_fax (касса)")
+        pos_order = o2["id"]
+        for _ in range(30):  # ждём orders.state в payment
+            try:
+                urllib.request.urlopen(p + f"/orders/{pos_order}/payment-methods")
+                break
+            except urllib.error.HTTPError:
+                time.sleep(0.5)
+    path = f"/orders/{pos_order}/payments/pos"
+    k = f"st-{run}-p"
+    check(P, "POST", p, path, 401, {"tender": "card"}, headers={"Idempotency-Key": k + "0"}, label="initiatePosPayment: гость → 401")
+    check(P, "POST", p, path, 403, {"tender": "card"}, headers={**cust, "Idempotency-Key": k + "1"}, label="initiatePosPayment: клиент → 403")
+    check(P, "POST", p, path, 404, {"tender": "card"}, headers={**other, "Idempotency-Key": k + "2"}, label="initiatePosPayment: чужой ресторан → 404")
+    check(P, "POST", p, f"/orders/{ghost}/payments/pos", 404, {"tender": "card"}, headers={**st, "Idempotency-Key": k + "3"}, label="initiatePosPayment: нет заказа → 404")
+    check(P, "POST", p, path, 400, {"tender": "card"}, headers=st, label="initiatePosPayment: без Idempotency-Key → 400")
+    check(P, "POST", p, path, 400, {"tender": "crypto"}, headers={**st, "Idempotency-Key": k + "4"}, label="initiatePosPayment: неизвестный способ → 400")
+    pay = check(P, "POST", p, path, 201, {"tender": "card"}, headers={**st, "Idempotency-Key": k}, label="initiatePosPayment → 201")
+    check(P, "POST", p, path, 201, {"tender": "card"}, headers={**st, "Idempotency-Key": k}, label="initiatePosPayment: повтор (replay) → 201")
+    check(P, "POST", p, path, 422, {"tender": "cash"}, headers={**st, "Idempotency-Key": k}, label="initiatePosPayment: тот же ключ, другое тело → 422")
+    if pay:
+        pid = pay["id"]
+        fiscal = None
+        for _ in range(60):  # касса подтверждает вебхуком (или опросом reconciler)
+            req = urllib.request.Request(p + f"/orders/{pos_order}/payments/{pid}", headers=st)
+            cur = json.loads(urllib.request.urlopen(req).read())
+            if cur["status"] == "paid":
+                fiscal = cur.get("fiscalData")
+                break
+            time.sleep(0.5)
+        got = check(P, "GET", p, f"/orders/{pos_order}/payments/{pid}", 200, headers=st, label="getPayment (сотрудник): после кассы")
+        if not got or got["status"] != "paid" or not fiscal or got.get("tender") != "card":
+            FAILS.append("платёж кассы не дошёл до paid с fiscalData"); print("FAIL платёж кассы не дошёл до paid с fiscalData", got)
+        check(P, "POST", p, path, 409, {"tender": "card"}, headers={**st, "Idempotency-Key": k + "6"}, label="initiatePosPayment: уже оплачен → 409")
+
+    # --- cancelOrder и возврат (нужен Kafka: orders.status → payment)
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 401, {"reason": "other"}, label="cancelOrder: гость → 401")
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 403, {"reason": "other"}, headers=cust, label="cancelOrder: клиент → 403")
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 404, {"reason": "other"}, headers=other, label="cancelOrder: чужой ресторан → 404")
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 400, {"reason": "bored"}, headers=st, label="cancelOrder: неизвестная причина → 400")
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 400, {"reason": "other", "x": 1}, headers=st, label="cancelOrder: лишнее поле → 400")
+    cancelled = check(S, "POST", o, f"/orders/{oid}/cancellation", 200, {"reason": "customer_request"}, headers=st, label="cancelOrder → 200")
+    if not cancelled or cancelled["status"] != "cancelled":
+        FAILS.append("cancelOrder не перевёл заказ в cancelled"); print("FAIL cancelOrder не перевёл заказ в cancelled")
+    check(S, "POST", o, f"/orders/{oid}/cancellation", 200, {"reason": "customer_request"}, headers=st, label="cancelOrder: повтор → 200")
+    if not os.environ.get("CC_POS_ORDER"):
+        # оплаченный заказ отменяем — возврат проходит через payment (Kafka)
+        check(S, "POST", o, f"/orders/{pos_order}/cancellation", 200, {"reason": "out_of_stock"}, headers=st, label="cancelOrder оплаченного заказа → 200 (refundStatus=pending)")
+        refunded = None
+        for _ in range(80):
+            req = urllib.request.Request(p + f"/orders/{pos_order}/payments/{pid}", headers=st)
+            cur = json.loads(urllib.request.urlopen(req).read())
+            if cur.get("refund", {}).get("status") == "refunded":
+                refunded = cur
+                break
+            time.sleep(0.5)
+        check(P, "GET", p, f"/orders/{pos_order}/payments/{pid}", 200, headers=st, label="getPayment: после возврата (Payment.refund)")
+        if not refunded:
+            FAILS.append("возврат не дошёл до refunded"); print("FAIL возврат не дошёл до refunded")
+        for _ in range(40):
+            ro = json.loads(urllib.request.urlopen(urllib.request.Request(o + f"/orders/{pos_order}", headers=st)).read())
+            if ro.get("refundStatus") == "refunded":
+                break
+            time.sleep(0.5)
+        check(S, "GET", o, f"/orders/{pos_order}", 200, headers=st, label="getOrder: refundStatus после возврата")
+        if ro.get("refundStatus") != "refunded":
+            FAILS.append("orders не узнал о возврате"); print("FAIL orders не узнал о возврате")
+
+
 def auth(a):
     S = "auth.yaml"
     phone = "+7999" + str(int(__import__("time").time()) % 10_000_000).zfill(7)
@@ -316,7 +465,7 @@ def gateway(g):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["catalog", "orders", "payment", "auth", "gateway"])
+    ap.add_argument("scenario", choices=["catalog", "orders", "payment", "staff", "auth", "gateway"])
     ap.add_argument("--auth", default="http://localhost:8081")
     ap.add_argument("--gateway", default="http://localhost:8080")
     ap.add_argument("--restaurant", default="http://localhost:8082")
@@ -332,6 +481,8 @@ if __name__ == "__main__":
         gateway(a.gateway)
     elif a.scenario == "orders":
         orders(a.restaurant, a.menu, a.orders)
+    elif a.scenario == "staff":
+        staff(a.restaurant, a.menu, a.orders, a.payment)
     else:
         payment(a.restaurant, a.menu, a.orders, a.payment)
     print(f"\nпровалов: {len(FAILS)}")

@@ -30,6 +30,10 @@ type Orders interface {
 	GetOrder(ctx context.Context, userID, id string) (domain.Order, error)
 	GetEta(ctx context.Context, userID, id string) (service.Eta, error)
 	SetPickupSlot(ctx context.Context, userID, id string, from, to time.Time) (domain.Order, error)
+	// Персонал (S6).
+	SearchOrder(ctx context.Context, a service.Actor, number string) (domain.Order, error)
+	IssueOrder(ctx context.Context, a service.Actor, id string) (domain.Order, error)
+	CancelOrder(ctx context.Context, a service.Actor, id, reason string) (domain.Order, error)
 }
 
 // Deps — зависимости HTTP-слоя.
@@ -73,12 +77,29 @@ func New(d Deps) http.Handler {
 	mux.HandleFunc("GET /orders/{orderId}/eta", h.getEta)
 	mux.HandleFunc("PUT /orders/{orderId}/pickup-slot", h.setPickupSlot)
 
+	// Персонал (S6): роль проверяется здесь (гость → 401, CUSTOMER → 403), привязка к ресторану — в сервисе (чужой → 404).
+	staff := authclient.RequireRole(authclient.RoleStaff, authclient.RoleFranchiseOwner, authclient.RoleHQStaff)
+	mux.Handle("GET /orders/search", staff(http.HandlerFunc(h.searchOrder)))
+	mux.Handle("POST /orders/{orderId}/issuance", staff(http.HandlerFunc(h.issueOrder)))
+	mux.Handle("POST /orders/{orderId}/cancellation", staff(http.HandlerFunc(h.cancelOrder)))
+
 	return httpx.Chain(httpx.TrackRoute(mux),
 		httpx.RequestContext(), httpx.Recover(d.Log), httpx.AccessLog(d.Log),
 		d.Metrics.Middleware(), authclient.Middleware(d.Auth))
 }
 
 func userID(r *http.Request) string { return authclient.FromContext(r.Context()).UserID }
+
+// actor строит субъекта операций персонала из Principal запроса.
+func actor(r *http.Request) service.Actor {
+	p := authclient.FromContext(r.Context())
+	return service.Actor{
+		UserID:      p.UserID,
+		Staff:       p.HasRole(authclient.RoleStaff, authclient.RoleFranchiseOwner, authclient.RoleHQStaff),
+		HQ:          p.HasRole(authclient.RoleHQStaff),
+		Restaurants: p.Restaurants,
+	}
+}
 
 // unavailableProblem — Problem с расширением unavailableItems (orders.yaml: UnavailableItemsProblem).
 type unavailableProblem struct {
@@ -183,7 +204,7 @@ func (h *handlers) createOrder(w http.ResponseWriter, r *http.Request) {
 	claim := idempotency.ClaimFrom(r.Context())
 	o, err := h.svc.CreateOrder(r.Context(), userID(r), service.CreateOrderInput{
 		CartID: req.CartID, PaymentMethod: domain.PaymentMethod(req.PaymentMethod),
-		Contact: req.Contact.domain(), Channel: req.Channel,
+		Contact: req.Contact.domain(), Channel: req.Channel, Actor: actor(r),
 	}, func(ctx context.Context, tx pgx.Tx, o domain.Order) error {
 		// Внутри транзакции заказа: ответ сохраняется под ключом атомарно с заказом.
 		if err := json.NewEncoder(&body).Encode(toOrder(o)); err != nil {
@@ -233,6 +254,37 @@ func (h *handlers) setPickupSlot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o, err := h.svc.SetPickupSlot(r.Context(), userID(r), r.PathValue("orderId"), *req.From, *req.To)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toOrder(o))
+}
+
+func (h *handlers) searchOrder(w http.ResponseWriter, r *http.Request) {
+	o, err := h.svc.SearchOrder(r.Context(), actor(r), r.URL.Query().Get("number"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toStaffOrder(o))
+}
+
+func (h *handlers) issueOrder(w http.ResponseWriter, r *http.Request) {
+	o, err := h.svc.IssueOrder(r.Context(), actor(r), r.PathValue("orderId"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toOrder(o))
+}
+
+func (h *handlers) cancelOrder(w http.ResponseWriter, r *http.Request) {
+	var req cancelRequest
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	o, err := h.svc.CancelOrder(r.Context(), actor(r), r.PathValue("orderId"), req.Reason)
 	if err != nil {
 		h.fail(w, r, err)
 		return

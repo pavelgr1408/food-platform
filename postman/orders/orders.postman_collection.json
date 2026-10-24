@@ -1716,7 +1716,7 @@
           ]
         },
         {
-          "name": "staff_fax пока недоступен → 422 CHANNEL_NOT_AVAILABLE",
+          "name": "staff_fax: гость не может оформить заказ по факсу → 401 UNAUTHORIZED",
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/orders",
@@ -1750,8 +1750,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 422', () => pm.response.to.have.status(422));",
-                  "pm.test('problem+json с кодом CHANNEL_NOT_AVAILABLE', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('CHANNEL_NOT_AVAILABLE'); });"
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('problem+json с кодом UNAUTHORIZED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('UNAUTHORIZED'); });"
                 ]
               }
             }

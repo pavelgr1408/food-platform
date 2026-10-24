@@ -32,6 +32,11 @@ func payable(o domain.Order, orderStatus string) bool {
 	return o.Method == domain.MethodOnlineCard && (orderStatus == "" || orderStatus == domain.OrderPendingPayment)
 }
 
+// posPayable — можно ли сейчас провести заказ через кассу.
+func posPayable(o domain.Order, orderStatus string) bool {
+	return o.Method == domain.MethodPOS && domain.PosPayable(orderStatus)
+}
+
 // Methods — getPaymentMethods (UC-PAY-01).
 func (s *Service) Methods(ctx context.Context, userID, orderID string) ([]domain.MethodView, error) {
 	o, err := s.loadOrder(ctx, userID, orderID)
@@ -60,6 +65,11 @@ func (s *Service) Get(ctx context.Context, userID, orderID, paymentID string) (d
 	if _, err := s.loadOrder(ctx, userID, orderID); err != nil {
 		return domain.Payment{}, err
 	}
+	return s.getPaymentOf(ctx, orderID, paymentID)
+}
+
+// getPaymentOf читает платёж заказа (доступ к заказу уже проверен).
+func (s *Service) getPaymentOf(ctx context.Context, orderID, paymentID string) (domain.Payment, error) {
 	if _, err := uuid.Parse(paymentID); err != nil {
 		return domain.Payment{}, errPaymentNotFound
 	}
@@ -98,8 +108,19 @@ func (s *Service) Initiate(ctx context.Context, userID, orderID string, in Initi
 		return domain.Payment{}, errBadParam("returnUrl must be an absolute http(s) URL")
 	}
 
+	p, err := s.startAttempt(ctx, orderID, payable, "", ret)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	return s.callGateway(ctx, p, ord.Number)
+}
+
+// startAttempt записывает новую попытку оплаты заказа (status=pending) и событие в outbox — одной транзакцией
+// под блокировкой заказа. allowed решает, можно ли платить при текущем статусе заказа. Вызов шлюза — на вызывающем.
+func (s *Service) startAttempt(ctx context.Context, orderID string, allowed func(domain.Order, string) bool,
+	tender domain.Tender, returnURL string) (domain.Payment, error) {
 	var p domain.Payment
-	err = pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		o, err := s.st.GetOrder(ctx, tx, orderID, true) // сериализует попытки одного заказа
 		if err != nil {
 			return err
@@ -119,7 +140,7 @@ func (s *Service) Initiate(ctx context.Context, userID, orderID string, in Initi
 				return &ConflictError{"ALREADY_PAID", "the order is already paid", x.ID}
 			}
 		}
-		if !payable(o, st) {
+		if !allowed(o, st) {
 			return errNotPayable
 		}
 		for _, x := range list {
@@ -133,7 +154,7 @@ func (s *Service) Initiate(ctx context.Context, userID, orderID string, in Initi
 		now := s.now()
 		next := now.Add(s.cfg.WebhookWait)
 		p = domain.Payment{ID: uuid.NewString(), OrderID: orderID, Attempt: attempt, Method: o.Method, Status: domain.StatusPending,
-			Amount: o.Amount, Currency: o.Currency, ReturnURL: ret, NextPollAt: &next, CreatedAt: now, UpdatedAt: now}
+			Amount: o.Amount, Currency: o.Currency, ReturnURL: returnURL, Tender: tender, NextPollAt: &next, CreatedAt: now, UpdatedAt: now}
 		if err := s.st.InsertPayment(ctx, tx, p); err != nil {
 			if errors.Is(err, store.ErrConflict) {
 				return &ConflictError{"PAYMENT_IN_PROGRESS", "the order has a payment in progress", ""}
@@ -148,16 +169,20 @@ func (s *Service) Initiate(ctx context.Context, userID, orderID string, in Initi
 	s.wake()
 	s.m.Created.WithLabelValues(string(p.Method)).Inc()
 	s.m.Transitions.WithLabelValues(string(domain.StatusPending)).Inc()
-	return s.callGateway(ctx, p, ord.Number)
+	return p, nil
 }
 
 // gwCreate вызывает шлюз и учитывает метрики/длительность.
 func (s *Service) gwCreate(ctx context.Context, p domain.Payment, orderNumber string) (gateway.Created, error) {
+	gw := s.gwFor(p.Method)
+	if gw == nil {
+		return gateway.Created{}, errors.New("gateway for " + string(p.Method) + " is not configured")
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.GatewayTimeout)
 	defer cancel()
 	start := time.Now()
-	res, err := s.gw.Create(ctx, gateway.CreateRequest{Key: p.ID, Reference: p.ID, OrderID: p.OrderID, Amount: p.Amount, Currency: p.Currency,
-		ReturnURL: p.ReturnURL, Description: "Заказ " + orderNumber})
+	res, err := gw.Create(ctx, gateway.CreateRequest{Key: p.ID, Reference: p.ID, OrderID: p.OrderID, Amount: p.Amount, Currency: p.Currency,
+		ReturnURL: p.ReturnURL, Description: "Заказ " + orderNumber, Tender: string(p.Tender)})
 	s.observeGateway("create", start, err)
 	return res, err
 }
