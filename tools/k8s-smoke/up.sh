@@ -78,12 +78,22 @@ log "namespace, секреты, Postgres"
 make k8s-dev-secrets NS="$NS"
 kubectl -n "$NS" apply -f deploy/k8s-dev/postgres.yaml
 wait_deploy postgres 180s
+# Образ postgres сначала поднимает ВРЕМЕННЫЙ сервер для init-скриптов, затем гасит его и стартует настоящий:
+# pg_isready (а с ним и readiness) проходит уже на временном, поэтому psql повторяем, пока не ответит окончательный сервер.
+pg() {
+  local i
+  for i in $(seq 1 45); do
+    kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -v ON_ERROR_STOP=1 "$@" 2>/dev/null && return 0
+    sleep 2
+  done
+  kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -v ON_ERROR_STOP=1 "$@"
+}
 # init-скрипт образа срабатывает только на пустом каталоге данных: недостающие БД досоздаём идемпотентно
 for svc in auth restaurant menu orders payment; do
-  kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -qtAc "SELECT 1 FROM pg_roles WHERE rolname='$svc'" | grep -q 1 \
-    || kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -qc "CREATE ROLE $svc LOGIN PASSWORD '$svc'"
-  kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -qtAc "SELECT 1 FROM pg_database WHERE datname='$svc'" | grep -q 1 \
-    || kubectl -n "$NS" exec deploy/postgres -- psql -U postgres -qc "CREATE DATABASE $svc OWNER $svc"
+  have="$(pg -qtAc "SELECT 1 FROM pg_roles WHERE rolname='$svc'")"
+  [ "$have" = 1 ] || pg -qc "CREATE ROLE $svc LOGIN PASSWORD '$svc'"
+  have="$(pg -qtAc "SELECT 1 FROM pg_database WHERE datname='$svc'")"
+  [ "$have" = 1 ] || pg -qc "CREATE DATABASE $svc OWNER $svc"
 done
 
 log "Kafka и топики"
