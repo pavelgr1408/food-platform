@@ -153,7 +153,7 @@ make k8s-clean                    # снести (ingress-nginx остаётся
 
 **`TRUSTED_PROXY_CIDRS`.** Smoke подставляет `/32` текущего pod'а controller (`--set-string env.TRUSTED_PROXY_CIDRS=<ip>/32`): IP pod'а меняется
 при его перезапуске, поэтому в values лежит подсеть pod'ов (`10.0.0.0/8` — заглушка). В реальном окружении возьмите подсеть pod'ов, откуда ходит controller
-(`kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}'`) или, лучше, выделите controller'у отдельный namespace/подсеть и доверяйте только ей.
+(`kubectl get nodes -o jsonpath='{.items[*].spec.podCIDR}'`; в Docker Desktop поле пустое, pod'ы там из `10.1.0.0/16`) или, лучше, выделите controller'у отдельный namespace/подсеть и доверяйте только ей.
 
 Отладка без кластера (эмулируется nginx перед `make perimeter-check` с `HOLD=1`): `checks.py --no-kubectl --source 127.0.0.2 --alt-source 127.0.0.3 --ingress-url http://127.0.0.1:<порт>`;
 gateway при этом запускают с `TRUSTED_PROXY_CIDRS=127.0.0.1/32`.
