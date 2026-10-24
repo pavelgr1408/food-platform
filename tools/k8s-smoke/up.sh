@@ -119,7 +119,10 @@ log "сервисы (helm, 1 реплика, host=$INGRESS_HOST)"
 COMMON=(-n "$NS" --set replicas=1 --set ingress.host="$INGRESS_HOST" --wait --timeout 4m)
 helm upgrade --install auth deploy/charts/service -f deploy/values/auth.yaml "${COMMON[@]}"
 for s in restaurant menu orders payment; do
-  helm upgrade --install "$s" deploy/charts/service -f "deploy/values/$s.yaml" "${COMMON[@]}"
+  seed=()
+  # демо-каталог (ресторан №4 и меню) нужен сценарию заказа в newman; в values его нет — только для smoke
+  case "$s" in restaurant|menu) seed=(--set-string env.SEED_ON_START=true) ;; esac
+  helm upgrade --install "$s" deploy/charts/service -f "deploy/values/$s.yaml" "${COMMON[@]}" ${seed[@]+"${seed[@]}"}
 done
 kubectl -n "$NS" apply -f deploy/k8s-dev/mock-externals.yaml
 wait_deploy mock-externals 120s
