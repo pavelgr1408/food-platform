@@ -15,31 +15,32 @@ import (
 const orderCols = `id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 	payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
 	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at,
-	accepted_at, production_updated_at`
+	accepted_at, production_updated_at, ready_at, created_by, refund_status`
 
 func scanOrder(row pgx.Row) (domain.Order, error) {
 	var (
-		o        domain.Order
-		owner    *string
-		lat, lon *float64
-		st, pm   string
-		ps, ft   string
+		o                domain.Order
+		owner, createdBy *string
+		refund           *string
+		lat, lon         *float64
+		st, pm           string
+		ps, ft           string
 	)
 	err := row.Scan(&o.ID, &o.Number, &o.CartID, &o.RestaurantID, &owner, &o.Channel, &st, &o.StatusReason, &pm,
 		&ps, &ft, &o.Address.Raw, &lat, &lon, &o.Contact.Name, &o.Contact.Phone, &o.Contact.Email,
 		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt,
-		&o.AcceptedAt, &o.ProductionUpdatedAt)
+		&o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt, &createdBy, &refund)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}
 	if err != nil {
 		return o, err
 	}
-	o.OwnerUserID = deref(owner)
+	o.OwnerUserID, o.CreatedBy, o.RefundStatus = deref(owner), deref(createdBy), domain.RefundStatus(deref(refund))
 	o.Status, o.PaymentMethod, o.PaymentStatus, o.Fulfillment = domain.Status(st), domain.PaymentMethod(pm), domain.PaymentStatus(ps), domain.FulfillmentType(ft)
 	o.Address.Lat, o.Address.Lon = lat, lon
 	o.CreatedAt, o.UpdatedAt = o.CreatedAt.UTC(), o.UpdatedAt.UTC()
-	for _, p := range []**time.Time{&o.PaymentUpdatedAt, &o.AcceptedAt, &o.ProductionUpdatedAt} {
+	for _, p := range []**time.Time{&o.PaymentUpdatedAt, &o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt} {
 		if *p != nil {
 			t := (*p).UTC()
 			*p = &t
@@ -98,12 +99,12 @@ func (s *Store) NextNumber(ctx context.Context, db DBTX, restaurantID string, co
 func (s *Store) InsertOrder(ctx context.Context, db DBTX, o domain.Order, actor string) error {
 	_, err := db.Exec(ctx, `INSERT INTO orders (id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 		payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
-		currency, subtotal, discount_total, total, revision, created_at, updated_at, accepted_at)
+		currency, subtotal, discount_total, total, revision, created_at, updated_at, accepted_at, created_by)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23,
-			CASE WHEN $7 = 'accepted' THEN $23::timestamptz END)`,
+			CASE WHEN $7 = 'accepted' THEN $23::timestamptz END, $24)`,
 		o.ID, o.Number, o.CartID, o.RestaurantID, nilIfEmpty(o.OwnerUserID), o.Channel, string(o.Status), o.StatusReason, string(o.PaymentMethod),
 		string(o.PaymentStatus), string(o.Fulfillment), o.Address.Raw, o.Address.Lat, o.Address.Lon, o.Contact.Name, o.Contact.Phone, o.Contact.Email,
-		o.Currency, o.Subtotal, o.DiscountTotal, o.Total, o.Revision, o.CreatedAt)
+		o.Currency, o.Subtotal, o.DiscountTotal, o.Total, o.Revision, o.CreatedAt, nilIfEmpty(o.CreatedBy))
 	if err != nil {
 		return err
 	}
@@ -145,7 +146,8 @@ func (s *Store) GetOrder(ctx context.Context, db DBTX, id string, lock bool) (do
 // (domain.CanTransition) под блокировкой GetOrder(lock=true).
 func (s *Store) SetStatus(ctx context.Context, db DBTX, o domain.Order, to domain.Status, reason, actor string, at time.Time) error {
 	if _, err := db.Exec(ctx, `UPDATE orders SET status = $2, status_reason = $3, updated_at = $4,
-			accepted_at = CASE WHEN $2 = 'accepted' THEN $4::timestamptz ELSE accepted_at END WHERE id = $1`,
+			accepted_at = CASE WHEN $2 = 'accepted' THEN $4::timestamptz ELSE accepted_at END,
+			ready_at = CASE WHEN $2 = 'ready' THEN $4::timestamptz ELSE ready_at END WHERE id = $1`,
 		o.ID, string(to), reason, at); err != nil {
 		return err
 	}
@@ -236,4 +238,43 @@ func (s *Store) StatusTime(ctx context.Context, db DBTX, orderID string, st doma
 		return time.Time{}, false, err
 	}
 	return p.UTC(), true, nil
+}
+
+// GetOrderByNumber читает заказ по человекочитаемому номеру (UNIQUE number); ErrNotFound, если нет.
+func (s *Store) GetOrderByNumber(ctx context.Context, db DBTX, number string) (domain.Order, error) {
+	o, err := scanOrder(db.QueryRow(ctx, `SELECT `+orderCols+` FROM orders WHERE number = $1`, number))
+	if err != nil {
+		return o, err
+	}
+	o.Items, err = s.items(ctx, db, "order_items", "order_id", o.ID)
+	return o, err
+}
+
+// SetRefundStatus фиксирует ход возврата (из orders.payments.status). Допустимо: ничего→любой,
+// pending→refunded|failed, failed→refunded; refunded окончателен, назад не идёт. Возвращает true, если статус изменился.
+func (s *Store) SetRefundStatus(ctx context.Context, db DBTX, id string, rs domain.RefundStatus, at time.Time) (bool, error) {
+	tag, err := db.Exec(ctx, `UPDATE orders SET refund_status = $2, updated_at = $3
+		WHERE id = $1 AND refund_status IS DISTINCT FROM $2
+		  AND (refund_status IS NULL OR refund_status = 'pending' OR (refund_status = 'failed' AND $2 = 'refunded'))`,
+		id, string(rs), at)
+	return tag.RowsAffected() == 1, err
+}
+
+// ReadyPickupBefore возвращает id заказов самовывоза, готовых раньше before и не выданных (старые первыми).
+func (s *Store) ReadyPickupBefore(ctx context.Context, db DBTX, before time.Time, limit int) ([]string, error) {
+	rows, err := db.Query(ctx, `SELECT id FROM orders WHERE status = 'ready' AND fulfillment_type = 'pickup' AND ready_at < $1
+		ORDER BY ready_at LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

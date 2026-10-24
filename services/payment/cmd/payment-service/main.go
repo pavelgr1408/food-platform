@@ -71,6 +71,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	m := service.NewMetrics()
 	reg.MustRegister("payment", m.Collectors()...)
 	reg.MustRegister("payment", unknownCollectors(pool)...)
+	reg.MustRegister("payment", refundCollectors(pool)...)
 	checks := []httpx.Check{{Name: "db", Fn: pgxutil.Ping(pool)}}
 
 	var wg sync.WaitGroup
@@ -80,6 +81,10 @@ func run(cfg config.Config, log *slog.Logger) error {
 	// Шлюз: без ретраев на уровне HTTP (вызов из запроса пользователя должен быть быстрым; повтор — дело reconciler,
 	// Create идемпотентен по ключу), circuit breaker оберегает от лавины запросов к упавшему шлюзу.
 	gw := &gateway.Client{BaseURL: cfg.GatewayURL, APIKey: cfg.GatewayAPIKey,
+		HTTP: httpx.NewClient(httpx.ClientConfig{Timeout: cfg.GatewayTimeout, MaxRetries: -1})}
+
+	// Касса (pos): тот же протокол, отдельный адрес и ключ.
+	posGW := &gateway.Client{BaseURL: cfg.POSURL, APIKey: cfg.POSAPIKey,
 		HTTP: httpx.NewClient(httpx.ClientConfig{Timeout: cfg.GatewayTimeout, MaxRetries: -1})}
 
 	// Outbox relay → Kafka и консьюмеры orders.state/orders.status. Без KAFKA_BROKERS платежи работают
@@ -101,7 +106,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		log.Warn("KAFKA_BROKERS is empty: payment events accumulate in the outbox and orders.state is not consumed")
 	}
 
-	svc = service.New(service.Deps{Pool: pool, Gateway: gw, Waker: waker, Log: log, Metrics: m,
+	svc = service.New(service.Deps{Pool: pool, Gateway: gw, POS: posGW, Waker: waker, Log: log, Metrics: m,
 		Config: service.Config{GatewayTimeout: cfg.GatewayTimeout, WebhookWait: cfg.WebhookWait, PendingExpiry: cfg.PendingExpiry,
 			PollMin: cfg.PollMin, PollMax: cfg.PollMax, DefaultReturnURL: cfg.DefaultReturnURL}})
 
@@ -126,6 +131,8 @@ func run(cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); idem.Run(ctx, log) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); svc.RunReconciler(ctx, cfg.ReconcileInterval) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); svc.RunRefunds(ctx, cfg.ReconcileInterval) }()
 
 	handler := httpapi.New(httpapi.Deps{Log: log, Metrics: reg, Auth: auth, Checks: checks, Idempotency: idem, Payments: svc,
 		GatewayWebhookSecret: []byte(cfg.GatewayWebhookSecret), POSWebhookSecret: []byte(cfg.POSWebhookSecret)})
@@ -153,5 +160,25 @@ func unknownCollectors(pool store.DBTX) []prometheus.Collector {
 			Help: "Платежей со статусом unknown (итог не получен от шлюза)."}, func() float64 { n, _ := q(); return float64(n) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "payment_unknown_oldest_age_seconds",
 			Help: "Возраст самого старого платежа в unknown."}, func() float64 { _, a := q(); return a }),
+	}
+}
+
+// refundCollectors — алерты: возвраты в ожидании и «зависшие» (failed — ручная обработка).
+func refundCollectors(pool store.DBTX) []prometheus.Collector {
+	st := store.New()
+	q := func() (int64, int64) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		p, f, err := st.RefundStats(ctx, pool)
+		if err != nil {
+			return -1, -1
+		}
+		return p, f
+	}
+	return []prometheus.Collector{
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "payment_refunds_pending",
+			Help: "Возвратов в ожидании исполнения."}, func() float64 { p, _ := q(); return float64(p) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "payment_refunds_failed",
+			Help: "Возвратов, которые шлюз определённо отклонил (нужна ручная обработка)."}, func() float64 { _, f := q(); return float64(f) }),
 	}
 }

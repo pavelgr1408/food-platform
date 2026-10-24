@@ -35,6 +35,7 @@ type CreateRequest struct {
 	Currency    string
 	ReturnURL   string
 	Description string
+	Tender      string // card | cash — только касса (pos)
 }
 
 // Created — созданная у шлюза операция.
@@ -50,6 +51,13 @@ type State struct {
 	Amount   int64
 	Currency string
 	Reason   string
+	Fiscal   []byte // фискальный документ кассы (JSON-объект), если есть
+}
+
+// Refunded — итог запроса на возврат.
+type Refunded struct {
+	Ref    string // идентификатор возврата у шлюза
+	Status string // refunded | pending
 }
 
 // Gateway — операции шлюза, нужные payment-service.
@@ -58,6 +66,9 @@ type Gateway interface {
 	Status(ctx context.Context, ref string) (State, error)
 	// Cancel отменяет неоплаченную операцию; если её успели оплатить — возвращает paid.
 	Cancel(ctx context.Context, ref string) (State, error)
+	// Refund возвращает деньги по оплаченной операции. key (= paymentId) делает вызов идемпотентным:
+	// повтор после таймаута не заведёт второй возврат. Определённый отказ — *RejectedError.
+	Refund(ctx context.Context, ref, key string, amount int64, currency string) (Refunded, error)
 }
 
 // RejectedError — шлюз определённо отказал (4xx): операция не создана, повторять бессмысленно.
@@ -98,6 +109,7 @@ type createDTO struct {
 	ReturnURL   string   `json:"returnUrl,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Metadata    metaDTO  `json:"metadata"`
+	Tender      string   `json:"tender,omitempty"`
 }
 
 type metaDTO struct {
@@ -105,11 +117,12 @@ type metaDTO struct {
 }
 
 type paymentDTO struct {
-	ID              string   `json:"id"`
-	Status          string   `json:"status"`
-	ConfirmationURL string   `json:"confirmationUrl"`
-	Amount          moneyDTO `json:"amount"`
-	Reason          string   `json:"reason"`
+	ID              string          `json:"id"`
+	Status          string          `json:"status"`
+	ConfirmationURL string          `json:"confirmationUrl"`
+	Amount          moneyDTO        `json:"amount"`
+	Reason          string          `json:"reason"`
+	FiscalData      json.RawMessage `json:"fiscalData,omitempty"`
 }
 
 type errorDTO struct {
@@ -166,7 +179,7 @@ func (c *Client) do(ctx context.Context, method, path, key string, body any) (pa
 // Create создаёт оплату (идемпотентно по req.Key).
 func (c *Client) Create(ctx context.Context, r CreateRequest) (Created, error) {
 	d, err := c.do(ctx, http.MethodPost, "/v1/payments", r.Key, createDTO{
-		Amount: moneyDTO{r.Amount, r.Currency}, Reference: r.Reference, ReturnURL: r.ReturnURL, Description: r.Description, Metadata: metaDTO{OrderID: r.OrderID}})
+		Amount: moneyDTO{r.Amount, r.Currency}, Reference: r.Reference, ReturnURL: r.ReturnURL, Description: r.Description, Metadata: metaDTO{OrderID: r.OrderID}, Tender: r.Tender})
 	if err != nil {
 		return Created{}, err
 	}
@@ -177,7 +190,11 @@ func (c *Client) Create(ctx context.Context, r CreateRequest) (Created, error) {
 }
 
 func toState(d paymentDTO) State {
-	return State{Ref: d.ID, Status: d.Status, Amount: d.Amount.Amount, Currency: d.Amount.Currency, Reason: d.Reason}
+	st := State{Ref: d.ID, Status: d.Status, Amount: d.Amount.Amount, Currency: d.Amount.Currency, Reason: d.Reason}
+	if len(d.FiscalData) > 0 && d.FiscalData[0] == '{' { // только объект; null и мусор отбрасываем
+		st.Fiscal = d.FiscalData
+	}
+	return st
 }
 
 // Status запрашивает состояние операции.
@@ -190,4 +207,18 @@ func (c *Client) Status(ctx context.Context, ref string) (State, error) {
 func (c *Client) Cancel(ctx context.Context, ref string) (State, error) {
 	d, err := c.do(ctx, http.MethodPost, "/v1/payments/"+url.PathEscape(ref)+"/cancel", "", nil)
 	return toState(d), err
+}
+
+// Refund запрашивает возврат полной суммы.
+func (c *Client) Refund(ctx context.Context, ref, key string, amount int64, currency string) (Refunded, error) {
+	d, err := c.do(ctx, http.MethodPost, "/v1/payments/"+url.PathEscape(ref)+"/refund", key, struct {
+		Amount moneyDTO `json:"amount"`
+	}{moneyDTO{amount, currency}})
+	if err != nil {
+		return Refunded{}, err
+	}
+	if d.ID == "" {
+		return Refunded{}, errors.New("gateway: refund response without id")
+	}
+	return Refunded{Ref: d.ID, Status: d.Status}, nil
 }

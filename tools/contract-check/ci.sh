@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Контрактная проверка без Docker: собирает restaurant/menu/orders/payment и mock шлюза, запускает их на Postgres
-# и гоняет tools/contract-check/check.py для сценариев catalog, orders и payment.
-# Kafka в CI нет: заказ для сценария payment засевается прямо в БД payment (в проде он приходит событием orders.state).
+# и гоняет tools/contract-check/check.py для сценариев catalog, orders, payment и staff.
+# Kafka в CI нет: заказы для сценариев payment и staff засеваются прямо в БД payment (в проде они приходят событием orders.state);
+# возврат при отмене (нужен orders.status через Kafka) проверяется только на живом стенде: make contract-check SCENARIO=staff.
 #   DB_ADMIN_URL  — админский URL Postgres (по умолчанию postgres://postgres:postgres@localhost:5432/postgres)
 #   PYTHON        — интерпретатор с pyyaml/jsonschema (по умолчанию python3)
 set -euo pipefail
@@ -41,8 +42,9 @@ start restaurant 8082 SEED_ON_START=true
 start menu 8083 SEED_ON_START=true
 start orders 8084 MENU_URL=http://localhost:8083 RESTAURANT_URL=http://localhost:8082
 
-start payment 8085 GATEWAY_URL=http://localhost:9091 RECONCILE_BACKOFF_MIN=1s
-env MOCKS=payment MOCK_DELAY=1s MOCK_PAYMENT_WEBHOOK_URL=http://localhost:8085/webhooks/payments/gateway "$WORK/mock" >"$WORK/mock.log" 2>&1 &
+start payment 8085 GATEWAY_URL=http://localhost:9091 POS_URL=http://localhost:9093 RECONCILE_BACKOFF_MIN=1s
+env MOCKS=payment,pos MOCK_DELAY=1s MOCK_PAYMENT_WEBHOOK_URL=http://localhost:8085/webhooks/payments/gateway \
+  MOCK_POS_WEBHOOK_URL=http://localhost:8085/webhooks/payments/pos "$WORK/mock" >"$WORK/mock.log" 2>&1 &
 PIDS+=("$!")
 
 for port in 8082 8083 8084 8085; do
@@ -54,12 +56,13 @@ for port in 8082 8083 8084 8085; do
 done
 
 psql "$(dburl payment)" -qc "INSERT INTO payment_orders (order_id, revision, order_number, restaurant_id, fulfillment, method, amount, currency)
-  VALUES ('a1000000-0000-4000-8000-0000000000a1', 1, 'R1-CI-0001', 'a1000000-0000-4000-8000-000000000004', 'pickup', 'online_card', 34900, 'RUB')"
+  VALUES ('a1000000-0000-4000-8000-0000000000a1', 1, 'R1-CI-0001', 'a1000000-0000-4000-8000-000000000004', 'pickup', 'online_card', 34900, 'RUB'),
+         ('a1000000-0000-4000-8000-0000000000a2', 1, 'R4-CI-0002', 'a1000000-0000-4000-8000-000000000004', 'pickup', 'pos', 34900, 'RUB')"
 
 rc=0
-for scenario in catalog orders payment; do
+for scenario in catalog orders payment staff; do
   echo "== contract-check $scenario"
-  CC_PAYMENT_ORDER=a1000000-0000-4000-8000-0000000000a1 CC_PAYMENT_AMOUNT=34900 \
+  CC_PAYMENT_ORDER=a1000000-0000-4000-8000-0000000000a1 CC_PAYMENT_AMOUNT=34900 CC_POS_ORDER=a1000000-0000-4000-8000-0000000000a2 \
     "$PY" tools/contract-check/check.py "$scenario" || rc=$?
 done
 [ "$rc" = 0 ] || { echo "--- логи сервисов"; tail -n 40 "$WORK"/*.log; }

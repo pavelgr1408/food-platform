@@ -13,10 +13,11 @@ env:
   AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
   KAFKA_BROKERS: kafka:9092
   GATEWAY_URL: http://mock-externals:9091 # dev: мок шлюза; в prod — адрес реального шлюза
+  POS_URL: http://mock-externals:9093 # dev: мок кассы; в prod — адрес кассовой системы
   GATEWAY_TIMEOUT: 5s
   WEBHOOK_WAIT: 30s
   PENDING_EXPIRY: 10m
-existingSecret: payment-secrets # ключи: DATABASE_URL, GATEWAY_API_KEY, GATEWAY_WEBHOOK_SECRET, POS_WEBHOOK_SECRET
+existingSecret: payment-secrets # ключи: DATABASE_URL, GATEWAY_API_KEY, GATEWAY_WEBHOOK_SECRET, POS_API_KEY, POS_WEBHOOK_SECRET
 migrations:
   enabled: true # Job `payment-service --migrate-only` (pre-install/pre-upgrade hook)
 resources:

@@ -1,5 +1,6 @@
-# Срез: внешние системы (моки). Включаемые модули — MOCKS=ping,payment,production,courier,push (появляются с S3…S9).
-# payment — платёжный шлюз (:9091): вебхуки с HMAC уходят в payment-service.
+# Срез: внешние системы (моки). Включаемые модули — MOCKS=ping,payment,pos,production,courier,push (появляются с S3…S9).
+# payment — платёжный шлюз (:9091): вебхуки с HMAC уходят в payment-service; умеет возвраты (refund).
+# pos — кассовая система (:9093, S6): оплата на кассе с фискальными данными, тот же протокол и возвраты.
 # production — система производства (:9092, S4): читает orders.state, публикует orders.dish.status и production.lead.time.
 services:
   mock-externals:
@@ -10,10 +11,11 @@ services:
         SRC: tools/mock-externals
         TARGET: ./tools/mock-externals
     environment:
-      MOCKS: ${MOCKS:-ping,payment,production}
+      MOCKS: ${MOCKS:-ping,payment,pos,production}
       MOCK_DELAY: ${MOCK_DELAY:-2s}
       KAFKA_BROKERS: kafka:9092
       MOCK_PAYMENT_WEBHOOK_URL: http://payment:8085/webhooks/payments/gateway
+      MOCK_POS_WEBHOOK_URL: http://payment:8085/webhooks/payments/pos
       MOCK_PRODUCTION_QUEUE_DELAY: ${MOCK_PRODUCTION_QUEUE_DELAY:-2s}
       MOCK_PRODUCTION_COOK_TIME: ${MOCK_PRODUCTION_COOK_TIME:-3s}
     ports:

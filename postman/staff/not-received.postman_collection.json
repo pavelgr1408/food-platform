@@ -1,0 +1,428 @@
+{
+  "info": {
+    "name": "staff: not_received по таймеру (S6)",
+    "description": "Готовый заказ на самовывоз, который не забрали за NOT_RECEIVED_AFTER, переходит в not_received (janitor); выдать и оплатить такой заказ нельзя. Запускайте при orders с NOT_RECEIVED_AFTER=10s (JANITOR_INTERVAL ≤ 5s): `NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s make up SLICE=\"restaurant menu orders payment mock-externals\"`, затем `make newman-staff-timeout`. При штатных 2 ч коллекция не проходит — это сценарий для проверки таймера, не для обычного прогона.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0. Подготовка",
+      "item": [
+        {
+          "name": "меню: id бургера",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const all = pm.response.json().categories.flatMap(c => c.items);",
+                  "const burger = all.find(i => i.name === 'BLT Классик'); pm.test('позиция есть в меню', () => pm.expect(burger).to.exist);",
+                  "pm.collectionVariables.set('burgerId', burger.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: сброс и тайминги (очередь 1 с, готовка 2 с)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock производства: тайминги",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{productionUrl}}/_admin/production/timing?queue=1s&cook=2s&stagger=0s"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Готовый заказ, который не забрали → not_received",
+      "item": [
+        {
+          "name": "f: createCart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('fCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{fCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{fCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: createOrder (pos)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{fKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{fCart}}\",\n  \"paymentMethod\": \"pos\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('fKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('fOrder', o.id); pm.collectionVariables.set('fNumber', o.number);",
+                  "pm.test('статус accepted', () => pm.expect(o.status).to.eql('accepted'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: ждём заказ готов",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{fOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_dcddcf'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'ready');",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ готов\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true);  }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "F: ждём not_received (janitor, NOT_RECEIVED_AFTER)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{fOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_61ba89'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.status === 'not_received');",
+                  "if (!done && n < 120) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ перешёл в not_received\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true);  }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "markOrderIssued для not_received → 409 ORDER_STATE_CONFLICT",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{staffId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders/{{fOrder}}/issuance"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json, code=ORDER_STATE_CONFLICT', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_STATE_CONFLICT'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{fOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_0eac6b'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (pm.response.code === 200);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"payment знает заказ\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true);  }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "initiatePosPayment для not_received → 409 ORDER_NOT_PAYABLE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{staffId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{fPk}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{paymentUrl}}/orders/{{fOrder}}/payments/pos",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tender\": \"card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('fPk', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json, code=ORDER_NOT_PAYABLE', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('ORDER_NOT_PAYABLE'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "orders: переход зафиксирован метрикой",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/metrics"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('orders_status_transitions_total{to=not_received}', () => pm.expect(pm.response.text()).to.match(/orders_status_transitions_total\\{[^}]*to=\"not_received\"[^}]*\\} [1-9]/));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "ordersUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "paymentUrl",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "menuUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "restaurantUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "mockUrl",
+      "value": "http://localhost:9091"
+    },
+    {
+      "key": "posUrl",
+      "value": "http://localhost:9093"
+    },
+    {
+      "key": "productionUrl",
+      "value": "http://localhost:9092"
+    },
+    {
+      "key": "restaurantId",
+      "value": "a1000000-0000-4000-8000-000000000004"
+    },
+    {
+      "key": "otherRestaurantId",
+      "value": "a1000000-0000-4000-8000-0000000000ff"
+    },
+    {
+      "key": "staffId",
+      "value": "staff-r4"
+    }
+  ]
+}

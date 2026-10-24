@@ -71,7 +71,14 @@ func (s *Service) HandleEvent(ctx context.Context, tx pgx.Tx, ev kafka.Event) er
 		if _, err := uuid.Parse(p.OrderID); err != nil || p.Status == "" || p.UpdatedAt.IsZero() {
 			return fmt.Errorf("orders.status: invalid payload (orderId=%q status=%q)", p.OrderID, p.Status)
 		}
-		return s.st.SetOrderStatus(ctx, tx, p.OrderID, p.Status, p.UpdatedAt)
+		if err := s.st.SetOrderStatus(ctx, tx, p.OrderID, p.Status, p.UpdatedAt); err != nil {
+			return err
+		}
+		if p.Status == domain.OrderCancelled {
+			// Незавершённые операции пора отменить у шлюза (reconciler), оплаченные — вернуть (цикл возвратов).
+			return s.st.ExpediteLive(ctx, tx, p.OrderID, s.now())
+		}
+		return nil
 	}
 	return fmt.Errorf("unexpected topic %q", ev.Topic)
 }

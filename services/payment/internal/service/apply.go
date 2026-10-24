@@ -33,6 +33,11 @@ func (s *Service) backoff(attempts int) time.Duration {
 //
 // Статус и событие orders.payments.status пишутся атомарно.
 func (s *Service) applyTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to domain.Status, reason, ref string) (domain.Payment, bool, error) {
+	return s.applyFiscalTx(ctx, tx, p, to, reason, ref, nil)
+}
+
+// applyFiscalTx — applyTx с фискальным документом кассы (сохраняется только вместе с paid).
+func (s *Service) applyFiscalTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to domain.Status, reason, ref string, fiscal []byte) (domain.Payment, bool, error) {
 	if p.Status == to {
 		return p, false, nil
 	}
@@ -50,6 +55,10 @@ func (s *Service) applyTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to d
 	switch to {
 	case domain.StatusPaid:
 		u.PaidAt = &at
+		if len(fiscal) > 0 {
+			u.Fiscal = fiscal
+			p.FiscalData = fiscal
+		}
 		st, err := s.st.OrderStatus(ctx, tx, p.OrderID)
 		if err != nil {
 			return p, false, err
@@ -88,12 +97,16 @@ func (s *Service) applyTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to d
 
 // applyByID читает платёж с блокировкой, применяет статус и будит relay после коммита.
 func (s *Service) applyByID(ctx context.Context, id string, to domain.Status, reason, ref string) (p domain.Payment, changed bool, err error) {
+	return s.applyByIDFiscal(ctx, id, to, reason, ref, nil)
+}
+
+func (s *Service) applyByIDFiscal(ctx context.Context, id string, to domain.Status, reason, ref string, fiscal []byte) (p domain.Payment, changed bool, err error) {
 	err = pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		cur, err := s.st.GetPayment(ctx, tx, id, true)
 		if err != nil {
 			return err
 		}
-		p, changed, err = s.applyTx(ctx, tx, cur, to, reason, ref)
+		p, changed, err = s.applyFiscalTx(ctx, tx, cur, to, reason, ref, fiscal)
 		return err
 	})
 	if err == nil && changed {
@@ -112,6 +125,7 @@ type Callback struct {
 	Reason      string
 	Amount      *int64 // nil — сумму не передали
 	Currency    string
+	Fiscal      []byte // фискальные данные кассы (JSON-объект); пусто — нет
 }
 
 // HandleCallback применяет вебхук. source — способ оплаты, чьим каналом он пришёл (online_card — шлюз, pos — касса).
@@ -164,7 +178,7 @@ func (s *Service) HandleCallback(ctx context.Context, source domain.Method, cb C
 				reason = "declined"
 			}
 		}
-		_, changed, err = s.applyTx(ctx, tx, p, to, reason, cb.ExternalRef)
+		_, changed, err = s.applyFiscalTx(ctx, tx, p, to, reason, cb.ExternalRef, cb.Fiscal)
 		if err == nil {
 			s.m.Webhooks.WithLabelValues(label, "applied").Inc()
 		}

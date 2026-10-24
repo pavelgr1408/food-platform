@@ -24,6 +24,8 @@ type paymentStatusPayload struct {
 	PaymentID string    `json:"paymentId"`
 	Status    string    `json:"status"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Ход возврата (S6): payment публикует то же событие со статусом paid и refundStatus.
+	RefundStatus string `json:"refundStatus,omitempty"`
 }
 
 // HandlePaymentStatus — kafka.TxHandler консьюмера orders.payments.status (внутри inbox-транзакции).
@@ -34,7 +36,8 @@ type paymentStatusPayload struct {
 //
 // Защиты: событие старше уже применённого (по updatedAt) игнорируется; paid не перезаписывается;
 // paid по отменённому заказу НЕ возвращает его в работу и не публикует orders.state (производство не стартует) —
-// фиксируется paymentStatus=paid при status=cancelled, метрика и ошибка в лог: нужен возврат (S6).
+// фиксируется paymentStatus=paid при status=cancelled, метрика и ошибка в лог — возврат запускает сам payment
+// (S6) и сообщает ход в refundStatus: он применяется независимо от защиты выше (pending → refunded|failed).
 func (s *Service) HandlePaymentStatus(ctx context.Context, tx pgx.Tx, ev kafka.Event) error {
 	var p paymentStatusPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -54,6 +57,17 @@ func (s *Service) HandlePaymentStatus(ctx context.Context, tx pgx.Tx, ev kafka.E
 	if err != nil {
 		return fmt.Errorf("orders.payments.status: order %s: %w", p.OrderID, err) // невозможно без заказа → повторы и DLQ
 	}
+	if rs := domain.RefundStatus(p.RefundStatus); rs != "" {
+		if !rs.Valid() {
+			return fmt.Errorf("orders.payments.status: unknown refundStatus %q", p.RefundStatus)
+		}
+		if _, err := s.st.SetRefundStatus(ctx, tx, o.ID, rs, p.UpdatedAt.UTC()); err != nil {
+			return err
+		}
+		if s.m != nil {
+			s.m.RefundEvents.WithLabelValues(string(rs)).Inc()
+		}
+	}
 	at := p.UpdatedAt.UTC()
 	if o.PaymentStatus == domain.PaymentPaid || (o.PaymentUpdatedAt != nil && at.Before(*o.PaymentUpdatedAt)) {
 		s.log.DebugContext(ctx, "stale or repeated payment event ignored", "order_id", o.ID, "status", p.Status)
@@ -71,6 +85,11 @@ func (s *Service) HandlePaymentStatus(ctx context.Context, tx pgx.Tx, ev kafka.E
 		}
 		if s.m != nil {
 			s.m.PaidAfterCancel.Inc()
+		}
+		if p.RefundStatus == "" { // payment ещё не сообщил о возврате: он будет, пока считаем pending
+			if _, err := s.st.SetRefundStatus(ctx, tx, o.ID, domain.RefundPending, at); err != nil {
+				return err
+			}
 		}
 		s.log.ErrorContext(ctx, "payment received for a cancelled order: refund required",
 			"order_id", o.ID, "payment_id", p.PaymentID, "order_status_reason", o.StatusReason)

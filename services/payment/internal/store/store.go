@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -88,17 +89,30 @@ func (s *Store) OrderStatus(ctx context.Context, db DBTX, orderID string) (strin
 }
 
 const payCols = `id, order_id, attempt, method, status, amount, currency, COALESCE(gateway_ref, ''), payment_url, return_url,
-	decline_reason, refund_required, poll_attempts, next_poll_at, created_at, updated_at, paid_at`
+	decline_reason, refund_required, poll_attempts, next_poll_at, created_at, updated_at, paid_at,
+	tender, COALESCE(fiscal_data::text, ''), refund_status, COALESCE(refund_ref, ''), refund_reason,
+	refund_requested_at, refunded_at, refund_attempts`
 
 func scanPayment(row pgx.Row) (domain.Payment, error) {
 	var p domain.Payment
-	var m, st string
+	var m, st, fiscal string
+	var tender, refund *string
 	err := row.Scan(&p.ID, &p.OrderID, &p.Attempt, &m, &st, &p.Amount, &p.Currency, &p.GatewayRef, &p.PaymentURL, &p.ReturnURL,
-		&p.DeclineReason, &p.RefundNeeded, &p.PollAttempts, &p.NextPollAt, &p.CreatedAt, &p.UpdatedAt, &p.PaidAt)
+		&p.DeclineReason, &p.RefundNeeded, &p.PollAttempts, &p.NextPollAt, &p.CreatedAt, &p.UpdatedAt, &p.PaidAt,
+		&tender, &fiscal, &refund, &p.RefundRef, &p.RefundReason, &p.RefundRequestedAt, &p.RefundedAt, &p.RefundAttempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
 	}
 	p.Method, p.Status = domain.Method(m), domain.Status(st)
+	if tender != nil {
+		p.Tender = domain.Tender(*tender)
+	}
+	if refund != nil {
+		p.RefundStatus = domain.RefundStatus(*refund)
+	}
+	if fiscal != "" {
+		p.FiscalData = json.RawMessage(fiscal)
+	}
 	return p, err
 }
 
@@ -132,10 +146,15 @@ func (s *Store) GetPayment(ctx context.Context, db DBTX, id string, lock bool) (
 // InsertPayment создаёт попытку (status=pending, gateway_ref пуст). Нарушение уникальности
 // «одна живая/успешная попытка» → ErrConflict.
 func (s *Store) InsertPayment(ctx context.Context, db DBTX, p domain.Payment) error {
+	var tender *string
+	if p.Tender != "" {
+		t := string(p.Tender)
+		tender = &t
+	}
 	_, err := db.Exec(ctx, `INSERT INTO payments (id, order_id, attempt, method, status, amount, currency, return_url,
-			next_poll_at, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`,
-		p.ID, p.OrderID, p.Attempt, string(p.Method), string(p.Status), p.Amount, p.Currency, p.ReturnURL, p.NextPollAt, p.CreatedAt)
+			next_poll_at, created_at, updated_at, tender)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11)`,
+		p.ID, p.OrderID, p.Attempt, string(p.Method), string(p.Status), p.Amount, p.Currency, p.ReturnURL, p.NextPollAt, p.CreatedAt, tender)
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" {
 		return ErrConflict
@@ -157,6 +176,7 @@ type Update struct {
 	PaidAt       *time.Time
 	RefundNeeded bool
 	NextPollAt   *time.Time // nil — опрос больше не нужен
+	Fiscal       []byte     // фискальный документ кассы (JSON); пусто — не менять
 	At           time.Time
 }
 
@@ -164,8 +184,9 @@ type Update struct {
 func (s *Store) ApplyUpdate(ctx context.Context, db DBTX, id string, u Update) error {
 	_, err := db.Exec(ctx, `UPDATE payments SET status = $2, decline_reason = CASE WHEN $3 <> '' THEN $3 ELSE decline_reason END,
 			gateway_ref = COALESCE(gateway_ref, NULLIF($4, '')), paid_at = COALESCE($5, paid_at),
-			refund_required = refund_required OR $6, next_poll_at = $7, updated_at = $8
-		WHERE id = $1`, id, string(u.Status), u.Reason, u.GatewayRef, u.PaidAt, u.RefundNeeded, u.NextPollAt, u.At)
+			refund_required = refund_required OR $6, next_poll_at = $7, updated_at = $8,
+			fiscal_data = COALESCE(NULLIF($9::text, '')::jsonb, fiscal_data)
+		WHERE id = $1`, id, string(u.Status), u.Reason, u.GatewayRef, u.PaidAt, u.RefundNeeded, u.NextPollAt, u.At, string(u.Fiscal))
 	return err
 }
 
@@ -210,5 +231,78 @@ func (s *Store) TryRecordWebhook(ctx context.Context, db DBTX, eventID, source, 
 func (s *Store) UnknownStats(ctx context.Context, db DBTX) (count int64, oldestSeconds float64, err error) {
 	err = db.QueryRow(ctx, `SELECT count(*), COALESCE(EXTRACT(EPOCH FROM now() - min(updated_at)), 0)
 		FROM payments WHERE status = 'unknown'`).Scan(&count, &oldestSeconds)
+	return
+}
+
+// RequestRefunds переводит в refund_status=pending оплаченные платежи отменённых заказов, по которым возврат ещё
+// не запрашивался (свип: покрывает и «заказ отменили, пока платёж проводили», и порядок событий). Возвращает
+// затронутые платежи — вызывающий публикует их статус в той же транзакции.
+func (s *Store) RequestRefunds(ctx context.Context, db DBTX, now time.Time, limit int) ([]domain.Payment, error) {
+	rows, err := db.Query(ctx, `WITH due AS (
+			SELECT p.id FROM order_statuses os JOIN payments p ON p.order_id = os.order_id
+			WHERE os.status = 'cancelled' AND p.status = 'paid' AND p.refund_status IS NULL
+			ORDER BY os.status_at LIMIT $2 FOR UPDATE OF p SKIP LOCKED)
+		UPDATE payments SET refund_status = 'pending', refund_requested_at = $1, refund_next_at = $1, updated_at = $1
+		WHERE id IN (SELECT id FROM due) RETURNING `+payCols, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collect(rows)
+}
+
+// ClaimRefunds выбирает возвраты, которым пора, и «арендует» их (как ClaimDue): вызов шлюза идёт без блокировок БД.
+func (s *Store) ClaimRefunds(ctx context.Context, db DBTX, now time.Time, lease time.Duration, limit int) ([]domain.Payment, error) {
+	rows, err := db.Query(ctx, `WITH due AS (
+			SELECT id FROM payments WHERE refund_status = 'pending' AND refund_next_at <= $1
+			ORDER BY refund_next_at LIMIT $3 FOR UPDATE SKIP LOCKED)
+		UPDATE payments SET refund_next_at = $1 + make_interval(secs => $2)
+		WHERE id IN (SELECT id FROM due) RETURNING `+payCols, now, lease.Seconds(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collect(rows)
+}
+
+func collect(rows pgx.Rows) ([]domain.Payment, error) {
+	var out []domain.Payment
+	for rows.Next() {
+		p, err := scanPayment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// FinishRefund фиксирует итог возврата (refunded | failed). false — возврат уже не pending (другой экземпляр успел).
+func (s *Store) FinishRefund(ctx context.Context, db DBTX, id string, st domain.RefundStatus, ref, reason string, at time.Time) (bool, error) {
+	tag, err := db.Exec(ctx, `UPDATE payments SET refund_status = $2, refund_ref = COALESCE(NULLIF($3, ''), refund_ref),
+			refund_reason = $4, refunded_at = CASE WHEN $2 = 'refunded' THEN $5::timestamptz ELSE refunded_at END,
+			refund_next_at = NULL, updated_at = $5
+		WHERE id = $1 AND refund_status = 'pending'`, id, string(st), ref, reason, at)
+	return tag.RowsAffected() == 1, err
+}
+
+// RetryRefund откладывает следующую попытку возврата.
+func (s *Store) RetryRefund(ctx context.Context, db DBTX, id string, next time.Time) error {
+	_, err := db.Exec(ctx, `UPDATE payments SET refund_next_at = $2, refund_attempts = refund_attempts + 1
+		WHERE id = $1 AND refund_status = 'pending'`, id, next)
+	return err
+}
+
+// ExpediteLive ускоряет сверку живых платежей заказа (заказ отменён: незавершённую операцию пора отменить у шлюза).
+func (s *Store) ExpediteLive(ctx context.Context, db DBTX, orderID string, at time.Time) error {
+	_, err := db.Exec(ctx, `UPDATE payments SET next_poll_at = LEAST(COALESCE(next_poll_at, $2), $2)
+		WHERE order_id = $1 AND status IN ('pending','authorized','unknown')`, orderID, at)
+	return err
+}
+
+// RefundStats — число возвратов в pending и в failed (метрики/алерты).
+func (s *Store) RefundStats(ctx context.Context, db DBTX) (pending, failed int64, err error) {
+	err = db.QueryRow(ctx, `SELECT count(*) FILTER (WHERE refund_status = 'pending'),
+			count(*) FILTER (WHERE refund_status = 'failed') FROM payments WHERE refund_status IS NOT NULL`).Scan(&pending, &failed)
 	return
 }

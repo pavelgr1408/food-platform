@@ -280,7 +280,7 @@ func TestOrderBusinessErrorsOverHTTP(t *testing.T) {
 	key := func(s string) map[string]string { return map[string]string{"Idempotency-Key": s} }
 
 	wantProblem(t, do(t, srv, "POST", "/orders", map[string]any{"cartId": id, "paymentMethod": "courier_card"}, key("k1")), 422, "PAYMENT_METHOD_NOT_ALLOWED")
-	wantProblem(t, do(t, srv, "POST", "/orders", map[string]any{"cartId": id, "paymentMethod": "online_card", "channel": "staff_fax"}, key("k2")), 422, "CHANNEL_NOT_AVAILABLE")
+	wantProblem(t, do(t, srv, "POST", "/orders", map[string]any{"cartId": id, "paymentMethod": "online_card", "channel": "staff_fax"}, key("k2")), 401, "UNAUTHORIZED")
 
 	menu.SetAvailable(testkit.Cola, false)
 	r := do(t, srv, "POST", "/orders", orderBody(id), key("k3"))

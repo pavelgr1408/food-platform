@@ -364,7 +364,7 @@ func TestCreateOrderValidation(t *testing.T) {
 		wantCode(t, err, want)
 	}
 	_, err = e.svc.CreateOrder(ctx, "", service.CreateOrderInput{CartID: v.Cart.ID, PaymentMethod: domain.PayOnlineCard, Channel: "staff_fax"}, nil)
-	wantCode(t, err, "CHANNEL_NOT_AVAILABLE")
+	wantCode(t, err, "UNAUTHORIZED") // staff_fax — только для персонала (S6)
 	_, err = e.svc.CreateOrder(ctx, "", service.CreateOrderInput{CartID: v.Cart.ID, PaymentMethod: domain.PayOnlineCard, Channel: "carrier-pigeon"}, nil)
 	wantCode(t, err, "INVALID_PARAMETER")
 	_, err = e.svc.CreateOrder(ctx, "", service.CreateOrderInput{CartID: "nope", PaymentMethod: domain.PayOnlineCard}, nil)

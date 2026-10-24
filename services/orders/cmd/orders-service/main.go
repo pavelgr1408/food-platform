@@ -106,7 +106,8 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Log:         log,
 		Metrics:     m,
 		Config: service.Config{PaymentTimeout: cfg.PaymentTimeout, UnknownGrace: cfg.UnknownGrace, CartTTL: cfg.CartTTL,
-			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes, LeadTimeTTL: cfg.LeadTimeTTL},
+			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes, LeadTimeTTL: cfg.LeadTimeTTL,
+			NotReceivedAfter: cfg.NotReceivedAfter},
 	})
 	wg.Add(1)
 	go func() { defer wg.Done(); svc.RunJanitor(ctx, cfg.JanitorInterval) }()

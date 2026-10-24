@@ -2,7 +2,10 @@
 // Не зависит от HTTP, БД и Kafka. Деньги — int64 копейки (ADR-13).
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Status — статус платежа (OpenAPI PaymentStatus).
 type Status string
@@ -80,6 +83,28 @@ func (m Method) Valid() bool {
 	return m == MethodOnlineCard || m == MethodCourierCard || m == MethodPOS
 }
 
+// Tender — способ оплаты на кассе (pos).
+type Tender string
+
+// Способы на кассе. Наличные тоже проводятся через терминал (Д6).
+const (
+	TenderCard Tender = "card"
+	TenderCash Tender = "cash"
+)
+
+// Valid — известный способ на кассе.
+func (t Tender) Valid() bool { return t == TenderCard || t == TenderCash }
+
+// RefundStatus — статус возврата по оплаченному платежу (OpenAPI RefundStatus).
+type RefundStatus string
+
+// Статусы возврата. Пустая строка — возврат не запрашивался.
+const (
+	RefundPending  RefundStatus = "pending"
+	RefundRefunded RefundStatus = "refunded"
+	RefundFailed   RefundStatus = "failed"
+)
+
 // Order — реплика заказа, нужная для оплаты (из orders.state).
 type Order struct {
 	ID          string
@@ -108,11 +133,21 @@ type Payment struct {
 	ReturnURL     string
 	DeclineReason string
 	RefundNeeded  bool
+	Tender        Tender          // только pos
+	FiscalData    json.RawMessage // фискальный документ кассы; пусто — нет
 	PollAttempts  int
 	NextPollAt    *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	PaidAt        *time.Time
+
+	// Возврат (S6).
+	RefundStatus      RefundStatus
+	RefundRef         string
+	RefundReason      string
+	RefundRequestedAt *time.Time
+	RefundedAt        *time.Time
+	RefundAttempts    int
 }
 
 // Статусы заказа, влияющие на оплату (orders.status).
@@ -120,6 +155,15 @@ const (
 	OrderPendingPayment = "pending_payment"
 	OrderCancelled      = "cancelled"
 )
+
+// PosPayable — на каком статусе заказа можно инициировать оплату на кассе ("" — orders.status ещё не дошёл).
+func PosPayable(orderStatus string) bool {
+	switch orderStatus {
+	case "", "accepted", "cooking", "ready":
+		return true
+	}
+	return false
+}
 
 // CanBeAccessedBy: ресурс гостя (владелец пуст) доступен знающему id; ресурс пользователя — только ему.
 func CanBeAccessedBy(owner, userID string) bool { return owner == "" || owner == userID }

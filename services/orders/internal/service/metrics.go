@@ -16,6 +16,7 @@ type Metrics struct {
 	CartsPurged      prometheus.Counter
 	PaidAfterCancel  prometheus.Counter
 	ProductionEvents *prometheus.CounterVec // event (dish_status|lead_time), result (applied|stale|ignored_status)
+	RefundEvents     *prometheus.CounterVec // status (pending|refunded|failed): ход возврата от payment (S6)
 }
 
 // NewMetrics создаёт метрики; зарегистрируйте их через Collectors().
@@ -33,12 +34,14 @@ func NewMetrics() *Metrics {
 			Help: "Оплата пришла по уже отменённому заказу — нужен возврат (тревога)."}),
 		ProductionEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_production_events_total",
 			Help: "События системы производства: применены, устарели или проигнорированы по статусу заказа."}, []string{"event", "result"}),
+		RefundEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_refund_events_total",
+			Help: "События о ходе возврата денег по отменённым оплаченным заказам."}, []string{"status"}),
 	}
 }
 
 // Collectors — для metrics.Registry.MustRegister.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged, m.PaidAfterCancel, m.ProductionEvents}
+	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged, m.PaidAfterCancel, m.ProductionEvents, m.RefundEvents}
 }
 
 // StuckCollectors — метрики «заказ завис в accepted»: производство не берёт принятый заказ
