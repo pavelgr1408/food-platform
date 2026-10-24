@@ -25,18 +25,14 @@ func (s *Service) backoff(attempts int) time.Duration {
 	return d
 }
 
-// applyTx переводит платёж p (прочитанный с блокировкой в tx) в статус to. Единственное место смены статуса.
+// applyFiscalTx переводит платёж p (прочитанный с блокировкой в tx) в статус to. Единственное место смены статуса.
 //   - тот же статус — ничего не делает (идемпотентность вебхука/опроса);
 //   - устаревшее наблюдение (платёж уже финален, а пришёл pending/unknown) — тихо пропускается;
 //   - противоречие (paid ↔ declined) — не применяется, учитывается метрикой и логом;
+//   - фискальный документ кассы (fiscal) сохраняется только вместе с paid;
 //   - paid по отменённому заказу — применяется (деньги получены!) с пометкой refund_required.
 //
 // Статус и событие orders.payments.status пишутся атомарно.
-func (s *Service) applyTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to domain.Status, reason, ref string) (domain.Payment, bool, error) {
-	return s.applyFiscalTx(ctx, tx, p, to, reason, ref, nil)
-}
-
-// applyFiscalTx — applyTx с фискальным документом кассы (сохраняется только вместе с paid).
 func (s *Service) applyFiscalTx(ctx context.Context, tx pgx.Tx, p domain.Payment, to domain.Status, reason, ref string, fiscal []byte) (domain.Payment, bool, error) {
 	if p.Status == to {
 		return p, false, nil
