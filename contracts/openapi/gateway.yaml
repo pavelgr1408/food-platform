@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: api-gateway — единая точка входа
-  version: 1.1.0
+  version: 1.2.0
   description: |-
     Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
     это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`), проксируемые
@@ -61,9 +61,10 @@ info:
 
     ## Вебхуки
 
-    `/webhooks/payments/*` **не проходят через gateway**: отдельный путь ingress ведёт прямо в payment-service
-    (подпись HMAC вместо токена, ограничение частоты и размера тела — аннотации ingress). Так отказ gateway не
-    блокирует приём уведомлений шлюза (недостающее добирает reconciler payment-service).
+    `/webhooks/payments/*` и `/webhooks/delivery/*` **не проходят через gateway**: отдельные пути ingress ведут прямо в
+    payment-service и delivery-service (подпись HMAC вместо токена, ограничение частоты и размера тела — аннотации
+    ingress). Так отказ gateway не блокирует приём уведомлений шлюза и курьерской системы (недостающее добирают
+    reconciler-ы сервисов).
 
     ## Не публикуется
 
@@ -76,7 +77,8 @@ info:
     Паттерны — синтаксис `net/http.ServeMux` (метод + путь); побеждает самый специфичный.
     Операции персонала (S6: `searchOrder`, `markOrderIssued`, `cancelOrder`, `initiatePosPayment`) на периметре закрыты
     (`required` + роль персонала; `cancelOrder` и `initiatePosPayment` — ещё и `sensitive`); привязку к ресторану проверяет
-    сам сервис по claim `restaurants[]`. Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
+    сам сервис по claim `restaurants[]`. Операции доставки (S7: `getDeliveryInfo`, `getCourierLocation`) — `optional`: гость
+    владеет доставкой по знанию UUID заказа, остальное решает delivery-service. Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -113,6 +115,8 @@ x-routes:
   - { pattern: 'POST /orders/{orderId}/payments',                      upstream: payment,    access: optional, sensitive: true }
   - { pattern: 'POST /orders/{orderId}/payments/pos',                  upstream: payment,    access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'initiatePosPayment (S6)' }
   - { pattern: 'GET /orders/{orderId}/payments/{paymentId}',           upstream: payment,    access: optional }
+  - { pattern: 'GET /orders/{orderId}/delivery',                        upstream: delivery,   access: optional, note: 'getDeliveryInfo (S7)' }
+  - { pattern: 'GET /orders/{orderId}/delivery/courier-location',       upstream: delivery,   access: optional, note: 'getCourierLocation (S7): клиент опрашивает каждые 5–10 с' }
 
 paths: {}
 

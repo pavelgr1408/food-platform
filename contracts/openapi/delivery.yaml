@@ -2,12 +2,54 @@ openapi: 3.1.0
 
 info:
   title: delivery-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
-    Интеграция доставки: информация о доставке и координаты курьера (пулинг из
-    delivery-Redis). Интеграция с внешней курьерской системой. Хранилища —
-    delivery-db, delivery-Redis. (UC-RCV-02, UC-PAY-03)
-    Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+    Доставка заказа курьером: информация о доставке и координаты курьера (пулинг из
+    delivery-Redis), приём вебхуков курьерской системы. Хранилища — delivery-db, delivery-Redis.
+    (UC-RCV-02, UC-PAY-03) Контракт нарезан из единой спецификации ДЗ-1; общие компоненты —
+    `_common.yaml`.
+
+
+    **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
+    `services/delivery`; `planned` — целевое поведение, появится в указанном этапе. Все операции
+    — S7.
+
+
+    **Откуда сервис знает о заказе (ADR-10).** Из событий `orders.state` (только
+    `fulfillmentType=delivery`; устаревшие `revision` игнорируются). Заказ берётся в доставку,
+    если оплачен (`paymentStatus=paid`) **или** оплата не предоплатная (`paymentMethod=courier`):
+    курьер ищется параллельно с приготовлением. Самовывоз сервис не видит: для него
+    `getDeliveryInfo` — `404 DELIVERY_NOT_FOUND`.
+
+
+    **Статусы доставки** (совпадают с `orders.delivery.status`):
+    `searching → assigned → picked_up → en_route → delivered`, либо `failed` (причина в
+    `failReason`). Статусы только вперёд; повтор и устаревшее уведомление игнорируются.
+    Курьерскую систему сервис вызывает **вне транзакции БД**; запрос идемпотентен по ключу
+    `deliveryId`, итог приходит вебхуком, недостающее добирает опрос (reconciler).
+
+
+    **Нет курьера (E2).** Если курьер не назначен за `SEARCH_TIMEOUT` (по умолчанию 10 минут),
+    доставка переходит в `failed` с `failReason=no_courier`, а в `DeliveryInfo` появляется
+    `hint=pickup`. Заказ при этом **не отменяется**: клиенту предлагается забрать его в
+    ресторане, сотрудник выдаёт заказ операцией `markOrderIssued` (orders.yaml). Недоставка
+    уже выехавшим курьером — `failed` с `failReason=undelivered` (заказ → `not_received`).
+
+
+    **Доступ.** Гость владеет доставкой по знанию UUID заказа (как в orders); доставка
+    пользователя видна только ему; сотрудник — доставки заказов своего ресторана
+    (`STAFF`/`FRANCHISE_OWNER` по claim `restaurants[]`), `HQ_STAFF` — любые. Чужая доставка —
+    `404` (существование не раскрывается). Контакты курьера (`courier`) отдаются, пока доставка
+    `assigned`/`picked_up`/`en_route`; после завершения — нет (минимизация PII).
+
+
+    **Координаты.** Пока доставка активна (`picked_up`/`en_route`), сервис опрашивает курьерскую
+    систему и пишет последнюю точку в delivery-Redis с TTL `LOCATION_TTL` (по умолчанию 60 с).
+    `getCourierLocation` читает только Redis: клиент опрашивает его каждые 5–10 с.
+    Координаты не пишутся в журналы.
+
+    **Коды ошибок:** `DELIVERY_NOT_FOUND`, `LOCATION_NOT_AVAILABLE`, `INVALID_SIGNATURE`,
+    `WEBHOOK_DISABLED`, `INVALID_PARAMETER`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -27,11 +69,15 @@ paths:
     get:
       tags: [delivery-service]
       operationId: getDeliveryInfo
+      x-status: planned
       summary: Информация о доставке
       description: >-
-        Возвращает статус доставки и назначенного курьера по заказу. Назначение
-        курьера инициируется по событию `orders.state`; при отсутствии курьера
-        клиенту предлагается самовывоз (E2). (UC-RCV-02)
+        Возвращает статус доставки и назначенного курьера по заказу. Назначение курьера
+        инициируется по событию `orders.state`; при отсутствии курьера (`failed/no_courier`)
+        клиенту предлагается самовывоз (`hint=pickup`, E2). (UC-RCV-02)
+      security:
+        - {}
+        - bearerAuth: []
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
       responses:
@@ -40,18 +86,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeliveryInfo' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '404':
+          description: >-
+            `DELIVERY_NOT_FOUND` — заказа нет, он чужой, это самовывоз или событие `orders.state`
+            ещё не дошло (повторить через секунду-две).
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /orders/{orderId}/delivery/courier-location:
     get:
       tags: [delivery-service]
       operationId: getCourierLocation
+      x-status: planned
       summary: Координаты курьера (пулинг)
       description: >-
         Возвращает последние координаты курьера из delivery-Redis для отслеживания
-        доставки. Клиент периодически опрашивает эндпоинт и отображает курьера на
-        Mapkit. Координаты обновляются пулингом из внешней курьерской системы.
-        (UC-RCV-02, loop «Пулинг координат курьера»)
+        доставки. Клиент периодически опрашивает эндпоинт и отображает курьера на карте
+        (карта — только на клиенте). Координаты обновляются пулингом из внешней курьерской
+        системы, пока доставка `picked_up`/`en_route`. (UC-RCV-02, loop «Пулинг координат курьера»)
+      security:
+        - {}
+        - bearerAuth: []
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
       responses:
@@ -60,8 +117,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CourierLocation' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
         '404':
-          description: Координаты недоступны (курьер не назначен/не выехал)
+          description: >-
+            `DELIVERY_NOT_FOUND` (см. `getDeliveryInfo`) или `LOCATION_NOT_AVAILABLE` — курьер не
+            назначен/не выехал, доставка завершена, либо точка устарела (старше `LOCATION_TTL`).
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -72,29 +132,66 @@ webhooks:
     post:
       tags: [delivery-service]
       operationId: onCourierDeliveryStatus
+      x-status: planned
+      x-path: /webhooks/delivery/status
       summary: Статус доставки от курьерской системы
       description: >-
-        Уведомление о статусе доставки (в т. ч. «доставлено/оплачено»). Приёмник —
-        delivery-service; далее статус публикуется в `delivery.status`.
-        (UC-RCV-02, UC-PAY-03)
+        Асинхронное уведомление курьерской системы (приёмник — delivery-service, путь
+        `POST /webhooks/delivery/status`, **мимо api-gateway**). Подпись — `X-Signature`
+        (секрет `COURIER_WEBHOOK_SECRET`; без секрета endpoint отвечает `503 WEBHOOK_DISABLED`).
+        Обработка идемпотентна по `eventId`: повтор доставки возвращает `200` без эффекта;
+        статус не откатывается назад. Статус публикуется в `orders.delivery.status`.
+        Признак `paid` информативен: **деньги подтверждает только payment-service** по вебхуку
+        платёжного шлюза (UC-PAY-03). (UC-RCV-02, UC-PAY-03)
+      security:
+        - webhookSignature: []
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DeliveryStatusCallback' }
       responses:
-        '200': { description: Уведомление принято }
+        '200': { description: 'Уведомление принято (в том числе повтор — без эффекта)' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401':
+          description: Подпись отсутствует/неверна или вне окна replay (`INVALID_SIGNATURE`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '404':
+          description: Доставка неизвестна (`DELIVERY_NOT_FOUND`) — курьерская система повторит позже
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '503':
+          description: '`WEBHOOK_DISABLED` — секрет вебхука не задан'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 components:
 
   securitySchemes:
     bearerAuth:
       $ref: '_common.yaml#/components/securitySchemes/bearerAuth'
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: >-
+        `t=<unix>,v1=<hex(HMAC-SHA256(secret, t + "." + body))>`; окно ±5 минут.
 
   schemas:
     DeliveryStatus:
       type: string
-      enum: [searching_courier, courier_assigned, picked_up, en_route, delivered, failed]
+      enum: [searching, assigned, picked_up, en_route, delivered, failed]
+      description: Совпадает с `orders.delivery.status` (AsyncAPI).
+    DeliveryFailReason:
+      type: string
+      enum: [no_courier, undelivered, cancelled]
+      description: >-
+        `no_courier` — курьер не назначен за `SEARCH_TIMEOUT` (E2); `undelivered` — курьер выехал,
+        но не доставил; `cancelled` — заказ отменён, доставка снята.
     Courier:
       type: object
       properties:
@@ -102,22 +199,53 @@ components:
         phone: { type: string }
     DeliveryInfo:
       type: object
+      required: [orderId, status, updatedAt]
       properties:
         orderId: { type: string, format: uuid }
+        deliveryId: { type: string, format: uuid }
         status: { $ref: '#/components/schemas/DeliveryStatus' }
-        courier: { $ref: '#/components/schemas/Courier' }
-        etaAt: { type: string, format: date-time }
+        failReason: { $ref: '#/components/schemas/DeliveryFailReason' }
+        hint:
+          type: string
+          enum: [pickup]
+          description: '`pickup` при `failed/no_courier`: предложить забрать заказ в ресторане (E2).'
+        courier:
+          allOf:
+            - $ref: '#/components/schemas/Courier'
+          description: Есть, пока доставка `assigned`/`picked_up`/`en_route`.
+        etaAt:
+          type: string
+          format: date-time
+          description: Ожидаемое время вручения по оценке курьерской системы.
+        payOnDelivery:
+          type: boolean
+          description: Заказ оплачивается курьеру (`courier_card`, UC-PAY-03).
+        updatedAt: { type: string, format: date-time }
     CourierLocation:
       type: object
+      required: [location, updatedAt]
       properties:
         location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
         updatedAt: { type: string, format: date-time }
     DeliveryStatusCallback:
       type: object
-      required: [orderId, status]
+      required: [eventId, orderId, status, timestamp]
       properties:
+        eventId:
+          type: string
+          description: Идентификатор уведомления (дедупликация повторной доставки).
         orderId: { type: string, format: uuid }
-        status: { $ref: '#/components/schemas/DeliveryStatus' }
+        deliveryId: { type: string, format: uuid }
+        courierId: { type: string }
+        courier: { $ref: '#/components/schemas/Courier' }
+        status:
+          type: string
+          enum: [assigned, picked_up, en_route, delivered, failed]
+        reason:
+          type: string
+          description: Причина `failed` (`no_courier`, `undelivered`).
+        etaAt: { type: string, format: date-time }
         paid:
           type: boolean
-          description: Признак оплаты при доставке (UC-PAY-03).
+          description: Курьер сообщает об оплате при вручении (информативно; UC-PAY-03).
+        timestamp: { type: string, format: date-time }

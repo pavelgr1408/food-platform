@@ -129,7 +129,7 @@ func newRig(t *testing.T, opts ...opt) *rig {
 		t.Fatal(err)
 	}
 	ups := map[string]*url.URL{}
-	for _, n := range []string{"auth", "restaurant", "menu", "orders", "payment"} {
+	for _, n := range []string{"auth", "restaurant", "menu", "orders", "payment", "delivery"} {
 		rg.ups[n] = newUpstream(t, n)
 		ups[n], _ = url.Parse(rg.ups[n].URL)
 	}
