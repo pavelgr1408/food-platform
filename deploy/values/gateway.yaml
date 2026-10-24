@@ -19,6 +19,9 @@ env:
   CORS_ALLOWED_ORIGINS: http://localhost:3000
   # CIDR ingress-контроллера: от него (и только от него) принимаются X-Forwarded-For/Proto. Уточните командой
   #   kubectl -n ingress-nginx get pods -o wide   (docker-desktop: pod-сеть 10.x)
+  # 10.0.0.0/8 — заглушка, покрывающая pod-сеть Docker Desktop (проверено smoke: controller 10.1.0.x). make k8s-smoke-perimeter подставляет /32
+  # текущего pod'а controller и проверяет, что он покрыт (docs/dev.md). У Docker Desktop node.spec.podCIDR пуст, в облаке (Yandex Cloud)
+  # возьмите подсеть из настроек кластера и доверяйте только ей.
   TRUSTED_PROXY_CIDRS: 10.0.0.0/8
   RATE_LIMIT_RPS: 50
   RATE_LIMIT_BURST: 100

@@ -64,10 +64,12 @@ keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попад�
 	  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $$d/private.pem 2>/dev/null && \
 	  openssl pkey -in $$d/private.pem -pubout -out $$d/public.pem && chmod 600 $$d/private.pem && echo "generated $$d"; \
 	else echo "$$d already has keys"; fi
-docker-build: ## Образ сервиса: make docker-build SERVICE=auth [TAG=dev]
+SRC          ?= services/$(SERVICE)
+TARGET       ?= ./services/$(SERVICE)/cmd/$(SERVICE)-service
+docker-build: ## Образ: make docker-build SERVICE=auth [TAG=dev]; для не-сервисов SRC/TARGET (mock-externals: SERVICE=mock-externals SRC=tools/mock-externals TARGET=./tools/mock-externals)
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
-	docker build -f deploy/docker/Dockerfile --build-arg SRC=services/$(SERVICE) \
-	  --build-arg TARGET=./services/$(SERVICE)/cmd/$(SERVICE)-service -t food/$(SERVICE):$${TAG:-dev} .
+	docker build -f deploy/docker/Dockerfile --build-arg SRC=$(SRC) \
+	  --build-arg TARGET=$(TARGET) -t food/$(SERVICE):$${TAG:-dev} .
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
@@ -93,17 +95,18 @@ perimeter-check: ## Периметр без Docker: auth+restaurant+menu+orders+
 	tools/perimeter/ci.sh
 
 ## ---------- Kubernetes / Helm ----------
-.PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-clean
+.PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-smoke-perimeter k8s-smoke-perimeter-checks k8s-clean
 validate-values: pydeps-check ## deploy/values/*.yaml против values.schema.json
 	$(PYTHON) tools/validate-values/validate_values.py
 helm-lint: validate-values ## helm lint + template для каждого values-файла
 	@for v in deploy/values/*.yaml; do n=$$(basename $$v .yaml); \
 	  helm lint deploy/charts/service -f $$v && helm template $$n deploy/charts/service -f $$v >/dev/null || exit 1; done
-k8s-dev-secrets: ## Secret'ы dev-стенда в NS (БД + JWT-ключи auth); в git не попадают
+k8s-dev-secrets: ## Secret'ы dev-стенда в NS (БД сервисов + JWT-ключи auth); в git не попадают
 	kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f -
 	$(MAKE) keys SERVICE=auth
-	kubectl -n $(NS) create secret generic auth-secrets \
-	  --from-literal=DATABASE_URL='postgres://auth:auth@postgres:5432/auth?sslmode=disable' --dry-run=client -o yaml | kubectl apply -f -
+	@for svc in auth restaurant menu orders payment; do \
+	  kubectl -n $(NS) create secret generic $$svc-secrets \
+	    --from-literal=DATABASE_URL="postgres://$$svc:$$svc@postgres:5432/$$svc?sslmode=disable" --dry-run=client -o yaml | kubectl apply -f - || exit 1; done
 	kubectl -n $(NS) create secret generic auth-jwt \
 	  --from-file=private.pem=services/auth/config/keys/private.pem --from-file=public.pem=services/auth/config/keys/public.pem \
 	  --dry-run=client -o yaml | kubectl apply -f -
@@ -114,9 +117,12 @@ k8s-smoke-auth: docker-build k8s-dev-secrets ## Smoke: auth в локально�
 	kubectl -n $(NS) rollout status deploy/postgres --timeout=120s
 	helm upgrade --install auth deploy/charts/service -n $(NS) -f deploy/values/auth.yaml --wait --timeout 3m
 	@echo "→ port-forward: kubectl -n $(NS) port-forward svc/auth 8081:80 ; curl localhost:8081/actuator/health"
-k8s-clean: ## Удалить smoke-стенд
-	-helm uninstall auth -n $(NS)
-	-kubectl delete namespace $(NS)
+k8s-smoke-perimeter: ## Smoke периметра в локальном k8s: ingress-nginx + postgres + kafka + сервисы + gateway, newman и проверки через ingress (см. docs/dev.md)
+	tools/k8s-smoke/up.sh
+k8s-smoke-perimeter-checks: ## Только проверки периметра через ingress (стенд уже поднят)
+	tools/k8s-smoke/up.sh checks
+k8s-clean: ## Удалить smoke-стенд (релизы и namespace; ingress-nginx остаётся)
+	tools/k8s-smoke/up.sh clean
 
 ## ---------- python-утилиты ----------
 .PHONY: py-deps pydeps-check

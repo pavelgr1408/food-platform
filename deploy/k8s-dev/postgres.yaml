@@ -1,5 +1,6 @@
 # Минимальный Postgres ДЛЯ SMOKE в локальном k8s (kind / Docker Desktop). НЕ для прода и не для нагрузки:
-# данные в emptyDir, учётка dev. Создаёт БД и роль auth (остальные сервисы — по мере добавления в init).
+# данные в emptyDir, учётка dev. Создаёт БД и роль для auth, restaurant, menu, orders, payment (пароль = имя).
+# init выполняется только на пустом каталоге данных; make k8s-smoke-perimeter дополнительно досоздаёт недостающие БД идемпотентно.
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: postgres-init, labels: { app.kubernetes.io/part-of: food-platform } }
@@ -7,7 +8,7 @@ data:
   01-databases.sh: |
     #!/bin/bash
     set -euo pipefail
-    for svc in auth; do
+    for svc in auth restaurant menu orders payment; do
       psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
     CREATE ROLE ${svc} LOGIN PASSWORD '${svc}';
     CREATE DATABASE ${svc} OWNER ${svc};
