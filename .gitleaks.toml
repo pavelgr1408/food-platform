@@ -9,6 +9,7 @@ useDefault = true
 description = "dev-значения по умолчанию (только APP_ENV=dev) и фикстуры проверки конфигурации"
 paths = [
   '''services/payment/internal/config/config_test\.go''',
+  '''services/delivery/internal/config/config_test\.go''',
 ]
 regexes = [
   '''dev-(gateway|pos)-(webhook-secret|api-key)''',
