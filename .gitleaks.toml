@@ -10,7 +10,9 @@ description = "dev-значения по умолчанию (только APP_EN
 paths = [
   '''services/payment/internal/config/config_test\.go''',
   '''services/delivery/internal/config/config_test\.go''',
+  '''services/notification/internal/config/config_test\.go''',
 ]
 regexes = [
   '''dev-(gateway|pos)-(webhook-secret|api-key)''',
+  '''dev-push-(apns|fcm|hms)-key''',
 ]
