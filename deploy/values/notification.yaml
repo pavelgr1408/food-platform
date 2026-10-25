@@ -1,0 +1,27 @@
+# Helm-values сервиса notification для общего чарта deploy/charts/service.
+# Секреты в git не хранятся: Secret `notification-secrets` создаёт `make k8s-dev-secrets` / CI/CD / Vault.
+name: notification
+image:
+  repository: food/notification
+  tag: dev
+port: 8088
+replicas: 2
+env:
+  APP_ENV: dev
+  LOG_LEVEL: info
+  AUTH_MODE: jwks # личность — только из JWT, проверенного локально по JWKS (ADR-11)
+  AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
+  KAFKA_BROKERS: kafka:9092
+  # dev: провайдеры push подменяет мок (mock-externals, модуль push); в prod — адреса APNs/FCM/HMS
+  PUSH_APNS_URL: http://mock-externals:9095
+  PUSH_FCM_URL: http://mock-externals:9095
+  PUSH_HMS_URL: http://mock-externals:9095
+  MAX_EVENT_AGE: 1h # события старше не отправляются (простой консьюмера)
+existingSecret: notification-secrets # ключи: DATABASE_URL, PUSH_APNS_KEY, PUSH_FCM_KEY, PUSH_HMS_KEY (вне dev)
+migrations:
+  enabled: true # Job `notification-service --migrate-only` (pre-install/pre-upgrade hook)
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+ingress:
+  paths: [] # снаружи сервис доступен только через gateway (маршруты в routes.json и contracts/openapi/gateway.yaml)

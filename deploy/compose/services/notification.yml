@@ -1,0 +1,30 @@
+services:
+  notification:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/notification
+        TARGET: ./services/notification/cmd/notification-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "8088"
+      DATABASE_URL: postgres://notification:notification@postgres:5432/notification?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
+      # провайдеры push (APNs/FCM/HMS) в dev — один мок на :9095 (модуль push в mock-externals)
+      PUSH_APNS_URL: http://mock-externals:9095
+      PUSH_FCM_URL: http://mock-externals:9095
+      PUSH_HMS_URL: http://mock-externals:9095
+      SEND_BACKOFF: ${NOTIFICATION_SEND_BACKOFF:-1s}
+      # dev-ключи провайдеров по умолчанию (APP_ENV=dev): PUSH_APNS_KEY / PUSH_FCM_KEY / PUSH_HMS_KEY
+    ports:
+      - "8088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    mem_limit: 128m
