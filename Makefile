@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check
+.PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check loyalty-e2e
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -73,9 +73,10 @@ docker-build: ## Образ: make docker-build SERVICE=auth [TAG=dev]; для н
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
-newman-e2e-gateway: ## S7: сквозной e2e через gateway с JWT сотрудника (стенд: AUTH_MODE=jwks make up SLICE="auth gateway restaurant menu orders payment delivery mock-externals")
+newman-e2e-gateway: ## S7: сквозной e2e через gateway с JWT сотрудника (стенд: AUTH_MODE=jwks make up SLICE="auth gateway restaurant menu orders payment delivery loyalty mock-externals")
 	@T=$$(curl -fsS -X POST localhost:8080/auth/login -H 'Content-Type: application/json' -d '{"phone":"+79993333333","password":"staff123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["accessToken"])') && \
-	  npx -y newman@6 run postman/e2e/e2e.postman_collection.json -e postman/e2e/gateway.postman_environment.json --env-var staffToken=$$T
+	  O=$$(curl -fsS -X POST localhost:8080/auth/login -H 'Content-Type: application/json' -d '{"phone":"+79995555555","password":"owner123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["accessToken"])') && \
+	  npx -y newman@6 run postman/e2e/e2e.postman_collection.json -e postman/e2e/gateway.postman_environment.json --env-var staffToken=$$T --env-var ownerToken=$$O
 newman-staff-timeout: ## S6: not_received по таймеру (orders запущен с NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s, см. docs/dev.md)
 	npx -y newman@6 run postman/staff/not-received.postman_collection.json
 SCENARIO     ?= catalog
@@ -96,6 +97,8 @@ check-routes: pydeps-check ## Таблица маршрутов gateway ↔ x-ro
 	$(PYTHON) tools/contract-check/check_routes.py
 perimeter-check: ## Периметр без Docker: auth+restaurant+menu+orders+payment+gateway на Postgres, newman auth+gateway, chaos (нужны Go, openssl, psql, newman/npx)
 	tools/perimeter/ci.sh
+loyalty-e2e: ## S8 без Docker: loyalty → Kafka (in-memory kfake) → orders, скидка в корзине/заказе, newman папка 12 (нужны Go, psql, newman/npx)
+	tools/loyalty-e2e/ci.sh
 
 ## ---------- Kubernetes / Helm ----------
 .PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-smoke-perimeter k8s-smoke-perimeter-checks k8s-clean
