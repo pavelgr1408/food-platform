@@ -17,6 +17,7 @@ env:
   UPSTREAM_PAYMENT_URL: http://payment
   UPSTREAM_DELIVERY_URL: http://delivery
   UPSTREAM_LOYALTY_URL: http://loyalty
+  UPSTREAM_NOTIFICATION_URL: http://notification
   AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
   CORS_ALLOWED_ORIGINS: http://localhost:3000
   # CIDR ingress-контроллера: от него (и только от него) принимаются X-Forwarded-For/Proto. Уточните командой

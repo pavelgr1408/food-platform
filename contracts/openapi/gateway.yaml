@@ -2,10 +2,10 @@ openapi: 3.1.0
 
 info:
   title: api-gateway — единая точка входа
-  version: 1.3.0
+  version: 1.4.0
   description: |-
     Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
-    это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`, `delivery`, `loyalty`), проксируемые
+    это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`, `delivery`, `loyalty`, `notification`), проксируемые
     по таблице маршрутов ниже без изменения пути, метода, тела и кодов ответов сервиса.
     Собственные эндпоинты gateway — только пробы (в `paths` не описаны: у проб нет клиентских ошибок 4xx):
     `GET /health/` → `200 {"status":"OK"}` (живость, ADR-2) и `GET /actuator/health` → `200|503`
@@ -80,7 +80,8 @@ info:
     сам сервис по claim `restaurants[]`. Операции доставки (S7: `getDeliveryInfo`, `getCourierLocation`) — `optional`: гость
     владеет доставкой по знанию UUID заказа, остальное решает delivery-service. Операции акций (S8): просмотр
     (`listActivePromotions`) — `optional` (гость видит акции), управление — только `FRANCHISE_OWNER`/`HQ_STAFF`, изменяющие
-    операции — ещё и `sensitive`; охват (свой ресторан / национальные) решает loyalty-service через auth `/authorize`. Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
+    операции — ещё и `sensitive`; охват (свой ресторан / национальные) решает loyalty-service через auth `/authorize`. Операции уведомлений (S9: `registerDeviceToken`, `listDeviceTokens`,
+    `deleteDeviceToken`) — `required` для любой роли; токены принадлежат пользователю, чужой токен сервис отдаёт как 404. Согласованность таблицы с контрактами сервисов проверяет `make check-routes`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -126,6 +127,9 @@ x-routes:
   - { pattern: 'GET /promotions/{promotionId}/history',                upstream: loyalty,    access: required, roles: [FRANCHISE_OWNER, HQ_STAFF], note: 'getPromotionHistory (S8)' }
   - { pattern: 'POST /promotions/{promotionId}/activation',            upstream: loyalty,    access: required, roles: [FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'activatePromotion (S8): меняет цены заказов' }
   - { pattern: 'POST /promotions/{promotionId}/completion',            upstream: loyalty,    access: required, roles: [FRANCHISE_OWNER, HQ_STAFF], sensitive: true, note: 'completePromotion (S8)' }
+  - { pattern: 'POST /notifications/device-tokens',                      upstream: notification, access: required, note: 'registerDeviceToken (S9): токены только зарегистрированных пользователей, гость — 401' }
+  - { pattern: 'GET /notifications/device-tokens',                       upstream: notification, access: required, note: 'listDeviceTokens (S9)' }
+  - { pattern: 'DELETE /notifications/device-tokens/{tokenId}',          upstream: notification, access: required, note: 'deleteDeviceToken (S9): чужой токен — 404' }
 
 paths: {}
 

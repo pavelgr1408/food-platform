@@ -32,5 +32,8 @@
   {"pattern": "PUT /promotions/{promotionId}",                      "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
   {"pattern": "GET /promotions/{promotionId}/history",              "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"]},
   {"pattern": "POST /promotions/{promotionId}/activation",          "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
-  {"pattern": "POST /promotions/{promotionId}/completion",          "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true}
+  {"pattern": "POST /promotions/{promotionId}/completion",          "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
+  {"pattern": "POST /notifications/device-tokens",                    "upstream": "notification", "access": "required"},
+  {"pattern": "GET /notifications/device-tokens",                     "upstream": "notification", "access": "required"},
+  {"pattern": "DELETE /notifications/device-tokens/{tokenId}",        "upstream": "notification", "access": "required"}
 ]
