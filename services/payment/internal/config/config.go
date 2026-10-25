@@ -37,6 +37,7 @@ type Config struct {
 
 	WebhookWait       time.Duration // ждать вебхук до первой сверки со шлюзом
 	PendingExpiry     time.Duration // неоплаченная попытка старше — отменяется у шлюза
+	CourierExpiry     time.Duration // то же для оплаты курьеру (S7)
 	PollMin, PollMax  time.Duration // backoff сверки
 	ReconcileInterval time.Duration
 	DefaultReturnURL  string
@@ -53,6 +54,7 @@ func Load() (Config, error) {
 		POSURL:            r.String("POS_URL", "http://localhost:9093"),
 		WebhookWait:       r.Duration("WEBHOOK_WAIT", 10*time.Second),
 		PendingExpiry:     r.Duration("PENDING_EXPIRY", 10*time.Minute),
+		CourierExpiry:     r.Duration("COURIER_PAYMENT_TTL", 4*time.Hour),
 		PollMin:           r.Duration("RECONCILE_BACKOFF_MIN", 5*time.Second),
 		PollMax:           r.Duration("RECONCILE_BACKOFF_MAX", 5*time.Minute),
 		ReconcileInterval: r.Duration("RECONCILE_INTERVAL", 2*time.Second),
@@ -89,7 +91,7 @@ func Load() (Config, error) {
 		}
 	}
 	for k, v := range map[string]time.Duration{"GATEWAY_TIMEOUT": c.GatewayTimeout, "WEBHOOK_WAIT": c.WebhookWait,
-		"PENDING_EXPIRY": c.PendingExpiry, "RECONCILE_BACKOFF_MIN": c.PollMin, "RECONCILE_BACKOFF_MAX": c.PollMax,
+		"PENDING_EXPIRY": c.PendingExpiry, "COURIER_PAYMENT_TTL": c.CourierExpiry, "RECONCILE_BACKOFF_MIN": c.PollMin, "RECONCILE_BACKOFF_MAX": c.PollMax,
 		"RECONCILE_INTERVAL": c.ReconcileInterval} {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))

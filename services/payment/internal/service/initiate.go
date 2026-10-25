@@ -182,7 +182,7 @@ func (s *Service) gwCreate(ctx context.Context, p domain.Payment, orderNumber st
 	defer cancel()
 	start := time.Now()
 	res, err := gw.Create(ctx, gateway.CreateRequest{Key: p.ID, Reference: p.ID, OrderID: p.OrderID, Amount: p.Amount, Currency: p.Currency,
-		ReturnURL: p.ReturnURL, Description: "Заказ " + orderNumber, Tender: string(p.Tender)})
+		ReturnURL: p.ReturnURL, Description: "Заказ " + orderNumber, Tender: string(p.Tender), Method: string(p.Method)})
 	s.observeGateway("create", start, err)
 	return res, err
 }

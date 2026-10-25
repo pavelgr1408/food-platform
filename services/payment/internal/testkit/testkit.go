@@ -59,6 +59,7 @@ type Op struct {
 	Status string // pending | paid | declined
 	Reason string
 	Tender string
+	Method string // metadata.method, переданный при создании
 	Fiscal []byte
 	// Refunded — число созданных возвратов (идемпотентность: повтор с тем же ключом не увеличивает).
 	Refunded int
@@ -95,7 +96,7 @@ func (g *FakeGateway) Create(_ context.Context, r gateway.CreateRequest) (gatewa
 	}
 	op, ok := g.ops[r.Key]
 	if !ok {
-		op = &Op{Ref: "gw_" + strconv.Itoa(len(g.ops)+1), Key: r.Key, Amount: r.Amount, Status: gateway.StatePending, Tender: r.Tender}
+		op = &Op{Ref: "gw_" + strconv.Itoa(len(g.ops)+1), Key: r.Key, Amount: r.Amount, Status: gateway.StatePending, Tender: r.Tender, Method: r.Method}
 		g.ops[r.Key], g.byRef[op.Ref] = op, op
 	}
 	if g.LostReply != nil {
@@ -193,6 +194,16 @@ func (g *FakeGateway) Ref(key string) string {
 	defer g.mu.Unlock()
 	if op := g.ops[key]; op != nil {
 		return op.Ref
+	}
+	return ""
+}
+
+// Method возвращает metadata.method операции по ключу (идентификатору платежа).
+func (g *FakeGateway) Method(key string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if op := g.ops[key]; op != nil {
+		return op.Method
 	}
 	return ""
 }

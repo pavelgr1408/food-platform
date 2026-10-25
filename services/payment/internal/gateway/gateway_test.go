@@ -144,3 +144,20 @@ func TestRefundIsIdempotentByKeyAndClassifiesErrors(t *testing.T) {
 		t.Fatalf("503 is transient: %v", err)
 	}
 }
+
+func TestCreateSendsPaymentMethodInMetadata(t *testing.T) {
+	var raw map[string]any
+	c, stop := client(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"id":"gw_2","status":"pending","confirmationUrl":"http://pay/gw_2"}`))
+	}))
+	defer stop()
+	if _, err := c.Create(context.Background(), CreateRequest{Key: "p2", Reference: "p2", OrderID: "o1", Amount: 100, Currency: "RUB", Method: "courier_card"}); err != nil {
+		t.Fatal(err)
+	}
+	md, _ := raw["metadata"].(map[string]any)
+	if md["method"] != "courier_card" || md["orderId"] != "o1" {
+		t.Fatalf("metadata: %v", raw["metadata"])
+	}
+}

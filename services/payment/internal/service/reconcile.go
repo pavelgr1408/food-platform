@@ -5,6 +5,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/pavelgr1408/food-platform/pkg/pgxutil"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/gateway"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/store"
@@ -84,7 +87,7 @@ func (s *Service) reconcile(ctx context.Context, p domain.Payment) string {
 	if p.Status == domain.StatusUnknown {
 		return s.settle(ctx, p, domain.StatusPending, "", "")
 	}
-	if s.now().Sub(p.CreatedAt) > s.cfg.PendingExpiry {
+	if s.now().Sub(p.CreatedAt) > s.expiry(p) {
 		return s.expire(ctx, p, "expired")
 	}
 	return "pending"
@@ -101,7 +104,7 @@ func (s *Service) reconcileInit(ctx context.Context, p domain.Payment) string {
 	res, err := s.gwCreate(ctx, p, o.Number)
 	switch {
 	case err == nil:
-		if err := s.st.SetGatewayOperation(ctx, s.pool, p.ID, res.Ref, res.URL, s.now()); err != nil {
+		if err := s.storeOperation(ctx, p, res); err != nil {
 			s.log.ErrorContext(ctx, "cannot store gateway operation", "payment_id", p.ID, "error", err)
 			return "error"
 		}
@@ -118,6 +121,33 @@ func (s *Service) reconcileInit(ctx context.Context, p domain.Payment) string {
 		}
 		return "unknown"
 	}
+}
+
+// expiry — срок жизни неоплаченной попытки: оплата курьеру живёт дольше онлайн-оплаты (доставка длится).
+func (s *Service) expiry(p domain.Payment) time.Duration {
+	if p.Method == domain.MethodCourierCard {
+		return s.cfg.CourierExpiry
+	}
+	return s.cfg.PendingExpiry
+}
+
+// storeOperation записывает операцию шлюза; для оплаты курьеру в той же транзакции публикует
+// orders.payments.link — ссылку, которую delivery-service передаст курьерской системе (UC-PAY-03).
+func (s *Service) storeOperation(ctx context.Context, p domain.Payment, res gateway.Created) error {
+	err := pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := s.st.SetGatewayOperation(ctx, tx, p.ID, res.Ref, res.URL, s.now()); err != nil {
+			return err
+		}
+		if p.Method != domain.MethodCourierCard {
+			return nil
+		}
+		p.PaymentURL = res.URL
+		return enqueueLink(ctx, tx, p, p.CreatedAt.Add(s.cfg.CourierExpiry))
+	})
+	if err == nil && p.Method == domain.MethodCourierCard {
+		s.wake()
+	}
+	return err
 }
 
 // expire отменяет у шлюза неоплаченную попытку (пользователь ушёл со страницы оплаты). Если за это время
