@@ -16,7 +16,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 OPENAPI = ROOT / "contracts/openapi"
-UPSTREAM_SPEC = {"auth": "auth", "restaurant": "restaurant", "menu": "menu", "orders": "orders", "payment": "payment", "delivery": "delivery"}
+UPSTREAM_SPEC = {"auth": "auth", "restaurant": "restaurant", "menu": "menu", "orders": "orders", "payment": "payment", "delivery": "delivery", "loyalty": "loyalty"}
 METHODS = {"get", "post", "put", "patch", "delete"}
 
 # Операции контрактов, которые намеренно НЕ публикуются через gateway (ключ: "METHOD /path").
@@ -27,6 +27,7 @@ NOT_ROUTED = {
     "orders": {},
     "payment": {},
     "delivery": {},
+    "loyalty": {},
 }
 
 

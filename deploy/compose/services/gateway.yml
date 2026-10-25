@@ -20,6 +20,7 @@ services:
       UPSTREAM_ORDERS_URL: http://orders:8084
       UPSTREAM_PAYMENT_URL: http://payment:8085
       UPSTREAM_DELIVERY_URL: http://delivery:8087
+      UPSTREAM_LOYALTY_URL: http://loyalty:8086
       AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       # dev: клиент (newman/curl с хоста) приходит с адреса docker-сети; доверяем X-Forwarded-For,
