@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Система управления заказами — асинхронные взаимодействия
-  version: 1.4.0
+  version: 1.5.0
   description: |
     Асинхронный контракт платформы управления заказами сети кафе.
 
@@ -372,6 +372,14 @@ operations:
     action: receive
     title: notification-service получает статус заказа
     summary: orders.status → notification-service
+    description: >-
+      Правила S9. Получатель — владелец заказа (`OrderStatus.userId`); без `userId` (гость, заказ по
+      факсу) push не отправляется. Статус превращается в тип уведомления (`PushNotification.data.type`);
+      `pending_payment`, `cooking` и `closed` уведомлений не порождают. На устройство отправляется
+      не более одного уведомления данного типа по заказу (дубль события безвреден). События, устаревшие
+      более чем на `MAX_EVENT_AGE` (1 час), пропускаются. Платформа токена `apns`/`fcm`/`huawei`
+      отображается в `PushNotification.platform` как `ios`/`android`/`huawei`. Обработка изолирована от
+      заказа: ошибки — повторы и `orders.status.dlq`, сбой провайдера на заказ не влияет.
     channel:
       $ref: '#/channels/ordersStatus'
     tags:
@@ -909,6 +917,13 @@ components:
             `production.lead.time`; если свежей загрузки нет — типовое время). Для остальных
             статусов не передаётся.
         etaDeliveryAt: { type: string, format: date-time }
+        userId:
+          type: string
+          description: >-
+            Владелец заказа (идентификатор пользователя из токена). Не передаётся для гостевых
+            заказов и заказов, введённых сотрудником по факсу. Нужен notification-service, чтобы
+            найти устройства получателя без чтения `orders.state` (S9); остальным потребителям
+            безразличен.
         reason:
           type: string
           description: >-
@@ -1203,7 +1218,12 @@ components:
             orderNumber: { type: string }
             type:
               type: string
-              enum: [order_created, order_ready, on_delivery, delivered, handed_over]
+              enum: [order_created, order_ready, on_delivery, delivered, handed_over, order_cancelled, order_not_received]
+              description: >-
+                Тип уведомления по статусу заказа (S9): `accepted` → `order_created`, `ready` →
+                `order_ready`, `on_delivery` → `on_delivery`, `delivered` → `delivered`,
+                `handed_over` → `handed_over`, `cancelled` → `order_cancelled`, `not_received` →
+                `order_not_received`.
 
     Money:
       type: object

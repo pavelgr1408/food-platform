@@ -2,12 +2,53 @@ openapi: 3.1.0
 
 info:
   title: notification-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
-    Уведомления: регистрация разрешений и push-токенов устройств. Рассылка push
-    выполняется по событиям orders.status через APNs/FCM/Huawei (асинхронно).
-    Хранилище — notification-db.
+    Уведомления: регистрация push-токенов устройств и разрешений на уведомления. Рассылка push
+    выполняется по событиям `orders.status` через APNs/FCM/HMS (асинхронно, вне запроса клиента).
+    Хранилище — notification-db. (UC-ORD-01, UC-ORD-06, UC-RCV-01/02/03)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+
+    **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
+    `services/notification`; `planned` — целевое поведение, появится в указанном этапе. Все
+    операции реализуются в S9.
+
+
+    **Кому и о чём приходит push.** Сервис читает `orders.status` (AsyncAPI, `OrderStatus.userId` —
+    владелец заказа). Уведомление получает только **зарегистрированный пользователь-владелец**
+    заказа: у гостя и у заказа, введённого сотрудником по факсу, `userId` нет, токенов нет — push не
+    отправляется (осознанное ограничение). Не получает его и устройство с
+    `permissionsGranted=false`. Соответствие статуса типу уведомления
+    (`PushNotification.data.type`):
+    `accepted` → `order_created`, `ready` → `order_ready`, `on_delivery` → `on_delivery`,
+    `delivered` → `delivered`, `handed_over` → `handed_over`, `cancelled` → `order_cancelled`,
+    `not_received` → `order_not_received`. Статусы `pending_payment`, `cooking` и `closed`
+    уведомлений не порождают.
+
+
+    **Надёжность.** Событие обрабатывается идемпотентно (inbox); на каждое устройство создаётся не
+    более одного уведомления данного типа по заказу (повтор и дубль события не дают второго push).
+    Отправка выполняется отдельным процессом **вне транзакции БД**, с повторами и нарастающей
+    паузой при сбоях провайдера; после исчерпания попыток уведомление помечается `failed`.
+    Сбой push никогда не влияет на заказ: консьюмер изолирован (отдельная группа и DLQ
+    `orders.status.dlq`). Уведомления о статусах, устаревших более чем на `MAX_EVENT_AGE`
+    (по умолчанию 1 час, например после простоя консьюмера), не отправляются. Если провайдер ответил,
+    что токен недействителен, токен удаляется автоматически.
+
+
+    **Платформы и провайдеры.** `apns` → APNs (в сообщении `platform=ios`), `fcm` → FCM
+    (`android`), `huawei` → HMS (`huawei`). Текст зависит от языка устройства: он берётся из
+    `Accept-Language` при регистрации токена (поддержаны `ru` и `en`, по умолчанию `ru`). Ключи
+    сообщений находятся в коде, не в данных. Токены — чувствительные данные: в журналы не пишутся.
+
+
+    **Доступ.** Все операции требуют аутентифицированного пользователя любой роли и работают только
+    с токенами самого пользователя; чужой токен — `404 DEVICE_TOKEN_NOT_FOUND` (существование не
+    раскрывается). Гость — `401`.
+
+
+    **Коды ошибок:** `VALIDATION_FAILED`, `INVALID_JSON`, `DEVICE_TOKEN_NOT_FOUND`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -27,11 +68,25 @@ paths:
     post:
       tags: [notification-service]
       operationId: registerDeviceToken
+      x-status: planned
       summary: Зарегистрировать разрешения и push-токен
       description: >-
-        Регистрирует push-токен устройства и разрешения на уведомления. Push
-        отправляется только на мобильные приложения (Д3); рассылка выполняется по
-        событиям `orders.status` через APNs/FCM/Huawei асинхронно.
+        Регистрирует push-токен устройства и разрешения на уведомления. Операция естественно
+        идемпотентна: пара (`platform`, `token`) уникальна. Новый токен — `201`. Повторная
+        регистрация того же токена тем же пользователем обновляет `permissionsGranted` и язык и
+        отвечает `200` с тем же `id`. Если токен был у другого пользователя (устройство сменило
+        владельца), он переходит к текущему пользователю — `200`, прежний владелец его теряет.
+        У пользователя хранится не более 10 токенов: при регистрации одиннадцатого самый старый
+        по `registeredAt` удаляется. Токены присылают клиенты, умеющие push; нативные мобильные
+        приложения вне объёма проекта (ADR-12), поэтому в проекте токены регистрируют тестовые
+        клиенты, а провайдеры APNs/FCM/HMS — моки.
+      parameters:
+        - name: Accept-Language
+          in: header
+          required: false
+          description: >-
+            Язык уведомлений для этого устройства (`ru`, `en`); при другом значении используется `ru`.
+          schema: { type: string, maxLength: 64 }
       requestBody:
         required: true
         content:
@@ -43,11 +98,20 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeviceToken' }
+        '200':
+          description: Токен уже был зарегистрирован — данные обновлены
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceToken' }
         '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
     get:
       tags: [notification-service]
       operationId: listDeviceTokens
+      x-status: planned
       summary: Токены устройств текущего пользователя
+      description: >-
+        Токены текущего пользователя, от новых к старым. Чужие токены не возвращаются.
       responses:
         '200':
           description: Список зарегистрированных токенов
@@ -62,7 +126,12 @@ paths:
     delete:
       tags: [notification-service]
       operationId: deleteDeviceToken
+      x-status: planned
       summary: Отозвать push-токен
+      description: >-
+        Удаляет токен текущего пользователя (например, при выходе из аккаунта). Уведомления, которые
+        ещё не отправлены на это устройство, отменяются. Чужой или несуществующий токен —
+        `404 DEVICE_TOKEN_NOT_FOUND`.
       parameters:
         - name: tokenId
           in: path
@@ -71,6 +140,7 @@ paths:
       responses:
         '204':
           description: Токен удалён
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
         '404': { $ref: '_common.yaml#/components/responses/NotFound' }
 
 components:
@@ -88,12 +158,28 @@ components:
       required: [platform, token]
       properties:
         platform: { $ref: '#/components/schemas/PushPlatform' }
-        token: { type: string }
-        permissionsGranted: { type: boolean }
+        token:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: Push-токен устройства, выданный провайдером (без пробелов и переводов строк).
+        permissionsGranted:
+          type: boolean
+          default: true
+          description: Пользователь разрешил уведомления; `false` — токен хранится, но push не отправляются.
     DeviceToken:
       allOf:
         - $ref: '#/components/schemas/DeviceTokenRegistration'
         - type: object
+          required: [id, permissionsGranted, locale, registeredAt]
           properties:
             id: { type: string, format: uuid }
-            registeredAt: { type: string, format: date-time }
+            permissionsGranted: { type: boolean }
+            locale:
+              type: string
+              enum: [ru, en]
+              description: Язык уведомлений для устройства.
+            registeredAt:
+              type: string
+              format: date-time
+              description: Время первой регистрации (при повторной регистрации не меняется).
