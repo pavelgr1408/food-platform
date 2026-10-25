@@ -1,0 +1,31 @@
+{
+  "info": {
+    "name": "loyalty-service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [{ "key": "baseUrl", "value": "http://localhost:8086" }],
+  "item": [
+    {
+      "name": "liveness",
+      "request": { "method": "GET", "url": "{{baseUrl}}/health/" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('200 OK', () => pm.response.to.have.status(200));",
+        "pm.test('status OK', () => pm.expect(pm.response.json().status).to.eql('OK'));"
+      ] } }]
+    },
+    {
+      "name": "readiness",
+      "request": { "method": "GET", "url": "{{baseUrl}}/actuator/health" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('UP', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('UP'); });"
+      ] } }]
+    },
+    {
+      "name": "ping",
+      "request": { "method": "GET", "url": "{{baseUrl}}/loyalty/_ping" },
+      "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+        "pm.test('service name', () => pm.expect(pm.response.json().service).to.eql('loyalty'));"
+      ] } }]
+    }
+  ]
+}

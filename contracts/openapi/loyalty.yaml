@@ -334,7 +334,7 @@ components:
     PromotionInvalid:
       description: >-
         Семантически некорректные параметры: `PROMOTION_INVALID` (период, размер скидки,
-        условия, `restaurantId` не соответствует `scope`), `SCOPE_IMMUTABLE`, `PROMOTION_EXPIRED`,
+        значения условий, `restaurantId` не соответствует `scope`), `SCOPE_IMMUTABLE`, `PROMOTION_EXPIRED`,
         `IDEMPOTENCY_KEY_REUSED`
       content:
         application/problem+json:
@@ -373,7 +373,7 @@ components:
     PromotionConditions:
       type: object
       additionalProperties: false
-      description: Условия применения. Неизвестное поле — `422 PROMOTION_INVALID`.
+      description: Условия применения. Неизвестное поле — `400 INVALID_JSON` (как и любое неизвестное поле тела).
       properties:
         menuItemIds:
           type: array

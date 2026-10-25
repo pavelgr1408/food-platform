@@ -107,7 +107,7 @@ helm-lint: validate-values ## helm lint + template для каждого values-
 k8s-dev-secrets: ## Secret'ы dev-стенда в NS (БД сервисов + JWT-ключи auth); в git не попадают
 	kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f -
 	$(MAKE) keys SERVICE=auth
-	@for svc in auth restaurant menu orders payment delivery; do \
+	@for svc in auth restaurant menu orders payment delivery loyalty; do \
 	  kubectl -n $(NS) create secret generic $$svc-secrets \
 	    --from-literal=DATABASE_URL="postgres://$$svc:$$svc@postgres:5432/$$svc?sslmode=disable" --dry-run=client -o yaml | kubectl apply -f - || exit 1; done
 	kubectl -n $(NS) create secret generic auth-jwt \
