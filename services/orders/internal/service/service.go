@@ -40,6 +40,7 @@ type Config struct {
 	PrepMinutes      int           // типовое время приготовления (ETA, если свежей оценки производства нет)
 	LeadTimeTTL      time.Duration // срок годности реплики production.lead.time
 	DeliveryMinutes  int           // типовое время доставки поверх приготовления
+	DeliveryEtaTTL   time.Duration // срок годности оценки вручения от курьерской системы (S7)
 	NotReceivedAfter time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
 	DefaultCurrency  string
 }
@@ -62,6 +63,9 @@ func (c *Config) defaults() {
 	}
 	if c.DeliveryMinutes <= 0 {
 		c.DeliveryMinutes = 30
+	}
+	if c.DeliveryEtaTTL <= 0 {
+		c.DeliveryEtaTTL = 30 * time.Minute
 	}
 	if c.NotReceivedAfter <= 0 {
 		c.NotReceivedAfter = 2 * time.Hour

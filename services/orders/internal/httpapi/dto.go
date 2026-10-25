@@ -124,7 +124,17 @@ type orderDTO struct {
 	Subtotal      money          `json:"subtotal"`
 	DiscountTotal money          `json:"discountTotal"`
 	Total         money          `json:"total"`
+	Delivery      *deliveryDTO   `json:"delivery,omitempty"`
 	CreatedAt     time.Time      `json:"createdAt"`
+}
+
+// deliveryDTO — OrderDelivery из orders.yaml: снимок доставки.
+type deliveryDTO struct {
+	Status     string     `json:"status"`
+	FailReason string     `json:"failReason,omitempty"`
+	Hint       string     `json:"hint,omitempty"`
+	EtaAt      *time.Time `json:"etaAt,omitempty"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 
 // staffOrderDTO — ответ searchOrder: заказ с контактами клиента (StaffOrder в orders.yaml).
@@ -205,6 +215,12 @@ func toOrder(o domain.Order) orderDTO {
 		CreatedAt: o.CreatedAt}
 	if o.PickupFrom != nil && o.PickupTo != nil {
 		d.PickupSlot = &slotDTO{From: *o.PickupFrom, To: *o.PickupTo}
+	}
+	if dl := o.Delivery; dl != nil && o.Fulfillment == domain.FulfillmentDelivery {
+		d.Delivery = &deliveryDTO{Status: string(dl.Status), FailReason: dl.FailReason, Hint: dl.Hint(), UpdatedAt: dl.UpdatedAt}
+		if dl.Status != domain.DeliveryDelivered && dl.Status != domain.DeliveryFailed {
+			d.Delivery.EtaAt = dl.EtaAt
+		}
 	}
 	return d
 }

@@ -94,6 +94,12 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 	if cart.Fulfillment == domain.FulfillmentDelivery && !info.DeliveryEnabled {
 		return domain.Order{}, unprocessable("DELIVERY_NOT_AVAILABLE", "the restaurant does not offer delivery now; choose pickup")
 	}
+	if cart.Fulfillment == domain.FulfillmentDelivery {
+		// ресторан мог изменить радиус, а корзина — лежать со старым адресом: проверяем заново (S7)
+		if err := checkZone(info, cart.Address); err != nil {
+			return domain.Order{}, err
+		}
+	}
 
 	// E1: актуальные позиции и цены. Внешний вызов — до транзакции.
 	lines, err := s.revalidate(ctx, cart)
@@ -330,13 +336,56 @@ func (s *Service) estimate(ctx context.Context, db store.DBTX, o domain.Order) (
 	}
 	target := e.ReadyAt
 	if o.Fulfillment == domain.FulfillmentDelivery {
-		d := e.ReadyAt.Add(time.Duration(s.cfg.DeliveryMinutes) * time.Minute)
-		e.DeliveryAt, target, e.Approximate = &d, d, true
+		d, typical, err := s.deliveryAt(ctx, db, o, e.ReadyAt, now)
+		if err != nil {
+			return Eta{}, err
+		}
+		if d != nil {
+			e.DeliveryAt, target = d, *d
+		}
+		if typical {
+			e.Approximate = true // оценки курьерской системы нет: типовое время доставки
+		}
 	}
 	if mins := int((target.Sub(now) + time.Minute - 1) / time.Minute); mins > 0 {
 		e.EstimateMinutes = mins
 	}
 	return e, nil
+}
+
+// deliveryEtaFresh — есть ли свежая оценка вручения от курьерской системы: доставка не завершена, оценка в
+// будущем, снимок обновлялся не позже DeliveryEtaTTL назад.
+func (s *Service) deliveryEtaFresh(o domain.Order, now time.Time) bool {
+	d := o.Delivery
+	if d == nil || d.EtaAt == nil || d.Status == domain.DeliveryDelivered || d.Status == domain.DeliveryFailed {
+		return false
+	}
+	return d.EtaAt.After(now) && now.Sub(d.UpdatedAt) <= s.cfg.DeliveryEtaTTL
+}
+
+// deliveryAt — время вручения (S7); typical=true — взято типовое время, а не оценка:
+//
+//	доставлен                        → фактический момент delivered (по журналу);
+//	доставка не состоится (failed)   → nil: клиенту предложено забрать заказ (E2) либо заказ не доставлен;
+//	есть свежая оценка курьерской    → она, но не раньше готовности заказа;
+//	иначе                            → готовность + ETA_DELIVERY_MINUTES (typical).
+func (s *Service) deliveryAt(ctx context.Context, db store.DBTX, o domain.Order, ready, now time.Time) (at *time.Time, typical bool, err error) {
+	switch {
+	case o.Delivery != nil && o.Delivery.Status == domain.DeliveryFailed:
+		return nil, false, nil
+	case o.Status == domain.StatusDelivered || o.Status == domain.StatusClosed:
+		if t, found, err := s.st.StatusTime(ctx, db, o.ID, domain.StatusDelivered); err != nil || found {
+			return &t, false, err
+		}
+	case s.deliveryEtaFresh(o, now):
+		d := *o.Delivery.EtaAt
+		if d.Before(ready) {
+			d = ready
+		}
+		return &d, false, nil
+	}
+	d := ready.Add(time.Duration(s.cfg.DeliveryMinutes) * time.Minute)
+	return &d, true, nil
 }
 
 // SetPickupSlot сохраняет желаемый интервал получения (UC-ORD-05 A1) и публикует

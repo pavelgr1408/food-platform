@@ -25,6 +25,11 @@ type moneyEvent struct {
 	Currency string `json:"currency"`
 }
 
+type geoEvent struct {
+	Lat float64 `json:"lat"`
+	Lon float64 `json:"lon"`
+}
+
 type stateItem struct {
 	DishID    string     `json:"dishId"`
 	Name      string     `json:"name"`
@@ -49,6 +54,7 @@ type OrderStateEvent struct {
 	Source                  string        `json:"source"`
 	FulfillmentType         string        `json:"fulfillmentType"`
 	DeliveryAddress         string        `json:"deliveryAddress,omitempty"`
+	DeliveryLocation        *geoEvent     `json:"deliveryLocation,omitempty"`
 	Customer                stateCustomer `json:"customer"`
 	Items                   []stateItem   `json:"items"`
 	TotalAmount             moneyEvent    `json:"totalAmount"`
@@ -77,6 +83,9 @@ func StateEvent(o domain.Order) OrderStateEvent {
 		Customer:    stateCustomer{UserID: o.OwnerUserID, Guest: o.OwnerUserID == "", Phone: o.Contact.Phone, Name: o.Contact.Name},
 		TotalAmount: moneyEvent{o.Total, o.Currency}, PaymentMethod: o.PaymentMethod.EventForm(),
 		PaymentStatus: "pending", AppliedPromotions: []string{}, CreatedAt: o.CreatedAt,
+	}
+	if o.Fulfillment == domain.FulfillmentDelivery && o.Address.Lat != nil && o.Address.Lon != nil {
+		ev.DeliveryLocation = &geoEvent{Lat: *o.Address.Lat, Lon: *o.Address.Lon}
 	}
 	if o.Channel == "staff_fax" {
 		ev.Source = "fax"

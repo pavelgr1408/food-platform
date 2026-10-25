@@ -151,10 +151,11 @@ type FakeRestaurants struct {
 	err  error
 }
 
-// NewRestaurants: ресторан 1 открыт, с доставкой, Москва; ресторан 2 — открыт, без доставки, Владивосток.
+// NewRestaurants: ресторан 1 открыт, с доставкой в радиусе 5 км от Красной площади, Москва; ресторан 2 — открыт, без доставки, Владивосток.
 func NewRestaurants() *FakeRestaurants {
 	return &FakeRestaurants{info: map[string]clients.RestaurantInfo{
-		Restaurant1: {ID: Restaurant1, Timezone: "Europe/Moscow", DeliveryEnabled: true, OpenNow: true},
+		Restaurant1: {ID: Restaurant1, Timezone: "Europe/Moscow", DeliveryEnabled: true, OpenNow: true,
+			Lat: 55.7512, Lon: 37.6184, HasLocation: true, DeliveryRadiusM: 5000},
 		Restaurant2: {ID: Restaurant2, Timezone: "Asia/Vladivostok", DeliveryEnabled: false, OpenNow: true},
 	}}
 }

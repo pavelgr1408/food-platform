@@ -15,13 +15,16 @@ import (
 const orderCols = `id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 	payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
 	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at,
-	accepted_at, production_updated_at, ready_at, created_by, refund_status`
+	accepted_at, production_updated_at, ready_at, created_by, refund_status,
+	delivery_status, delivery_fail_reason, delivery_eta_at, delivery_updated_at`
 
 func scanOrder(row pgx.Row) (domain.Order, error) {
 	var (
 		o                domain.Order
 		owner, createdBy *string
 		refund           *string
+		dStatus, dFail   *string
+		dEta, dAt        *time.Time
 		lat, lon         *float64
 		st, pm           string
 		ps, ft           string
@@ -29,7 +32,7 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	err := row.Scan(&o.ID, &o.Number, &o.CartID, &o.RestaurantID, &owner, &o.Channel, &st, &o.StatusReason, &pm,
 		&ps, &ft, &o.Address.Raw, &lat, &lon, &o.Contact.Name, &o.Contact.Phone, &o.Contact.Email,
 		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt,
-		&o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt, &createdBy, &refund)
+		&o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt, &createdBy, &refund, &dStatus, &dFail, &dEta, &dAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}
@@ -39,6 +42,14 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 	o.OwnerUserID, o.CreatedBy, o.RefundStatus = deref(owner), deref(createdBy), domain.RefundStatus(deref(refund))
 	o.Status, o.PaymentMethod, o.PaymentStatus, o.Fulfillment = domain.Status(st), domain.PaymentMethod(pm), domain.PaymentStatus(ps), domain.FulfillmentType(ft)
 	o.Address.Lat, o.Address.Lon = lat, lon
+	if dStatus != nil && dAt != nil {
+		snap := domain.DeliverySnapshot{Status: domain.DeliveryStatus(*dStatus), FailReason: deref(dFail), UpdatedAt: dAt.UTC()}
+		if dEta != nil {
+			t := dEta.UTC()
+			snap.EtaAt = &t
+		}
+		o.Delivery = &snap
+	}
 	o.CreatedAt, o.UpdatedAt = o.CreatedAt.UTC(), o.UpdatedAt.UTC()
 	for _, p := range []**time.Time{&o.PaymentUpdatedAt, &o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt} {
 		if *p != nil {
@@ -264,6 +275,39 @@ func (s *Store) SetRefundStatus(ctx context.Context, db DBTX, id string, rs doma
 func (s *Store) ReadyPickupBefore(ctx context.Context, db DBTX, before time.Time, limit int) ([]string, error) {
 	rows, err := db.Query(ctx, `SELECT id FROM orders WHERE status = 'ready' AND fulfillment_type = 'pickup' AND ready_at < $1
 		ORDER BY ready_at LIMIT $2`, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// SetDelivery сохраняет снимок доставки. Событие не новее сохранённого не применяется (false).
+func (s *Store) SetDelivery(ctx context.Context, db DBTX, id string, d domain.DeliverySnapshot) (bool, error) {
+	var reason *string
+	if d.FailReason != "" {
+		reason = &d.FailReason
+	}
+	tag, err := db.Exec(ctx, `UPDATE orders SET delivery_status = $2, delivery_fail_reason = $3, delivery_eta_at = $4, delivery_updated_at = $5
+		WHERE id = $1 AND (delivery_updated_at IS NULL OR delivery_updated_at < $5)`,
+		id, string(d.Status), reason, d.EtaAt, d.UpdatedAt)
+	return tag.RowsAffected() == 1, err
+}
+
+// ReadyFallbackBefore возвращает id готовых заказов, которые клиенту предложено забрать самому (доставка
+// failed/no_courier): ждём с момента, когда стали и готовы, и без курьера (старые первыми).
+func (s *Store) ReadyFallbackBefore(ctx context.Context, db DBTX, before time.Time, limit int) ([]string, error) {
+	rows, err := db.Query(ctx, `SELECT id FROM orders WHERE status = 'ready' AND fulfillment_type = 'delivery'
+		AND delivery_status = 'failed' AND delivery_fail_reason = 'no_courier'
+		AND GREATEST(ready_at, delivery_updated_at) < $1 ORDER BY ready_at LIMIT $2`, before, limit)
 	if err != nil {
 		return nil, err
 	}

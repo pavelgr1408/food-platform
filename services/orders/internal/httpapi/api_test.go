@@ -375,3 +375,21 @@ func TestHealthAndMetricsExposed(t *testing.T) {
 		t.Fatalf("RED metrics must carry the route template: %d", m.Status)
 	}
 }
+
+func TestDeliveryZoneProblemsOverHTTP(t *testing.T) {
+	srv, _, _, _ := newServer(t)
+	id := readyCart(t, srv, nil)
+	put := func(addr map[string]any) resp {
+		return do(t, srv, "PUT", "/carts/"+id+"/fulfillment", map[string]any{"type": "delivery", "address": addr}, nil)
+	}
+	wantProblem(t, put(map[string]any{"raw": "Арбат, 10"}), 422, "ADDRESS_LOCATION_REQUIRED")
+	r := put(map[string]any{"raw": "Далеко", "location": map[string]any{"lat": 55.85, "lon": 37.6184}})
+	wantProblem(t, r, 422, "ADDRESS_OUT_OF_ZONE")
+	m := r.json(t)
+	if m["radiusMeters"] != float64(5000) || m["hint"] != "pickup" || m["distanceMeters"].(float64) < 10000 {
+		t.Fatalf("out-of-zone extensions: %s", r.Body)
+	}
+	if r := put(map[string]any{"raw": "Арбат, 10", "location": map[string]any{"lat": 55.764, "lon": 37.605}}); r.Status != 200 {
+		t.Fatalf("in zone: %d %s", r.Status, r.Body)
+	}
+}

@@ -111,5 +111,9 @@ func (s *Service) HandlePaymentStatus(ctx context.Context, tx pgx.Tx, ev kafka.E
 			s.noteTransition(ctx, accepted, domain.StatusAccepted, ReasonPaid, actorSystem)
 		}
 	}
-	return enqueueState(ctx, tx, o)
+	if err := enqueueState(ctx, tx, o); err != nil {
+		return err
+	}
+	// оплата курьеру подтверждается после вручения: доставленный заказ закрывается (S7)
+	return s.closeIfSettled(ctx, tx, o.ID)
 }

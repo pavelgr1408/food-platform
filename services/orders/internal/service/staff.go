@@ -53,7 +53,7 @@ var (
 	errUnauthorized  = httpx.NewError(http.StatusUnauthorized, "UNAUTHORIZED", "authentication is required")
 	errForbidden     = httpx.NewError(http.StatusForbidden, "FORBIDDEN", "staff role and access to the restaurant are required")
 	errNotPaid       = httpx.NewError(http.StatusConflict, "ORDER_NOT_PAID", "the order is not paid: accept the payment at the till first")
-	errNotPickup     = httpx.NewError(http.StatusUnprocessableEntity, "NOT_PICKUP_ORDER", "only pickup orders are issued in the restaurant")
+	errNotPickup     = httpx.NewError(http.StatusUnprocessableEntity, "NOT_PICKUP_ORDER", "only pickup orders (and delivery orders left without a courier) are issued in the restaurant")
 	errInvalidNumber = httpx.NewError(http.StatusBadRequest, "INVALID_ORDER_NUMBER", "order number must look like R1-261021-0007")
 	numberRe         = regexp.MustCompile(`^R[0-9]{1,9}-[0-9]{6}-[0-9]{4,9}$`)
 )
@@ -117,8 +117,8 @@ func (s *Service) IssueOrder(ctx context.Context, a Actor, id string) (domain.Or
 			}
 			// handed_over без closed — довести до конца (прерванный прежний вызов невозможен, но страхуемся)
 		} else {
-			if o.Fulfillment != domain.FulfillmentPickup {
-				return errNotPickup
+			if o.Fulfillment != domain.FulfillmentPickup && !o.PickupFallback() {
+				return errNotPickup // доставку вручает курьер; исключение — клиент забирает сам, курьер не найден (E2)
 			}
 			if o.Status != domain.StatusReady {
 				return orderStateConflict(o.Status, "issue")
@@ -203,13 +203,20 @@ func orderStateConflict(st domain.Status, action string) error {
 	return httpx.NewError(http.StatusConflict, "ORDER_STATE_CONFLICT", fmt.Sprintf("cannot %s an order in status %s", action, st))
 }
 
-// ExpireNotReceived переводит готовые, но не забранные заказы самовывоза в not_received (reason=pickup_timeout).
+// ExpireNotReceived переводит готовые, но не забранные заказы самовывоза — и заказы с доставкой, оставшиеся
+// без курьера (E2, клиенту предложено забрать самому), — в not_received (reason=pickup_timeout).
 // Возвращает число переведённых. Статус перепроверяется под блокировкой: выдача и таймер не конфликтуют.
 func (s *Service) ExpireNotReceived(ctx context.Context) (int, error) {
-	ids, err := s.st.ReadyPickupBefore(ctx, s.pool, s.now().Add(-s.cfg.NotReceivedAfter), 100)
+	before := s.now().Add(-s.cfg.NotReceivedAfter)
+	ids, err := s.st.ReadyPickupBefore(ctx, s.pool, before, 100)
 	if err != nil {
 		return 0, err
 	}
+	fallback, err := s.st.ReadyFallbackBefore(ctx, s.pool, before, 100)
+	if err != nil {
+		return 0, err
+	}
+	ids = append(ids, fallback...)
 	n := 0
 	for _, id := range ids {
 		var o domain.Order
@@ -219,8 +226,8 @@ func (s *Service) ExpireNotReceived(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
-			if cur.Status != domain.StatusReady || cur.Fulfillment != domain.FulfillmentPickup {
-				return nil // успели выдать
+			if cur.Status != domain.StatusReady || (cur.Fulfillment != domain.FulfillmentPickup && !cur.PickupFallback()) {
+				return nil // успели выдать (или курьер всё же нашёлся)
 			}
 			o, changed, err = s.transitionTx(ctx, tx, id, domain.StatusNotReceived, ReasonPickupTimeout, actorSystem)
 			return err

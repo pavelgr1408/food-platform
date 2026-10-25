@@ -149,6 +149,10 @@ type RestaurantInfo struct {
 	Timezone        string
 	DeliveryEnabled bool
 	OpenNow         bool
+	// S7: точка ресторана и радиус доставки (для проверки адреса клиента). HasLocation=false — координат нет.
+	Lat, Lon        float64
+	HasLocation     bool
+	DeliveryRadiusM int
 }
 
 // Restaurant — клиент restaurant-service.
@@ -181,9 +185,18 @@ func (c *Restaurant) Get(ctx context.Context, id string) (RestaurantInfo, error)
 		Timezone        string `json:"timezone"`
 		DeliveryEnabled bool   `json:"deliveryEnabled"`
 		OpenNow         bool   `json:"openNow"`
+		Location        *struct {
+			Lat float64 `json:"lat"`
+			Lon float64 `json:"lon"`
+		} `json:"location"`
+		DeliveryRadiusMeters int `json:"deliveryRadiusMeters"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
 		return RestaurantInfo{}, fmt.Errorf("%w: restaurant: decode: %v", ErrUnavailable, err)
 	}
-	return RestaurantInfo{ID: r.ID, Timezone: r.Timezone, DeliveryEnabled: r.DeliveryEnabled, OpenNow: r.OpenNow}, nil
+	info := RestaurantInfo{ID: r.ID, Timezone: r.Timezone, DeliveryEnabled: r.DeliveryEnabled, OpenNow: r.OpenNow, DeliveryRadiusM: r.DeliveryRadiusMeters}
+	if r.Location != nil {
+		info.Lat, info.Lon, info.HasLocation = r.Location.Lat, r.Location.Lon, true
+	}
+	return info, nil
 }

@@ -101,6 +101,14 @@ func actor(r *http.Request) service.Actor {
 	}
 }
 
+// outOfZoneProblem — Problem с расширениями ADDRESS_OUT_OF_ZONE (orders.yaml: OutOfZoneProblem).
+type outOfZoneProblem struct {
+	httpx.Problem
+	DistanceMeters int    `json:"distanceMeters"`
+	RadiusMeters   int    `json:"radiusMeters"`
+	Hint           string `json:"hint"`
+}
+
 // unavailableProblem — Problem с расширением unavailableItems (orders.yaml: UnavailableItemsProblem).
 type unavailableProblem struct {
 	httpx.Problem
@@ -120,6 +128,18 @@ func (h *handlers) fail(w http.ResponseWriter, r *http.Request, err error) {
 		}
 		w.Header().Set("Content-Type", httpx.ContentTypeProblem)
 		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(p)
+		return
+	}
+	var oz *service.OutOfZoneError
+	if errors.As(err, &oz) {
+		p := outOfZoneProblem{
+			Problem: httpx.Problem{Type: "about:blank", Title: http.StatusText(http.StatusUnprocessableEntity), Status: http.StatusUnprocessableEntity,
+				Detail: oz.Error(), Instance: r.URL.Path, Code: "ADDRESS_OUT_OF_ZONE"},
+			DistanceMeters: oz.DistanceM, RadiusMeters: oz.RadiusM, Hint: "pickup",
+		}
+		w.Header().Set("Content-Type", httpx.ContentTypeProblem)
+		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(p)
 		return
 	}

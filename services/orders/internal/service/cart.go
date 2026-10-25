@@ -299,6 +299,9 @@ func (s *Service) SetFulfillment(ctx context.Context, userID, id string, in Fulf
 		if !info.DeliveryEnabled {
 			return CartView{}, unprocessable("DELIVERY_NOT_AVAILABLE", "the restaurant does not offer delivery; choose pickup")
 		}
+		if err := checkZone(info, addr); err != nil { // S7: координаты и радиус доставки
+			return CartView{}, err
+		}
 	}
 	var out domain.Cart
 	err = pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {

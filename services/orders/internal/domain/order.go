@@ -130,6 +130,56 @@ type Line struct {
 	LineTotal   int64
 }
 
+// DeliveryStatus — статус доставки (orders.delivery.status, S7).
+type DeliveryStatus string
+
+// Статусы доставки.
+const (
+	DeliverySearching DeliveryStatus = "searching"
+	DeliveryAssigned  DeliveryStatus = "assigned"
+	DeliveryPickedUp  DeliveryStatus = "picked_up"
+	DeliveryEnRoute   DeliveryStatus = "en_route"
+	DeliveryDelivered DeliveryStatus = "delivered"
+	DeliveryFailed    DeliveryStatus = "failed"
+)
+
+// Valid — известный статус доставки.
+func (d DeliveryStatus) Valid() bool {
+	switch d {
+	case DeliverySearching, DeliveryAssigned, DeliveryPickedUp, DeliveryEnRoute, DeliveryDelivered, DeliveryFailed:
+		return true
+	}
+	return false
+}
+
+// Причины неудачи доставки.
+const (
+	FailNoCourier   = "no_courier"
+	FailUndelivered = "undelivered"
+	FailCancelled   = "cancelled"
+)
+
+// DeliverySnapshot — последний известный снимок доставки заказа.
+type DeliverySnapshot struct {
+	Status     DeliveryStatus
+	FailReason string
+	EtaAt      *time.Time
+	UpdatedAt  time.Time
+}
+
+// Hint — подсказка клиенту: при failed/no_courier заказ можно забрать в ресторане (E2).
+func (d DeliverySnapshot) Hint() string {
+	if d.Status == DeliveryFailed && d.FailReason == FailNoCourier {
+		return "pickup"
+	}
+	return ""
+}
+
+// PickupFallback — заказ с доставкой, который клиенту предложено забрать самому (E2): курьер не найден.
+func (o Order) PickupFallback() bool {
+	return o.Fulfillment == FulfillmentDelivery && o.Delivery != nil && o.Delivery.Hint() == "pickup"
+}
+
 // Order — заказ.
 type Order struct {
 	ID, Number, CartID, RestaurantID string
@@ -153,6 +203,7 @@ type Order struct {
 	Items                            []Line
 	Subtotal, DiscountTotal, Total   int64
 	Revision                         int
+	Delivery                         *DeliverySnapshot // снимок доставки (S7), nil — событий доставки не было
 	CreatedAt, UpdatedAt             time.Time
 }
 
