@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: delivery-service — REST API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Доставка заказа курьером: информация о доставке и координаты курьера (пулинг из
     delivery-Redis), приём вебхуков курьерской системы. Хранилища — delivery-db, delivery-Redis.
@@ -12,7 +12,7 @@ info:
 
     **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
     `services/delivery`; `planned` — целевое поведение, появится в указанном этапе. Все операции
-    — S7.
+    реализованы в S7.
 
 
     **Откуда сервис знает о заказе (ADR-10).** Из событий `orders.state` (только
@@ -49,7 +49,7 @@ info:
     Координаты не пишутся в журналы.
 
     **Коды ошибок:** `DELIVERY_NOT_FOUND`, `LOCATION_NOT_AVAILABLE`, `INVALID_SIGNATURE`,
-    `WEBHOOK_DISABLED`, `INVALID_PARAMETER`.
+    `WEBHOOK_DISABLED`, `LOCATION_STORE_UNAVAILABLE`, `INVALID_PARAMETER`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -69,7 +69,7 @@ paths:
     get:
       tags: [delivery-service]
       operationId: getDeliveryInfo
-      x-status: planned
+      x-status: implemented
       summary: Информация о доставке
       description: >-
         Возвращает статус доставки и назначенного курьера по заказу. Назначение курьера
@@ -99,7 +99,7 @@ paths:
     get:
       tags: [delivery-service]
       operationId: getCourierLocation
-      x-status: planned
+      x-status: implemented
       summary: Координаты курьера (пулинг)
       description: >-
         Возвращает последние координаты курьера из delivery-Redis для отслеживания
@@ -125,6 +125,13 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `LOCATION_STORE_UNAVAILABLE` — delivery-Redis недоступен; статус доставки
+            (`getDeliveryInfo`) при этом работает. Клиент повторяет опрос позже.
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
 webhooks:
 
@@ -132,7 +139,7 @@ webhooks:
     post:
       tags: [delivery-service]
       operationId: onCourierDeliveryStatus
-      x-status: planned
+      x-status: implemented
       x-path: /webhooks/delivery/status
       summary: Статус доставки от курьерской системы
       description: >-
