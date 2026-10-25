@@ -437,3 +437,46 @@ func TestPOSAdminPathsAndRefund(t *testing.T) {
 		t.Fatalf("pos inspect path: %d", code)
 	}
 }
+
+func TestGatewayCourierCardWaitsForPayTrigger(t *testing.T) {
+	g := newGW(t)
+	body := `{"amount":{"amount":54900,"currency":"RUB"},"reference":"pay-c","metadata":{"orderId":"ord-c","method":"courier_card"}}`
+	code, op := g.call("POST", "/v1/payments", body, map[string]string{"Idempotency-Key": "kc"})
+	if code != 201 {
+		t.Fatalf("%d %v", code, op)
+	}
+	id := op["id"].(string)
+	time.Sleep(100 * time.Millisecond) // задержка итога у обычной операции — 20 мс
+	if _, st := g.call("GET", "/v1/payments/"+id, "", nil); st["status"] != "pending" || g.hook.count() != 0 {
+		t.Fatalf("courier payment must stay pending until the trigger: %v hooks=%d", st, g.hook.count())
+	}
+	if code, r := g.call("POST", "/_admin/gateway/pay?id="+id, "", nil); code != 200 || r["status"] != "paid" {
+		t.Fatalf("%d %v", code, r)
+	}
+	g.hook.waitFor(t, 1)
+	if ev := g.hook.list[0]; ev["status"] != "paid" || ev["orderId"] != "ord-c" {
+		t.Fatalf("%v", ev)
+	}
+	// повтор — без нового вебхука
+	if code, r := g.call("POST", "/_admin/gateway/pay?id="+id, "", nil); code != 200 || r["status"] != "paid" {
+		t.Fatalf("%d %v", code, r)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if g.hook.count() != 1 {
+		t.Fatalf("hooks = %d", g.hook.count())
+	}
+	if code, _ := g.call("POST", "/_admin/gateway/pay?id=nope", "", nil); code != 404 {
+		t.Fatalf("unknown: %d", code)
+	}
+}
+
+func TestGatewayCourierCardDeclinedByMagicAmount(t *testing.T) {
+	g := newGW(t)
+	body := `{"amount":{"amount":54913,"currency":"RUB"},"reference":"pay-d","metadata":{"orderId":"ord-d","method":"courier_card"}}`
+	_, op := g.call("POST", "/v1/payments", body, map[string]string{"Idempotency-Key": "kd"})
+	g.call("POST", "/_admin/gateway/pay?id="+op["id"].(string), "", nil)
+	g.hook.waitFor(t, 1)
+	if g.hook.list[0]["status"] != "declined" {
+		t.Fatalf("%v", g.hook.list[0])
+	}
+}
