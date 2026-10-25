@@ -120,6 +120,7 @@ make newman SERVICE=loyalty         # loyalty напрямую: права, ид
 make newman SERVICE=e2e             # раздел 12: акция → promotions.discount → скидка в корзине и заказе (нужны Kafka и loyalty)
 make loyalty-e2e                    # то же без Docker: реальные бинарники + in-memory Kafka (tools/kfake-broker)
 ```
+- `make loyalty-e2e` сам проверяет, что порты 8082/8083/8084/8086/19092 свободны, и при конфликте завершается с кодом 2 и списком занятых портов (compose-срез сначала остановить: `make down SLICE=…`).
 - Права на акции проверяет сам `loyalty-service` через `auth /auth/authorize` (`action=promotion.manage`, `AUTH_URL`); в `AUTH_MODE=dev` — локальные правила, зеркало политики auth
   (тест-таблица совпадает с auth). Владелец франшизы создаёт и ведёт только локальные акции своих ресторанов, HQ — любые; национальные акции — только HQ.
 - Жизненный цикл: `draft → active → completed`; `scheduled` и `expired` выводятся из окна `startsAt/endsAt`. Две акции одного охвата и приоритета с пересечением по времени и позициям

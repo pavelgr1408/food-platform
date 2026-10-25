@@ -19,7 +19,26 @@ cleanup() {
 trap cleanup EXIT
 
 dburl() { echo "${ADMIN%/*}/$1?sslmode=disable"; }
-BROKER=127.0.0.1:19092
+P_RESTAURANT=8082 P_MENU=8083 P_ORDERS=8084 P_LOYALTY=8086 P_KAFKA=19092
+BROKER=127.0.0.1:$P_KAFKA
+
+# Порты должны быть свободны: иначе health-проверки пройдут против чужих процессов (например, compose-среза).
+port_busy() {
+  if command -v lsof >/dev/null; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
+  fi
+}
+busy=()
+for port in $P_RESTAURANT $P_MENU $P_ORDERS $P_LOYALTY $P_KAFKA; do
+  port_busy "$port" && busy+=("$port")
+done
+if [ "${#busy[@]}" -gt 0 ]; then
+  echo "ошибка: заняты порты: ${busy[*]} — остановите стенд (make down SLICE=\"...\", docker ps) и повторите." >&2
+  echo "проверка: lsof -nP -iTCP:${busy[0]} -sTCP:LISTEN" >&2
+  exit 2
+fi
 
 for db in restaurant menu orders loyalty; do
   psql "$ADMIN" -qc "DROP DATABASE IF EXISTS $db WITH (FORCE)" -c "CREATE DATABASE $db"
@@ -29,7 +48,7 @@ for svc in restaurant menu orders loyalty; do
 done
 go build -o "$WORK/kfake" ./tools/kfake-broker
 
-"$WORK/kfake" -port 19092 >"$WORK/kfake.log" 2>&1 &
+"$WORK/kfake" -port "$P_KAFKA" >"$WORK/kfake.log" 2>&1 &
 PIDS+=("$!")
 sleep 1
 
@@ -39,12 +58,12 @@ start() { # имя порт [env...]
     "$WORK/$name" >"$WORK/$name.log" 2>&1 &
   PIDS+=("$!")
 }
-start restaurant 8082 SEED_ON_START=true
-start menu 8083 SEED_ON_START=true
-start orders 8084 MENU_URL=http://localhost:8083 RESTAURANT_URL=http://localhost:8082 PROMOTION_CACHE_TTL=500ms
-start loyalty 8086
+start restaurant "$P_RESTAURANT" SEED_ON_START=true
+start menu "$P_MENU" SEED_ON_START=true
+start orders "$P_ORDERS" MENU_URL=http://localhost:$P_MENU RESTAURANT_URL=http://localhost:$P_RESTAURANT PROMOTION_CACHE_TTL=500ms
+start loyalty "$P_LOYALTY"
 
-for port in 8082 8083 8084 8086; do
+for port in $P_RESTAURANT $P_MENU $P_ORDERS $P_LOYALTY; do
   for i in $(seq 1 60); do
     curl -fsS "http://localhost:$port/actuator/health" >/dev/null 2>&1 && break
     [ "$i" = 60 ] && { echo "сервис на :$port не поднялся"; tail -n 30 "$WORK"/*.log; exit 1; }
