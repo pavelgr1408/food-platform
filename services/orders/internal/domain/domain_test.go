@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -132,7 +133,7 @@ func TestDiscountNetNeverNegative(t *testing.T) {
 	if d != 0 || tot != 1000 {
 		t.Errorf("negative discount: %d %d", d, tot)
 	}
-	if got := (NoopDiscounter{}).Apply("r", nil, 100); got.Total != 0 || len(got.Applied) != 0 {
+	if got := (NoopDiscounter{}).Apply(context.Background(), DiscountInput{Subtotal: 100}); got.Total != 0 || len(got.Applied) != 0 {
 		t.Error("noop must return zero discount")
 	}
 }

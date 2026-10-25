@@ -16,7 +16,7 @@ const orderCols = `id, number, cart_id, restaurant_id, owner_user_id, channel, s
 	payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
 	pickup_from, pickup_to, currency, subtotal, discount_total, total, revision, created_at, updated_at, payment_updated_at,
 	accepted_at, production_updated_at, ready_at, created_by, refund_status,
-	delivery_status, delivery_fail_reason, delivery_eta_at, delivery_updated_at`
+	delivery_status, delivery_fail_reason, delivery_eta_at, delivery_updated_at, applied_promotions`
 
 func scanOrder(row pgx.Row) (domain.Order, error) {
 	var (
@@ -26,17 +26,21 @@ func scanOrder(row pgx.Row) (domain.Order, error) {
 		dStatus, dFail   *string
 		dEta, dAt        *time.Time
 		lat, lon         *float64
+		applied          []byte
 		st, pm           string
 		ps, ft           string
 	)
 	err := row.Scan(&o.ID, &o.Number, &o.CartID, &o.RestaurantID, &owner, &o.Channel, &st, &o.StatusReason, &pm,
 		&ps, &ft, &o.Address.Raw, &lat, &lon, &o.Contact.Name, &o.Contact.Phone, &o.Contact.Email,
 		&o.PickupFrom, &o.PickupTo, &o.Currency, &o.Subtotal, &o.DiscountTotal, &o.Total, &o.Revision, &o.CreatedAt, &o.UpdatedAt, &o.PaymentUpdatedAt,
-		&o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt, &createdBy, &refund, &dStatus, &dFail, &dEta, &dAt)
+		&o.AcceptedAt, &o.ProductionUpdatedAt, &o.ReadyAt, &createdBy, &refund, &dStatus, &dFail, &dEta, &dAt, &applied)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}
 	if err != nil {
+		return o, err
+	}
+	if o.Applied, err = parseApplied(applied); err != nil {
 		return o, err
 	}
 	o.OwnerUserID, o.CreatedBy, o.RefundStatus = deref(owner), deref(createdBy), domain.RefundStatus(deref(refund))
@@ -108,14 +112,18 @@ func (s *Store) NextNumber(ctx context.Context, db DBTX, restaurantID string, co
 
 // InsertOrder сохраняет заказ с позициями и первую запись истории статусов.
 func (s *Store) InsertOrder(ctx context.Context, db DBTX, o domain.Order, actor string) error {
-	_, err := db.Exec(ctx, `INSERT INTO orders (id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
+	applied, err := appliedBytes(o.Applied)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(ctx, `INSERT INTO orders (id, number, cart_id, restaurant_id, owner_user_id, channel, status, status_reason, payment_method,
 		payment_status, fulfillment_type, address_raw, address_lat, address_lon, contact_name, contact_phone, contact_email,
-		currency, subtotal, discount_total, total, revision, created_at, updated_at, accepted_at, created_by)
+		currency, subtotal, discount_total, total, revision, created_at, updated_at, accepted_at, created_by, applied_promotions)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$23,
-			CASE WHEN $7 = 'accepted' THEN $23::timestamptz END, $24)`,
+			CASE WHEN $7 = 'accepted' THEN $23::timestamptz END, $24, $25)`,
 		o.ID, o.Number, o.CartID, o.RestaurantID, nilIfEmpty(o.OwnerUserID), o.Channel, string(o.Status), o.StatusReason, string(o.PaymentMethod),
 		string(o.PaymentStatus), string(o.Fulfillment), o.Address.Raw, o.Address.Lat, o.Address.Lon, o.Contact.Name, o.Contact.Phone, o.Contact.Email,
-		o.Currency, o.Subtotal, o.DiscountTotal, o.Total, o.Revision, o.CreatedAt, nilIfEmpty(o.CreatedBy))
+		o.Currency, o.Subtotal, o.DiscountTotal, o.Total, o.Revision, o.CreatedAt, nilIfEmpty(o.CreatedBy), applied)
 	if err != nil {
 		return err
 	}

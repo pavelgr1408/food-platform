@@ -34,15 +34,16 @@ type Waker interface{ Wake() }
 
 // Config — настройки сценариев.
 type Config struct {
-	PaymentTimeout   time.Duration // pending_payment старше — отменяется (payment_timeout)
-	UnknownGrace     time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
-	CartTTL          time.Duration // открытые корзины без изменений старше — удаляются
-	PrepMinutes      int           // типовое время приготовления (ETA, если свежей оценки производства нет)
-	LeadTimeTTL      time.Duration // срок годности реплики production.lead.time
-	DeliveryMinutes  int           // типовое время доставки поверх приготовления
-	DeliveryEtaTTL   time.Duration // срок годности оценки вручения от курьерской системы (S7)
-	NotReceivedAfter time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
-	DefaultCurrency  string
+	PaymentTimeout    time.Duration // pending_payment старше — отменяется (payment_timeout)
+	UnknownGrace      time.Duration // добавка к таймауту для заказов с paymentStatus=unknown (ждём итог от payment)
+	CartTTL           time.Duration // открытые корзины без изменений старше — удаляются
+	PrepMinutes       int           // типовое время приготовления (ETA, если свежей оценки производства нет)
+	LeadTimeTTL       time.Duration // срок годности реплики production.lead.time
+	DeliveryMinutes   int           // типовое время доставки поверх приготовления
+	DeliveryEtaTTL    time.Duration // срок годности оценки вручения от курьерской системы (S7)
+	NotReceivedAfter  time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
+	DefaultCurrency   string
+	PromotionCacheTTL time.Duration // как долго расчёт скидок использует снимок реплики акций (0 → 2с, <0 → без кэша), S8
 }
 
 func (c *Config) defaults() {
@@ -73,6 +74,12 @@ func (c *Config) defaults() {
 	if c.DefaultCurrency == "" {
 		c.DefaultCurrency = "RUB"
 	}
+	switch {
+	case c.PromotionCacheTTL == 0:
+		c.PromotionCacheTTL = 2 * time.Second
+	case c.PromotionCacheTTL < 0:
+		c.PromotionCacheTTL = 0
+	}
 }
 
 // Deps — зависимости сервиса.
@@ -80,7 +87,7 @@ type Deps struct {
 	Pool        *pgxpool.Pool
 	Menu        MenuValidator
 	Restaurants RestaurantGetter
-	Discounter  domain.Discounter // nil → NoopDiscounter
+	Discounter  domain.Discounter // nil → ReplicaDiscounter по реплике promotions.discount
 	Waker       Waker             // nil допустим
 	Log         *slog.Logger
 	Clock       func() time.Time // nil → time.Now
@@ -107,14 +114,14 @@ func New(d Deps) *Service {
 	d.Config.defaults()
 	s := &Service{pool: d.Pool, st: store.New(), menu: d.Menu, rest: d.Restaurants, disc: d.Discounter,
 		waker: d.Waker, log: d.Log, now: d.Clock, m: d.Metrics, cfg: d.Config}
-	if s.disc == nil {
-		s.disc = domain.NoopDiscounter{}
-	}
 	if s.log == nil {
 		s.log = slog.Default()
 	}
 	if s.now == nil {
 		s.now = func() time.Time { return time.Now().UTC() }
+	}
+	if s.disc == nil {
+		s.disc = NewReplicaDiscounter(d.Pool, s.st, d.Config.PromotionCacheTTL, s.now, s.log, d.Metrics)
 	}
 	return s
 }

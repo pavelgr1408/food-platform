@@ -98,6 +98,10 @@ func run(cfg config.Config, log *slog.Logger) error {
 	up := func() *httpx.Client {
 		return httpx.NewClient(httpx.ClientConfig{Timeout: cfg.UpstreamTimeout, MaxRetries: 1})
 	}
+	promoTTL := cfg.PromotionCacheTTL
+	if promoTTL == 0 {
+		promoTTL = -1 // 0 в окружении = без кэша
+	}
 	svc := service.New(service.Deps{
 		Pool:        pool,
 		Menu:        &clients.Menu{BaseURL: cfg.MenuURL, HTTP: up()},
@@ -107,7 +111,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		Metrics:     m,
 		Config: service.Config{PaymentTimeout: cfg.PaymentTimeout, UnknownGrace: cfg.UnknownGrace, CartTTL: cfg.CartTTL,
 			PrepMinutes: cfg.PrepMinutes, DeliveryMinutes: cfg.DeliveryMinutes, LeadTimeTTL: cfg.LeadTimeTTL, DeliveryEtaTTL: cfg.DeliveryEtaTTL,
-			NotReceivedAfter: cfg.NotReceivedAfter},
+			NotReceivedAfter: cfg.NotReceivedAfter, PromotionCacheTTL: promoTTL},
 	})
 	wg.Add(1)
 	go func() { defer wg.Done(); svc.RunJanitor(ctx, cfg.JanitorInterval) }()
@@ -115,7 +119,8 @@ func run(cfg config.Config, log *slog.Logger) error {
 	// Консьюмеры Kafka. Группы раздельные: «ядовитое» или медленное событие производства не задерживает оплату.
 	//   orders-service            orders.payments.status (S3): paid → accepted + повторный orders.state (ADR-10);
 	//   orders-service-production orders.dish.status и production.lead.time (S4): accepted → cooking → ready, ETA;
-	//   orders-service-delivery   orders.delivery.status (S7): ready → on_delivery → delivered → closed, E2.
+	//   orders-service-delivery   orders.delivery.status (S7): ready → on_delivery → delivered → closed, E2;
+	//   orders-service-promotions promotions.discount (S8): реплика акций для расчёта скидки (читается с начала компактного топика).
 	if len(cfg.KafkaBrokers) > 0 {
 		for _, c := range []struct {
 			group  string
@@ -125,6 +130,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 			{"orders-service", []string{service.TopicPaymentStatus}, svc.HandlePaymentStatus},
 			{"orders-service-production", []string{service.TopicDishStatus, service.TopicLeadTime}, svc.HandleProduction},
 			{"orders-service-delivery", []string{service.TopicDeliveryStatus}, svc.HandleDeliveryStatus},
+			{"orders-service-promotions", []string{service.TopicPromotions}, svc.HandlePromotion},
 		} {
 			cons, err := kafka.NewConsumer(kafka.ConsumerConfig{Brokers: cfg.KafkaBrokers, Group: c.group,
 				Topics: c.topics, Pool: pool, Handler: c.h, Log: log})

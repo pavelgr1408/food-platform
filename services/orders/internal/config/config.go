@@ -31,6 +31,8 @@ type Config struct {
 	DeliveryEtaTTL  time.Duration // срок годности оценки вручения от курьерской системы (S7)
 
 	NotReceivedAfter time.Duration // готовый заказ самовывоза, не выданный за это время, → not_received (S6)
+
+	PromotionCacheTTL time.Duration // как долго расчёт скидок использует снимок реплики акций; 0 — без кэша (S8)
 }
 
 // Load читает окружение; возвращает все найденные ошибки разом.
@@ -52,6 +54,8 @@ func Load() (Config, error) {
 		DeliveryEtaTTL:  r.Duration("DELIVERY_ETA_TTL", 30*time.Minute),
 
 		NotReceivedAfter: r.Duration("NOT_RECEIVED_AFTER", 2*time.Hour),
+
+		PromotionCacheTTL: r.Duration("PROMOTION_CACHE_TTL", 2*time.Second),
 	}
 	err := r.Err()
 	var bad []error
@@ -65,6 +69,9 @@ func Load() (Config, error) {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))
 		}
+	}
+	if c.PromotionCacheTTL < 0 {
+		bad = append(bad, errors.New("PROMOTION_CACHE_TTL must be non-negative"))
 	}
 	if c.PrepMinutes <= 0 || c.DeliveryMinutes < 0 {
 		bad = append(bad, errors.New("ETA_PREP_MINUTES must be positive, ETA_DELIVERY_MINUTES non-negative"))

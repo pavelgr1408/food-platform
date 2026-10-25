@@ -39,3 +39,19 @@ func TestDatabaseURLIsRequired(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestPromotionCacheTTL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	c, err := Load()
+	if err != nil || c.PromotionCacheTTL != 2*time.Second {
+		t.Fatalf("default: %v %v", c.PromotionCacheTTL, err)
+	}
+	t.Setenv("PROMOTION_CACHE_TTL", "0s")
+	if c, err = Load(); err != nil || c.PromotionCacheTTL != 0 {
+		t.Fatalf("zero is allowed (no cache): %v %v", c.PromotionCacheTTL, err)
+	}
+	t.Setenv("PROMOTION_CACHE_TTL", "-1s")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "PROMOTION_CACHE_TTL") {
+		t.Fatalf("negative must be rejected: %v", err)
+	}
+}
