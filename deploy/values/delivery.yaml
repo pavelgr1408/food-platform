@@ -1,0 +1,34 @@
+# Helm-values сервиса delivery для общего чарта deploy/charts/service.
+# Секреты в git не хранятся: Secret `delivery-secrets` создаёт `make k8s-dev-secrets` / CI/CD / Vault.
+name: delivery
+image:
+  repository: food/delivery
+  tag: dev
+port: 8087
+replicas: 2
+env:
+  APP_ENV: dev
+  LOG_LEVEL: info
+  AUTH_MODE: jwks # личность — только из JWT, проверенного локально по JWKS (ADR-11)
+  AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
+  KAFKA_BROKERS: kafka:9092
+  RESTAURANT_URL: http://restaurant
+  COURIER_URL: http://mock-externals:9094 # dev: мок курьерской системы; в prod — реальная
+  REDIS_ADDR: redis:6379 # delivery-Redis (координаты курьера, TTL LOCATION_TTL); пусто — память процесса
+  SEARCH_TIMEOUT: 10m
+  LOCATION_TTL: 60s
+existingSecret: delivery-secrets # ключи: DATABASE_URL, COURIER_API_KEY, COURIER_WEBHOOK_SECRET, REDIS_PASSWORD (вне dev)
+migrations:
+  enabled: true # Job `delivery-service --migrate-only` (pre-install/pre-upgrade hook)
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+ingress:
+  # Единственный путь мимо gateway: вебхуки курьерской системы (подпись HMAC вместо токена).
+  # Ограничения — на ingress, до сервиса: частота по IP отправителя и размер тела.
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/proxy-body-size: 64k
+  paths:
+    - { path: /webhooks/delivery, pathType: Prefix }

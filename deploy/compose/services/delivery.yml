@@ -1,0 +1,31 @@
+services:
+  delivery:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/delivery
+        TARGET: ./services/delivery/cmd/delivery-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "8087"
+      DATABASE_URL: postgres://delivery:delivery@postgres:5432/delivery?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
+      RESTAURANT_URL: http://restaurant:8082
+      COURIER_URL: http://mock-externals:9094
+      # координаты курьера: COMPOSE_PROFILES=redis REDIS_ADDR=redis:6379 make up …; без Redis — память процесса (dev)
+      REDIS_ADDR: ${REDIS_ADDR:-}
+      SEARCH_TIMEOUT: ${SEARCH_TIMEOUT:-10m}
+      POLL_INTERVAL: ${DELIVERY_POLL_INTERVAL:-1s}
+      # dev-секреты по умолчанию (APP_ENV=dev): COURIER_API_KEY / COURIER_WEBHOOK_SECRET
+    ports:
+      - "8087:8087"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    mem_limit: 128m
