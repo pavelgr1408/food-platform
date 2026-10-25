@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сквозная проверка периметра (S5) без Docker: auth + restaurant + menu + orders + payment (в режиме jwks)
+# Сквозная проверка периметра (S5, S7) без Docker: auth + restaurant + menu + orders + payment + delivery (в режиме jwks)
 # + gateway на реальных бинарниках и Postgres; затем newman: коллекции auth (напрямую) и gateway (через периметр).
 # Kafka нет: orders/payment работают без relay; сценарии периметра её не требуют.
 #   DB_ADMIN_URL — админский URL Postgres (по умолчанию postgres://postgres:postgres@localhost:5432/postgres)
@@ -22,14 +22,14 @@ trap cleanup EXIT
 
 dburl() { echo "${ADMIN%/*}/$1?sslmode=disable"; }
 
-for db in auth restaurant menu orders payment; do
+for db in auth restaurant menu orders payment delivery; do
   psql "$ADMIN" -qc "DROP DATABASE IF EXISTS $db WITH (FORCE)" -c "CREATE DATABASE $db"
 done
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/private.pem" 2>/dev/null
 openssl pkey -in "$WORK/private.pem" -pubout -out "$WORK/public.pem"
 
-for svc in auth restaurant menu orders payment gateway; do
+for svc in auth restaurant menu orders payment delivery gateway; do
   go build -o "$WORK/$svc" "./services/$svc/cmd/$svc-service"
 done
 
@@ -42,32 +42,33 @@ start() { # имя порт [env...]
 }
 
 start auth 8081 SEED_ON_START=true BCRYPT_COST=10 JWT_PRIVATE_KEY_PATH="$WORK/private.pem" JWT_PUBLIC_KEY_PATH="$WORK/public.pem" JWT_KEY_ID=ci-key
-for entry in "restaurant 8082" "menu 8083" "orders 8084" "payment 8085"; do
+for entry in "restaurant 8082" "menu 8083" "orders 8084" "payment 8085" "delivery 8087"; do
   set -- $entry
   extra=()
   case $1 in
     restaurant|menu) extra=(SEED_ON_START=true) ;;
     orders) extra=(MENU_URL=http://localhost:8083 RESTAURANT_URL=http://localhost:8082) ;;
     payment) extra=(GATEWAY_URL=http://localhost:9091) ;;
+    delivery) extra=(RESTAURANT_URL=http://localhost:8082) ;;
   esac
   start "$1" "$2" AUTH_MODE=jwks AUTH_JWKS_URL="$JWKS" "${extra[@]}"
 done
 # gateway без БД: DATABASE_URL ему не нужен, но лишняя переменная безвредна
 env APP_ENV=dev LOG_LEVEL=warn HTTP_PORT=8080 METRICS_ADDR=:9100 \
   UPSTREAM_AUTH_URL=http://localhost:8081 UPSTREAM_RESTAURANT_URL=http://localhost:8082 UPSTREAM_MENU_URL=http://localhost:8083 \
-  UPSTREAM_ORDERS_URL=http://localhost:8084 UPSTREAM_PAYMENT_URL=http://localhost:8085 \
+  UPSTREAM_ORDERS_URL=http://localhost:8084 UPSTREAM_PAYMENT_URL=http://localhost:8085 UPSTREAM_DELIVERY_URL=http://localhost:8087 \
   TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128 CORS_ALLOWED_ORIGINS=http://localhost:3000 AUTH_RATE_PER_MIN=30 AUTH_RATE_BURST=30 \
   "$WORK/gateway" >"$WORK/gateway.log" 2>&1 &
 PIDS+=("$!")
 
-for port in 8081 8082 8083 8084 8085 8080; do
+for port in 8081 8082 8083 8084 8085 8087 8080; do
   for i in $(seq 1 60); do
     curl -fsS "http://localhost:$port/actuator/health" >/dev/null 2>&1 && break
     [ "$i" = 60 ] && { echo "сервис на :$port не поднялся"; tail -n 30 "$WORK"/*.log; exit 1; }
     sleep 1
   done
 done
-echo "стенд поднят: gateway :8080 → auth :8081, restaurant :8082, menu :8083, orders :8084, payment :8085"
+echo "стенд поднят: gateway :8080 → auth :8081, restaurant :8082, menu :8083, orders :8084, payment :8085, delivery :8087"
 
 if [ "${HOLD:-}" = 1 ]; then
   echo "HOLD=1: стенд работает, Ctrl+C — остановить"

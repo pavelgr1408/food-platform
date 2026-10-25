@@ -75,13 +75,43 @@ make contract-check SCENARIO=payment
 make up SLICE="restaurant menu orders payment mock-externals"
 make newman SERVICE=e2e
 ```
-`mock-externals` (по умолчанию `MOCKS=ping,payment,pos,production`) содержит модуль `production` (:9092): читает `orders.state` (берёт заказ в работу, только если
+`mock-externals` (по умолчанию `MOCKS=ping,payment,pos,production,courier`) содержит модуль `production` (:9092): читает `orders.state` (берёт заказ в работу, только если
 `paymentStatus=paid` или оплата не предоплатная — ADR-10), публикует `orders.dish.status` (`queued → cooking → ready`) и `production.lead.time`.
 Тайминги — `MOCK_PRODUCTION_QUEUE_DELAY` (2s), `MOCK_PRODUCTION_COOK_TIME` (3s) или на лету: `POST :9092/_admin/production/timing?queue=1s&cook=2s`.
 Управление сценариями: `POST /_admin/production/mode?queue=off|on` («авария очереди», E3: заказы остаются `accepted`, растёт метрика
 `orders_stuck_in_accepted_seconds`), `POST /_admin/production/leadtime?restaurantId=<id>&minutes=<n>` (зафиксировать время приготовления ресторана),
 `POST /_admin/production/reset`, `GET /_inspect/production`. Коллекция `postman/e2e/` сама задаёт тайминги и возвращает настройки в конце.
 Заказы без `production` в срезе остаются в `accepted`: orders честно показывает типовой ETA (`approximate=true`).
+
+## Доставка курьером и оплата курьеру (S7)
+```bash
+COMPOSE_PROFILES=redis REDIS_ADDR=redis:6379 make up SLICE="restaurant menu orders payment delivery mock-externals"
+make newman SERVICE=delivery        # delivery напрямую: probes, 404, подпись вебхуков
+make newman SERVICE=e2e             # разделы 8–10: онлайн-оплата → курьер → координаты → delivered; оплата курьеру; E2
+make contract-check SCENARIO=delivery
+```
+- `delivery-service` берёт заказ с доставкой из `orders.state`, когда он оплачен или оплата не предоплатная (ADR-10); курьер ищется параллельно с приготовлением.
+  Координаты курьера пишутся в Redis (`REDIS_ADDR`, TTL `LOCATION_TTL`=60 с); без `REDIS_ADDR` — в память процесса (только dev).
+- `mock-externals` получает модуль `courier` (:9094): `assigned → picked_up → en_route → delivered` вебхуками с HMAC, координаты идут по прямой от ресторана к адресу.
+  Сценарии: `POST :9094/_admin/courier/mode?couriers=off|on&create=ok|timeout|error|reject&status=ok|error&webhooks=on|off`,
+  `POST :9094/_admin/courier/next?outcome=delivered|undelivered|nocourier`, `POST :9094/_admin/courier/advance?id=<id>&status=<status>`,
+  `POST :9094/_admin/courier/redeliver?id=<id>`, `POST :9094/_admin/courier/reset`, `GET :9094/_inspect/courier`. Шаги растягиваются `MOCK_DELAY`.
+- Оплата курьеру (`paymentMethod=courier_card`): платёж заводит payment-service по `orders.state`, ссылка уходит событием `orders.payments.link`,
+  delivery передаёт её курьерской системе; на `delivered` мок курьера просит мок шлюза завершить операцию (`POST :9091/_admin/gateway/pay?id=`),
+  итог приходит вебхуком шлюза — деньги подтверждает только шлюз. Срок жизни ссылки — `COURIER_PAYMENT_TTL` (4 ч).
+- Зона доставки (долг 10): адрес без координат — `422 ADDRESS_LOCATION_REQUIRED`, вне радиуса ресторана — `422 ADDRESS_OUT_OF_ZONE` (`distanceMeters`, `radiusMeters`, `hint=pickup`).
+  Проверка выполняется при `setCartFulfillment` и повторно при `createOrder`; если restaurant-service недоступен, заказ не оформляется (fail-closed).
+- E2 «нет курьера»: за `SEARCH_TIMEOUT` (10 мин) доставка → `failed/no_courier`, `hint=pickup`; заказ остаётся `ready`, сотрудник выдаёт его `POST /orders/{id}/issuance`.
+  Если его не забрали — janitor переводит в `not_received` (`pickup_timeout`) по `GREATEST(ready_at, delivery_updated_at)`.
+- ETA: `etaAt` доставки от курьерской системы используется, пока свежий (`DELIVERY_ETA_TTL`=30 мин) и не раньше готовности; иначе — типичное время.
+
+Сквозной сценарий через gateway с JWT (долг 40): стенд с `AUTH_MODE=jwks` и `auth gateway` в срезе, затем
+```bash
+AUTH_MODE=jwks make up SLICE="auth gateway restaurant menu orders payment delivery mock-externals"
+make newman-e2e-gateway
+```
+Коллекция та же, окружение `postman/e2e/gateway.postman_environment.json` (клиентские вызовы идут на `:8080`; `/metrics` и probes — напрямую, gateway их не публикует),
+токен сотрудника подставляет Makefile. Вебхуки курьерской системы идут мимо gateway (ingress, подпись `X-Signature`).
 
 ## Сценарии персонала (S6): касса, факс, выдача, отмена и возврат
 ```bash
