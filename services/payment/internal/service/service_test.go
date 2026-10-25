@@ -653,3 +653,131 @@ func TestConsumerRejectsMalformedEvents(t *testing.T) {
 		t.Error("unexpected topic must fail")
 	}
 }
+
+// --- оплата курьеру (S7, UC-PAY-03) ---
+
+func (e *env) outbox(t *testing.T, topic, orderID string) [][]byte {
+	t.Helper()
+	rows, err := e.pool.Query(ctx, `SELECT payload FROM outbox WHERE topic = $1 AND key = $2 ORDER BY id`, topic, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out [][]byte
+	for rows.Next() {
+		var b []byte
+		if err := rows.Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func (e *env) courierOrder(t *testing.T) string {
+	t.Helper()
+	id := uuid.NewString()
+	e.state(t, id, 1, "courier", "", 77700, "delivery")
+	return id
+}
+
+func TestCourierPaymentIsCreatedBySystemAndLinkPublished(t *testing.T) {
+	e := newEnv(t)
+	o := e.courierOrder(t)
+	if got := statuses(e.events(t, o)); !eq(got, []string{"pending"}) {
+		t.Fatalf("events: %v", got)
+	}
+	if e.gw.Operations() != 0 || len(e.outbox(t, service.TopicPaymentLink, o)) != 0 {
+		t.Fatal("gateway call and link must wait for the reconciler (calls are outside the transaction)")
+	}
+	if n, err := e.svc.Reconcile(ctx); err != nil || n != 1 {
+		t.Fatalf("due=%d %v", n, err)
+	}
+	links := e.outbox(t, service.TopicPaymentLink, o)
+	if len(links) != 1 || e.gw.Operations() != 1 {
+		t.Fatalf("links=%d ops=%d", len(links), e.gw.Operations())
+	}
+	var ev service.PaymentLinkEvent
+	if err := json.Unmarshal(links[0], &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.OrderID != o || ev.PaymentURL == "" || ev.Amount.Amount != 77700 || ev.ExpiresAt == nil ||
+		ev.ExpiresAt.Sub(e.clock.Now()) != 4*time.Hour {
+		t.Fatalf("%+v", ev)
+	}
+	if m := e.gw.Method(ev.PaymentID); m != "courier_card" {
+		t.Fatalf("gateway metadata.method=%q", m)
+	}
+	// повторный проход не публикует вторую ссылку
+	e.clock.Advance(time.Minute)
+	_, _ = e.svc.Reconcile(ctx)
+	if len(e.outbox(t, service.TopicPaymentLink, o)) != 1 {
+		t.Fatal("link must be published once")
+	}
+}
+
+func TestCourierPaymentIsCreatedOnceAndNotForOtherOrders(t *testing.T) {
+	e := newEnv(t)
+	o := e.courierOrder(t)
+	e.state(t, o, 2, "courier", "", 77700, "delivery") // повторная ревизия
+	e.consume(t, service.TopicState, map[string]any{"orderId": o, "revision": 2, "orderNumber": "R1-261019-0001",
+		"restaurantId": "r1", "fulfillmentType": "delivery", "customer": map[string]any{"guest": true},
+		"totalAmount": map[string]any{"amount": 77700, "currency": "RUB"}, "paymentMethod": "courier", "paymentStatus": "pending"})
+	if got := statuses(e.events(t, o)); !eq(got, []string{"pending"}) {
+		t.Fatalf("events: %v", got)
+	}
+	// онлайн-заказ и самовывоз с оплатой на месте платёж сами не создают
+	on := e.order(t, "online", "", 1000)
+	pk := uuid.NewString()
+	e.state(t, pk, 1, "courier", "", 1000, "pickup")
+	if len(e.events(t, on)) != 0 || len(e.events(t, pk)) != 0 {
+		t.Fatal("system payment is only for courier_card delivery")
+	}
+}
+
+func TestCourierPaymentSkipsCancelledOrder(t *testing.T) {
+	e := newEnv(t)
+	o := uuid.NewString()
+	e.status(t, o, "cancelled", e.clock.Now()) // статус пришёл раньше state
+	e.state(t, o, 1, "courier", "", 1000, "delivery")
+	if len(e.events(t, o)) != 0 {
+		t.Fatal("no payment for a cancelled order")
+	}
+}
+
+func TestCourierPaymentLivesFourHoursNotTenMinutes(t *testing.T) {
+	e := newEnv(t)
+	o := e.courierOrder(t)
+	_, _ = e.svc.Reconcile(ctx)
+	e.clock.Advance(30 * time.Minute)
+	_, _ = e.svc.Reconcile(ctx)
+	p := e.paymentOf(t, o)
+	if p.Status != domain.StatusPending || e.gw.Calls.Cancel != 0 {
+		t.Fatalf("courier payment must outlive the online TTL: %+v", p)
+	}
+	e.clock.Advance(4 * time.Hour)
+	_, _ = e.svc.Reconcile(ctx)
+	if p = e.paymentOf(t, o); p.Status != domain.StatusDeclined || p.DeclineReason != "expired" {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func (e *env) paymentOf(t *testing.T, order string) domain.Payment {
+	t.Helper()
+	var id string
+	if err := e.pool.QueryRow(ctx, `SELECT id FROM payments WHERE order_id = $1`, order).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.svc.Get(ctx, "", order, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestCourierCardIsNotInitiatedByClient(t *testing.T) {
+	e := newEnv(t)
+	o := e.courierOrder(t)
+	_, err := e.svc.Initiate(ctx, "", o, service.InitiateInput{Method: domain.MethodCourierCard})
+	wantCode(t, err, "PAYMENT_METHOD_NOT_SUPPORTED")
+}

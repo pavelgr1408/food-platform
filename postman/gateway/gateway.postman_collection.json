@@ -1214,6 +1214,50 @@
           ]
         },
         {
+          "name": "вебхук доставки идёт мимо gateway → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/delivery/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "delivery",
+                "status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"code = ROUTE_NOT_FOUND\", () => pm.expect(pm.response.json().code).to.eql(\"ROUTE_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "метод вне таблицы → 404",
           "request": {
             "method": "DELETE",
@@ -1960,6 +2004,144 @@
                   "pm.test(\"application/problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
                   "pm.test(\"code = INVALID_CREDENTIALS\", () => pm.expect(pm.response.json().code).to.eql(\"INVALID_CREDENTIALS\"));",
                   "pm.test(\"X-Request-Id в ответе\", () => pm.expect(pm.response.headers.get(\"X-Request-Id\")).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Доставка через периметр (S7)",
+      "item": [
+        {
+          "name": "доставка: гость, неизвестный заказ → 404 DELIVERY_NOT_FOUND (ответ сервиса, не периметра)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-4000-8000-00000000dead",
+                "delivery"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"отвечает delivery-service, а не gateway\", () => pm.expect(pm.response.json().code).to.eql(\"DELIVERY_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "координаты курьера: гость, неизвестный заказ → 404 DELIVERY_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery/courier-location",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-4000-8000-00000000dead",
+                "delivery",
+                "courier-location"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"code\", () => pm.expect(pm.response.json().code).to.eql(\"DELIVERY_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "доставка: мусорный токен → 401 (не гость)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.jwt"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-4000-8000-00000000dead",
+                "delivery"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "доставка: подмена личности заголовками X-User-* игнорируется",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "someone"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "HQ_STAFF"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orders",
+                "00000000-0000-4000-8000-00000000dead",
+                "delivery"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"статус 404 (личность из заголовков не принимается)\", () => pm.response.to.have.status(404));"
                 ]
               }
             }

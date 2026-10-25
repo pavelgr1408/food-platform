@@ -133,7 +133,7 @@ func TestRestaurantGet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/restaurants/"+rest1:
-			_, _ = w.Write([]byte(`{"id":"` + rest1 + `","name":"x","timezone":"Europe/Moscow","deliveryEnabled":true,"openNow":false,"workingHours":[]}`))
+			_, _ = w.Write([]byte(`{"id":"` + rest1 + `","name":"x","timezone":"Europe/Moscow","deliveryEnabled":true,"openNow":false,"location":{"lat":55.75,"lon":37.61},"deliveryRadiusMeters":3000,"workingHours":[]}`))
 		case strings.HasSuffix(r.URL.Path, "-err"):
 			w.WriteHeader(502)
 		default:
@@ -145,6 +145,9 @@ func TestRestaurantGet(t *testing.T) {
 	info, err := c.Get(context.Background(), rest1)
 	if err != nil || info.Timezone != "Europe/Moscow" || !info.DeliveryEnabled || info.OpenNow {
 		t.Fatalf("%v %+v", err, info)
+	}
+	if !info.HasLocation || info.Lat != 55.75 || info.Lon != 37.61 || info.DeliveryRadiusM != 3000 {
+		t.Fatalf("location and radius must be read: %+v", info)
 	}
 	if _, err := c.Get(context.Background(), "ghost"); !errorsIs(err, clients.ErrNotFound) {
 		t.Fatalf("404: %v", err)

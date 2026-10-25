@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/pavelgr1408/food-platform/pkg/kafka"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/domain"
+	"github.com/pavelgr1408/food-platform/services/payment/internal/store"
 )
 
 // orderStatePayload — нужное нам подмножество orders.state (AsyncAPI OrderState).
@@ -62,7 +64,7 @@ func (s *Service) HandleEvent(ctx context.Context, tx pgx.Tx, ev kafka.Event) er
 		if !changed {
 			s.log.DebugContext(ctx, "stale orders.state ignored", "order_id", p.OrderID, "revision", p.Revision)
 		}
-		return nil
+		return s.startCourierPayment(ctx, tx, p.OrderID)
 	case TopicStatus:
 		var p orderStatusPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -81,4 +83,40 @@ func (s *Service) HandleEvent(ctx context.Context, tx pgx.Tx, ev kafka.Event) er
 		return nil
 	}
 	return fmt.Errorf("unexpected topic %q", ev.Topic)
+}
+
+// startCourierPayment создаёт платёж «картой курьеру» (S7, UC-PAY-03): клиент его не инициирует, платёж заводит
+// система на orders.state заказа с доставкой и способом courier_card. Операция у шлюза создаётся reconciler'ом
+// (вызов вне транзакции, идемпотентно по paymentId), он же публикует orders.payments.link. Уже есть платёж —
+// ничего не делает (повторные revision, перепроигрывание событий).
+func (s *Service) startCourierPayment(ctx context.Context, tx pgx.Tx, orderID string) error {
+	o, err := s.st.GetOrder(ctx, tx, orderID, false)
+	if err != nil {
+		return err
+	}
+	if o.Method != domain.MethodCourierCard || o.Fulfillment != "delivery" {
+		return nil
+	}
+	if st, err := s.st.OrderStatus(ctx, tx, orderID); err != nil || st == domain.OrderCancelled {
+		return err
+	}
+	list, err := s.st.OrderPayments(ctx, tx, orderID)
+	if err != nil || len(list) > 0 {
+		return err
+	}
+	now := s.now()
+	p := domain.Payment{ID: uuid.NewString(), OrderID: orderID, Attempt: 1, Method: domain.MethodCourierCard, Status: domain.StatusPending,
+		Amount: o.Amount, Currency: o.Currency, NextPollAt: &now, CreatedAt: now, UpdatedAt: now}
+	if err := s.st.InsertPayment(ctx, tx, p); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return nil // параллельная попытка уже есть
+		}
+		return err
+	}
+	if err := enqueueStatus(ctx, tx, p); err != nil {
+		return err
+	}
+	s.m.Created.WithLabelValues(string(p.Method)).Inc()
+	s.m.Transitions.WithLabelValues(string(domain.StatusPending)).Inc()
+	return nil
 }

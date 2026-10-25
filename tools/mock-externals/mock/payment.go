@@ -87,6 +87,7 @@ type gwOp struct {
 	Currency  string    `json:"currency"`
 	Seq       int       `json:"seq"`
 	Tender    string    `json:"tender,omitempty"`
+	Manual    bool      `json:"manual,omitempty"` // оплата курьеру: итог только по /_admin/gateway/pay
 	Fiscal    gwFiscal  `json:"fiscalData,omitempty"`
 	Outcome   Outcome   `json:"outcome"`
 	Status    string    `json:"status"`
@@ -188,6 +189,37 @@ func (m *paymentMock) Register(mux *http.ServeMux, env *Env) {
 		m.next = o
 		m.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]string{"next": string(o)})
+	})
+	// Завершить операцию «оплата курьеру»: исход по магической сумме, вебхук — как у обычной операции.
+	mux.HandleFunc("POST /_admin/"+admin+"/pay", func(w http.ResponseWriter, req *http.Request) {
+		m.mu.Lock()
+		op := m.ops[req.URL.Query().Get("id")]
+		if op == nil {
+			m.mu.Unlock()
+			http.Error(w, "unknown operation", http.StatusNotFound)
+			return
+		}
+		if op.Status != "pending" || !op.Manual {
+			st := op.Status
+			m.mu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"status": st}) // повтор: уже завершена
+			return
+		}
+		op.FinalAt = time.Now()
+		m.settleLocked(op)
+		silent := op.Outcome == OutcomeSilent
+		if silent { // «тишина»: деньги приняты, вебхука нет — итог виден только через GET
+			m.payLocked(op)
+		}
+		ev := uuid.NewString()
+		op.LastEvent = ev
+		hooks := m.mode.Webhooks == "on" && !silent
+		st := op.Status
+		m.mu.Unlock()
+		if hooks {
+			go m.deliver(op, ev)
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": st})
 	})
 	mux.HandleFunc("POST /_admin/"+admin+"/reset", func(w http.ResponseWriter, _ *http.Request) {
 		m.mu.Lock()
@@ -303,6 +335,7 @@ func (m *paymentMock) create(w http.ResponseWriter, r *http.Request) {
 		Tender    string  `json:"tender"`
 		Metadata  struct {
 			OrderID string `json:"orderId"`
+			Method  string `json:"method"`
 		} `json:"metadata"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil || in.Amount.Amount <= 0 || in.Amount.Currency == "" || in.Reference == "" {
@@ -341,7 +374,11 @@ func (m *paymentMock) create(w http.ResponseWriter, r *http.Request) {
 		op = &gwOp{ID: fmt.Sprintf("gw_%s", uuid.NewString()[:8]), Key: key, Reference: in.Reference, OrderID: in.Metadata.OrderID,
 			Amount: in.Amount.Amount, Currency: in.Amount.Currency, Seq: m.seq, Tender: in.Tender, Outcome: out, Status: "pending", CreatedAt: now, FinalAt: now.Add(m.env.Delay())}
 		m.ops[op.ID], m.byKey[key] = op, op
-		if out != OutcomeSilent && m.mode.Webhooks == "on" {
+		if in.Metadata.Method == "courier_card" {
+			// оплата курьеру (UC-PAY-03): клиент платит по ссылке при вручении — итог не наступает сам,
+			// его запускает модуль courier (или админка) через /_admin/gateway/pay
+			op.Manual, op.FinalAt = true, now.Add(100*365*24*time.Hour)
+		} else if out != OutcomeSilent && m.mode.Webhooks == "on" {
 			ev := uuid.NewString()
 			op.LastEvent = ev
 			m.env.After(m.ctx, func() { m.deliver(op, ev) })

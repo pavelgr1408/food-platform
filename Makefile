@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check
+.PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -73,10 +73,13 @@ docker-build: ## Образ: make docker-build SERVICE=auth [TAG=dev]; для н
 newman: ## Postman-коллекция сервиса: make newman SERVICE=auth [BASE_URL=http://arch.homework]
 	@test -n "$(SERVICE)" || { echo "SERVICE is required"; exit 2; }
 	npx -y newman@6 run postman/$(SERVICE)/$(SERVICE).postman_collection.json $(if $(BASE_URL),--env-var baseUrl=$(BASE_URL))
+newman-e2e-gateway: ## S7: сквозной e2e через gateway с JWT сотрудника (стенд: AUTH_MODE=jwks make up SLICE="auth gateway restaurant menu orders payment delivery mock-externals")
+	@T=$$(curl -fsS -X POST localhost:8080/auth/login -H 'Content-Type: application/json' -d '{"phone":"+79993333333","password":"staff123"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["accessToken"])') && \
+	  npx -y newman@6 run postman/e2e/e2e.postman_collection.json -e postman/e2e/gateway.postman_environment.json --env-var staffToken=$$T
 newman-staff-timeout: ## S6: not_received по таймеру (orders запущен с NOT_RECEIVED_AFTER=10s JANITOR_INTERVAL=2s, см. docs/dev.md)
 	npx -y newman@6 run postman/staff/not-received.postman_collection.json
 SCENARIO     ?= catalog
-contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog, orders, payment или staff (см. docs/dev.md)
+contract-check: pydeps-check ## Живые ответы против OpenAPI: сценарий catalog, orders, payment, staff или delivery (см. docs/dev.md)
 	$(PYTHON) tools/contract-check/check.py $(SCENARIO)
 contract-check-ci: pydeps-check ## contract-check без Docker: сам собирает и запускает restaurant/menu/orders (нужен Postgres на :5432)
 	PYTHON=$(PYTHON) tools/contract-check/ci.sh
@@ -104,7 +107,7 @@ helm-lint: validate-values ## helm lint + template для каждого values-
 k8s-dev-secrets: ## Secret'ы dev-стенда в NS (БД сервисов + JWT-ключи auth); в git не попадают
 	kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f -
 	$(MAKE) keys SERVICE=auth
-	@for svc in auth restaurant menu orders payment; do \
+	@for svc in auth restaurant menu orders payment delivery; do \
 	  kubectl -n $(NS) create secret generic $$svc-secrets \
 	    --from-literal=DATABASE_URL="postgres://$$svc:$$svc@postgres:5432/$$svc?sslmode=disable" --dry-run=client -o yaml | kubectl apply -f - || exit 1; done
 	kubectl -n $(NS) create secret generic auth-jwt \

@@ -380,6 +380,18 @@ operations:
     messages:
       - $ref: '#/channels/ordersStatus/messages/orderStatus'
 
+  receiveOrderStatusOnDelivery:
+    action: receive
+    title: delivery-service получает статус заказа
+    summary: orders.status → delivery-service (отмена заказа снимает заявку у курьерской системы)
+    channel:
+      $ref: '#/channels/ordersStatus'
+    tags:
+      - name: service:delivery-service
+      - name: UC-RCV-02
+    messages:
+      - $ref: '#/channels/ordersStatus/messages/orderStatus'
+
   receiveOrderStatusOnPayment:
     action: receive
     title: payment-service получает статус заказа

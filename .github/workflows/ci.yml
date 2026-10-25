@@ -17,8 +17,14 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+      TEST_REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,7 +37,7 @@ jobs:
       - run: go vet ./...
       - uses: dominikh/staticcheck-action@v1.3.1
         with: { version: "2025.1.1", install-go: false }
-      - name: tests (race, with Postgres)
+      - name: tests (race, with Postgres and Redis)
         run: go test -race -count=1 ./...
       - name: service template generates a buildable service
         run: make check-template

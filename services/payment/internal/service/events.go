@@ -14,6 +14,8 @@ const (
 	TopicStatus        = "orders.status"
 	TopicPaymentStatus = "orders.payments.status"
 	TypePaymentStatus  = "orders.payments.status.v1"
+	TopicPaymentLink   = "orders.payments.link"
+	TypePaymentLink    = "orders.payments.link.v1"
 )
 
 type moneyEvent struct {
@@ -56,6 +58,26 @@ func statusEvent(p domain.Payment) PaymentStatusEvent {
 // enqueueStatus кладёт orders.payments.status в outbox (в той же транзакции, что и смена статуса).
 func enqueueStatus(ctx context.Context, tx kafka.Execer, p domain.Payment) error {
 	ev, err := kafka.NewEvent(ctx, TopicPaymentStatus, TypePaymentStatus, p.OrderID, statusEvent(p))
+	if err != nil {
+		return err
+	}
+	return kafka.Enqueue(ctx, tx, ev)
+}
+
+// PaymentLinkEvent — payload orders.payments.link (AsyncAPI PaymentLink): ссылка на оплату курьеру.
+type PaymentLinkEvent struct {
+	OrderID    string     `json:"orderId"`
+	PaymentID  string     `json:"paymentId"`
+	PaymentURL string     `json:"paymentUrl"`
+	Amount     moneyEvent `json:"amount"`
+	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+}
+
+// enqueueLink кладёт orders.payments.link в outbox (в той же транзакции, что и запись операции шлюза).
+func enqueueLink(ctx context.Context, tx kafka.Execer, p domain.Payment, expiresAt time.Time) error {
+	t := expiresAt.UTC()
+	ev, err := kafka.NewEvent(ctx, TopicPaymentLink, TypePaymentLink, p.OrderID, PaymentLinkEvent{
+		OrderID: p.OrderID, PaymentID: p.ID, PaymentURL: p.PaymentURL, Amount: moneyEvent{p.Amount, p.Currency}, ExpiresAt: &t})
 	if err != nil {
 		return err
 	}

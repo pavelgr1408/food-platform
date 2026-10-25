@@ -110,6 +110,13 @@ func (s *Service) HandleDishStatus(ctx context.Context, tx pgx.Tx, ev kafka.Even
 	if err := s.st.SetProductionUpdatedAt(ctx, tx, o.ID, at); err != nil {
 		return err
 	}
+	if len(steps) > 0 && steps[len(steps)-1] == domain.StatusReady {
+		// курьер ищется параллельно с приготовлением: если он уже забрал/доставил (событие пришло раньше
+		// готовности), заказ догоняет доставку в этой же транзакции (S7)
+		if err := s.advanceDelivery(ctx, tx, o.ID); err != nil {
+			return err
+		}
+	}
 	s.productionEvent("dish_status", "applied")
 	return nil
 }

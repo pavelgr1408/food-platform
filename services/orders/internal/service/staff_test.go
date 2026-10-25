@@ -190,7 +190,7 @@ func TestIssueOnlyPickupAndNotAfterCancel(t *testing.T) {
 	e := newEnv(t)
 	// доставка: выдаёт курьер (S7), не касса
 	v := e.cartWith(t, "staff-1")
-	e.svc.SetFulfillment(ctx, "staff-1", v.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: domain.Address{Raw: "Москва, Тверская 1"}})
+	e.svc.SetFulfillment(ctx, "staff-1", v.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: nearAddr("Москва, Тверская 1")})
 	d, err := e.svc.CreateOrder(ctx, "staff-1", service.CreateOrderInput{CartID: v.Cart.ID, PaymentMethod: domain.PayCourierCard,
 		Channel: "staff_fax", Actor: staff1, Contact: domain.Contact{Phone: "+79995550101"}}, nil)
 	if err != nil {

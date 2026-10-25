@@ -40,6 +40,12 @@ func newEnv(t *testing.T) *env {
 
 var ctx = context.Background()
 
+// nearAddr — адрес доставки в радиусе ресторана 1 (≈1,3 км от него).
+func nearAddr(raw string) domain.Address {
+	lat, lon := 55.7640, 37.6050
+	return domain.Address{Raw: raw, Lat: &lat, Lon: &lon}
+}
+
 func code(t *testing.T, err error) string {
 	t.Helper()
 	var he *httpx.Error
@@ -779,7 +785,7 @@ func TestPickupSlot(t *testing.T) {
 
 	// доставке слот не нужен
 	cv := e.cartWith(t, "")
-	e.svc.SetFulfillment(ctx, "", cv.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: domain.Address{Raw: "ул. Тверская, 1"}})
+	e.svc.SetFulfillment(ctx, "", cv.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: nearAddr("ул. Тверская, 1")})
 	d, err := e.svc.CreateOrder(ctx, "", service.CreateOrderInput{CartID: cv.Cart.ID, PaymentMethod: domain.PayCourierCard}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -796,7 +802,7 @@ func TestEtaIsApproximate(t *testing.T) {
 		t.Fatalf("pickup eta: %v %+v", err, eta)
 	}
 	cv := e.cartWith(t, "")
-	e.svc.SetFulfillment(ctx, "", cv.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: domain.Address{Raw: "ул. Тверская, 1"}})
+	e.svc.SetFulfillment(ctx, "", cv.Cart.ID, service.FulfillmentInput{Type: domain.FulfillmentDelivery, Address: nearAddr("ул. Тверская, 1")})
 	d, _ := e.svc.CreateOrder(ctx, "", service.CreateOrderInput{CartID: cv.Cart.ID, PaymentMethod: domain.PayCourierCard}, nil)
 	de, _ := e.svc.GetEta(ctx, "", d.ID)
 	if de.DeliveryAt == nil || !de.Approximate || de.EstimateMinutes != 50 {

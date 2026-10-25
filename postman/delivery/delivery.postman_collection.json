@@ -1,0 +1,322 @@
+{
+  "info": {
+    "name": "delivery-service",
+    "description": "Проверки delivery-service напрямую (S7): probes, 404 без раскрытия, подпись вебхуков курьерской системы. Сквозной сценарий с курьером, Redis и оплатой — postman/e2e (разделы 8–10).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8087"
+    },
+    {
+      "key": "webhookSecret",
+      "value": "dev-courier-webhook-secret"
+    }
+  ],
+  "item": [
+    {
+      "name": "liveness",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('status OK', () => pm.expect(pm.response.json().status).to.eql('OK'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "readiness",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/actuator/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "getDeliveryInfo: неизвестный заказ → 404 DELIVERY_NOT_FOUND",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));",
+              "pm.test('problem+json', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('DELIVERY_NOT_FOUND'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "getDeliveryInfo: не UUID → 404, существование не раскрывается",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/orders/not-a-uuid/delivery"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));",
+              "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('DELIVERY_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "getCourierLocation: неизвестный заказ → 404",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery/courier-location"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));",
+              "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('DELIVERY_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "вебхук без подписи → 401 INVALID_SIGNATURE",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/webhooks/delivery/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"ev-nosig\",\n  \"orderId\": \"00000000-0000-4000-8000-00000000dead\",\n  \"status\": \"assigned\",\n  \"timestamp\": \"2026-10-25T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));",
+              "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_SIGNATURE'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "вебхук с неверной подписью → 401 INVALID_SIGNATURE",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Signature",
+            "value": "t=1,v1=deadbeef"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/webhooks/delivery/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"ev-badsig\",\n  \"orderId\": \"00000000-0000-4000-8000-00000000dead\",\n  \"status\": \"assigned\",\n  \"timestamp\": \"2026-10-25T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', () => pm.response.to.have.status(401));",
+              "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_SIGNATURE'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "вебхук с подписью, доставка неизвестна → 404 DELIVERY_NOT_FOUND",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/webhooks/delivery/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"ev-unknown\",\n  \"orderId\": \"00000000-0000-4000-8000-00000000dead\",\n  \"status\": \"assigned\",\n  \"timestamp\": \"2026-10-25T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const secret = pm.collectionVariables.get('webhookSecret');",
+              "const body = pm.request.body.raw; const t = Math.floor(Date.now() / 1000);",
+              "const mac = CryptoJS.HmacSHA256(t + '.' + body, secret).toString(CryptoJS.enc.Hex);",
+              "pm.request.headers.upsert({ key: 'X-Signature', value: 't=' + t + ',v1=' + mac });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', () => pm.response.to.have.status(404));",
+              "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('DELIVERY_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "вебхук с подписью, неизвестный статус → 400",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/webhooks/delivery/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"ev-bad-status\",\n  \"orderId\": \"00000000-0000-4000-8000-00000000dead\",\n  \"status\": \"teleported\",\n  \"timestamp\": \"2026-10-25T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const secret = pm.collectionVariables.get('webhookSecret');",
+              "const body = pm.request.body.raw; const t = Math.floor(Date.now() / 1000);",
+              "const mac = CryptoJS.HmacSHA256(t + '.' + body, secret).toString(CryptoJS.enc.Hex);",
+              "pm.request.headers.upsert({ key: 'X-Signature', value: 't=' + t + ',v1=' + mac });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "вебхук с подписью, пустой eventId → 400",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/webhooks/delivery/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"\",\n  \"orderId\": \"00000000-0000-4000-8000-00000000dead\",\n  \"status\": \"assigned\",\n  \"timestamp\": \"2026-10-25T12:00:00Z\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const secret = pm.collectionVariables.get('webhookSecret');",
+              "const body = pm.request.body.raw; const t = Math.floor(Date.now() / 1000);",
+              "const mac = CryptoJS.HmacSHA256(t + '.' + body, secret).toString(CryptoJS.enc.Hex);",
+              "pm.request.headers.upsert({ key: 'X-Signature', value: 't=' + t + ',v1=' + mac });"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', () => pm.response.to.have.status(400));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "метрики: delivery_active и RED",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/metrics"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', () => pm.response.to.have.status(200));",
+              "pm.test('метрики сервиса', () => { const t = pm.response.text(); pm.expect(t).to.include('delivery_active'); pm.expect(t).to.include('delivery_redis_up'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

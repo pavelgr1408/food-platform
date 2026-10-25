@@ -30,6 +30,7 @@ type Config struct {
 	GatewayTimeout   time.Duration // потолок вызова шлюза из запроса пользователя
 	WebhookWait      time.Duration // сколько ждать вебхук, прежде чем опросить шлюз
 	PendingExpiry    time.Duration // неоплаченная попытка старше — отменяется у шлюза (declined, expired)
+	CourierExpiry    time.Duration // то же для оплаты курьеру (S7): доставка длится дольше онлайн-оплаты
 	PollMin, PollMax time.Duration // backoff опроса шлюза
 	PollLease        time.Duration // «аренда» платежа reconciler-ом на время вызова шлюза
 	ReconcileBatch   int
@@ -45,6 +46,7 @@ func (c *Config) defaults() {
 	def(&c.GatewayTimeout, 5*time.Second)
 	def(&c.WebhookWait, 10*time.Second)
 	def(&c.PendingExpiry, 10*time.Minute)
+	def(&c.CourierExpiry, 4*time.Hour)
 	def(&c.PollMin, 5*time.Second)
 	def(&c.PollMax, 5*time.Minute)
 	def(&c.PollLease, 30*time.Second)
@@ -120,7 +122,7 @@ var (
 	errPaymentNotFound = httpx.NewError(http.StatusNotFound, "PAYMENT_NOT_FOUND", "payment not found")
 	errNotPayable      = httpx.NewError(http.StatusConflict, "ORDER_NOT_PAYABLE", "the order is cancelled or does not await online payment")
 	errNotAllowed      = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_ALLOWED", "the method differs from the payment method of the order")
-	errNotSupported    = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_SUPPORTED", "only online_card payments can be initiated here (pos — POST /orders/{id}/payments/pos by staff, courier_card — S7)")
+	errNotSupported    = httpx.NewError(http.StatusUnprocessableEntity, "PAYMENT_METHOD_NOT_SUPPORTED", "only online_card payments can be initiated here (pos — POST /orders/{id}/payments/pos by staff, courier_card is created by the system)")
 	errPOSUnavailable  = httpx.NewError(http.StatusServiceUnavailable, "POS_UNAVAILABLE", "the POS integration is not configured")
 	errDeclined        = httpx.NewError(http.StatusPaymentRequired, "PAYMENT_DECLINED", "the payment gateway refused to create the payment, try again")
 	errAmountMismatch  = httpx.NewError(http.StatusUnprocessableEntity, "AMOUNT_MISMATCH", "amount in the notification differs from the payment amount")

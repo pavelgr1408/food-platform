@@ -36,6 +36,7 @@ type CreateRequest struct {
 	ReturnURL   string
 	Description string
 	Tender      string // card | cash — только касса (pos)
+	Method      string // online_card | courier_card: способ оплаты (шлюз ведёт оплату курьеру отдельно, S7)
 }
 
 // Created — созданная у шлюза операция.
@@ -114,6 +115,7 @@ type createDTO struct {
 
 type metaDTO struct {
 	OrderID string `json:"orderId"`
+	Method  string `json:"method,omitempty"`
 }
 
 type paymentDTO struct {
@@ -179,7 +181,7 @@ func (c *Client) do(ctx context.Context, method, path, key string, body any) (pa
 // Create создаёт оплату (идемпотентно по req.Key).
 func (c *Client) Create(ctx context.Context, r CreateRequest) (Created, error) {
 	d, err := c.do(ctx, http.MethodPost, "/v1/payments", r.Key, createDTO{
-		Amount: moneyDTO{r.Amount, r.Currency}, Reference: r.Reference, ReturnURL: r.ReturnURL, Description: r.Description, Metadata: metaDTO{OrderID: r.OrderID}, Tender: r.Tender})
+		Amount: moneyDTO{r.Amount, r.Currency}, Reference: r.Reference, ReturnURL: r.ReturnURL, Description: r.Description, Metadata: metaDTO{OrderID: r.OrderID, Method: r.Method}, Tender: r.Tender})
 	if err != nil {
 		return Created{}, err
 	}

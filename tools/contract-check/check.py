@@ -6,6 +6,7 @@
   .dev/venv/bin/python tools/contract-check/check.py orders  [... --orders http://localhost:8084]   # нужен срез restaurant + menu + orders
   .dev/venv/bin/python tools/contract-check/check.py payment [... --payment http://localhost:8085]  # + payment и mock шлюза (:9091)
   .dev/venv/bin/python tools/contract-check/check.py staff   [... --orders http://localhost:8084 --payment http://localhost:8085]  # S6: + mock шлюза и кассы (:9091, :9093)
+  .dev/venv/bin/python tools/contract-check/check.py delivery [... --delivery http://localhost:8087]  # S7: + orders, payment, mock шлюза и курьера (:9091, :9094)
   .dev/venv/bin/python tools/contract-check/check.py auth    [... --auth http://localhost:8081]     # auth (SEED_ON_START=true)
   .dev/venv/bin/python tools/contract-check/check.py gateway [... --gateway http://localhost:8080]  # ответы периметра (Problem) через gateway
 
@@ -251,6 +252,54 @@ def payment(r, m, o, p):
     # вебхуки описаны в разделе webhooks контракта (не paths): HMAC и дубликаты проверяет postman/payment
 
 
+def delivery(r, m, o, p, d):
+    """Доставка (S7): живые ответы delivery против delivery.yaml. На живом стенде заказ с доставкой проходит онлайн-оплату и
+    ждёт назначения курьера (нужны restaurant, menu, orders, payment, delivery, mock шлюза и курьера). Без Kafka (CI)
+    доставки засеваются в БД delivery скриптом ci.sh: CC_DELIVERY_ASSIGNED / CC_DELIVERY_DELIVERED = <uuid заказа>."""
+    import os, time
+    S = "delivery.yaml"
+    run = str(int(time.time() * 1000))
+    assigned, delivered = os.environ.get("CC_DELIVERY_ASSIGNED"), os.environ.get("CC_DELIVERY_DELIVERED")
+    if not assigned:
+        R4 = "a1000000-0000-4000-8000-000000000004"
+        menu = json.loads(urllib.request.urlopen(m + f"/restaurants/{R4}/menu").read())
+        burger = next(i for c in menu["categories"] for i in c["items"] if i["name"] == "BLT Классик")
+        cart = check("orders.yaml", "POST", o, "/carts", 201, {"restaurantId": R4, "guest": True, "contact": {"phone": "+79990000097"}}, label="[подготовка] createCart")
+        check("orders.yaml", "PUT", o, f"/carts/{cart['id']}/items", 200, {"items": [{"menuItemId": burger["id"], "quantity": 1}]}, label="[подготовка] updateCartItems")
+        check("orders.yaml", "PUT", o, f"/carts/{cart['id']}/fulfillment", 200,
+              {"type": "delivery", "address": {"raw": "Невский пр., 30", "location": {"lat": 59.94, "lon": 30.33}}}, label="[подготовка] setCartFulfillment (доставка)")
+        order = check("orders.yaml", "POST", o, "/orders", 201, {"cartId": cart["id"], "paymentMethod": "online_card"}, headers={"Idempotency-Key": "dc-" + run}, label="[подготовка] createOrder")
+        assigned = order["id"]
+        for _ in range(30):  # ждём orders.state в payment
+            try:
+                urllib.request.urlopen(p + f"/orders/{assigned}/payment-methods")
+                break
+            except urllib.error.HTTPError:
+                time.sleep(0.5)
+        pay = check("payment.yaml", "POST", p, f"/orders/{assigned}/payments", 201, {"method": "online_card"}, headers={"Idempotency-Key": "dc-" + run}, label="[подготовка] initiatePayment")
+        check("delivery.yaml", "GET", d, f"/orders/{assigned}/delivery", 404, label="getDeliveryInfo: неоплаченный заказ → 404")
+        for _ in range(60):  # оплата → orders.state(paid) → заявка → курьер назначен
+            try:
+                st = json.loads(urllib.request.urlopen(d + f"/orders/{assigned}/delivery").read())["status"]
+                if st in ("assigned", "picked_up", "en_route"):
+                    break
+            except urllib.error.HTTPError:
+                pass
+            time.sleep(0.5)
+    ghost = "a1000000-0000-4000-8000-0000000000ff"
+    check(S, "GET", d, f"/orders/{ghost}/delivery", 404, label="getDeliveryInfo: заказа нет → 404 DELIVERY_NOT_FOUND")
+    info = check(S, "GET", d, f"/orders/{assigned}/delivery", 200, label="getDeliveryInfo: курьер назначен")
+    if info and not info.get("courier"):
+        FAILS.append("у активной доставки нет контактов курьера"); print("FAIL у активной доставки нет контактов курьера")
+    check(S, "GET", d, f"/orders/{ghost}/delivery/courier-location", 404, label="getCourierLocation: заказа нет → 404")
+    if delivered:
+        done = check(S, "GET", d, f"/orders/{delivered}/delivery", 200, label="getDeliveryInfo: доставлено")
+        if done and ("courier" in done or "hint" in done):
+            FAILS.append("после вручения отданы контакты курьера"); print("FAIL после вручения отданы контакты курьера")
+        check(S, "GET", d, f"/orders/{delivered}/delivery/courier-location", 404, label="getCourierLocation: доставка завершена → 404 LOCATION_NOT_AVAILABLE")
+    # вебхук курьерской системы описан в разделе webhooks контракта (не paths): подпись и дубликаты проверяет postman/delivery
+
+
 def staff(r, m, o, p):
     """Персонал (S6): живые ответы orders/payment против контрактов. Нужен срез restaurant + menu + orders + payment + mock шлюза и кассы.
     С Kafka заказ доезжает до payment событием orders.state и проверяется ещё и возврат при отмене. Без Kafka (CI)
@@ -465,13 +514,14 @@ def gateway(g):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["catalog", "orders", "payment", "staff", "auth", "gateway"])
+    ap.add_argument("scenario", choices=["catalog", "orders", "payment", "staff", "delivery", "auth", "gateway"])
     ap.add_argument("--auth", default="http://localhost:8081")
     ap.add_argument("--gateway", default="http://localhost:8080")
     ap.add_argument("--restaurant", default="http://localhost:8082")
     ap.add_argument("--menu", default="http://localhost:8083")
     ap.add_argument("--orders", default="http://localhost:8084")
     ap.add_argument("--payment", default="http://localhost:8085")
+    ap.add_argument("--delivery", default="http://localhost:8087")
     a = ap.parse_args()
     if a.scenario == "catalog":
         catalog(a.restaurant, a.menu)
@@ -483,6 +533,8 @@ if __name__ == "__main__":
         orders(a.restaurant, a.menu, a.orders)
     elif a.scenario == "staff":
         staff(a.restaurant, a.menu, a.orders, a.payment)
+    elif a.scenario == "delivery":
+        delivery(a.restaurant, a.menu, a.orders, a.payment, a.delivery)
     else:
         payment(a.restaurant, a.menu, a.orders, a.payment)
     print(f"\nпровалов: {len(FAILS)}")

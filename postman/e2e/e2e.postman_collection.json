@@ -32,6 +32,22 @@
     {
       "key": "restaurantId",
       "value": "a1000000-0000-4000-8000-000000000004"
+    },
+    {
+      "key": "deliveryUrl",
+      "value": "http://localhost:8087"
+    },
+    {
+      "key": "courierUrl",
+      "value": "http://localhost:9094"
+    },
+    {
+      "key": "ordersDirectUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "paymentDirectUrl",
+      "value": "http://localhost:8085"
     }
   ],
   "item": [
@@ -149,7 +165,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{ordersUrl}}/actuator/health"
+            "url": "{{ordersDirectUrl}}/actuator/health"
           },
           "event": [
             {
@@ -169,7 +185,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{paymentUrl}}/actuator/health"
+            "url": "{{paymentDirectUrl}}/actuator/health"
           },
           "event": [
             {
@@ -1500,7 +1516,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{ordersUrl}}/metrics"
+            "url": "{{ordersDirectUrl}}/metrics"
           },
           "event": [
             {
@@ -1586,6 +1602,1286 @@
       ]
     },
     {
+      "name": "8. S7: доставка курьером, онлайн-оплата (UC-RCV-02)",
+      "item": [
+        {
+          "name": "mock курьера: сброс",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('eCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{eCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: setCartFulfillment — без координат → 422 ADDRESS_LOCATION_REQUIRED",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{eCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Невский пр., 30\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ADDRESS_LOCATION_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: setCartFulfillment — вне зоны → 422 ADDRESS_OUT_OF_ZONE (долг 10)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{eCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Санкт-Петербург, Приморск\",\n    \"location\": {\n      \"lat\": 60.35,\n      \"lon\": 28.6\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "const p = pm.response.json();",
+                  "pm.test('code и подсказка самовывоза', () => { pm.expect(p.code).to.eql('ADDRESS_OUT_OF_ZONE'); pm.expect(p.hint).to.eql('pickup'); });",
+                  "pm.test('расстояние больше радиуса ресторана', () => { pm.expect(p.radiusMeters).to.eql(4000); pm.expect(p.distanceMeters).to.be.above(p.radiusMeters); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: setCartFulfillment — доставка в зоне",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{eCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Санкт-Петербург, Невский пр., 30\",\n    \"location\": {\n      \"lat\": 59.94,\n      \"lon\": 30.33\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('адрес с координатами сохранён', () => pm.expect(pm.response.json().fulfillment.address.location.lat).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: createOrder (online_card)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{eKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{eCart}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('eKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('eOrder', o.id);",
+                  "pm.test('сумма — целые копейки', () => { pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.total.amount).to.eql(47800); });",
+                  "pm.test('доставка', () => pm.expect(o.fulfillment.type).to.eql('delivery'));",
+                  "pm.test('заказ ждёт оплаты', () => pm.expect(o.status).to.eql('pending_payment'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: delivery до оплаты → 404 DELIVERY_NOT_FOUND (неоплаченный заказ не берут)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('DELIVERY_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{eOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_6aa93c'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (code === 200);",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"payment получил заказ\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: initiatePayment → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{eKey}}-pay"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{paymentUrl}}/orders/{{eOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('ePayId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: getPayment → paid (вебхук шлюза)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{eOrder}}/payments/{{ePayId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_5e80f7'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"платёж оплачен по вебхуку шлюза\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: getDeliveryInfo → курьер назначен",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_383549'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (code === 200 && ['assigned','picked_up','en_route'].includes(j.status) && !!(j.courier && j.courier.name));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"курьер назначен, контакты видны\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: orders — доставка в заказе (orders.delivery.status)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{eOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_295a16'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (!!(j.delivery && ['assigned','picked_up','en_route'].includes(j.delivery.status)));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"orders знает статус доставки\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: ждём координаты курьера (пулинг из Redis)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery/courier-location"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_76fd6c'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (code === 200 && typeof j.location.lat === 'number' && typeof j.location.lon === 'number');",
+                  "if (!done && n < 80) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"координаты курьера получены из Redis\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: ждём delivered",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_03eafd'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'delivered');",
+                  "if (!done && n < 80) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"доставка завершена\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: после вручения контакты курьера скрыты (PII)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test('без courier и hint', () => { pm.expect(d.courier).to.be.undefined; pm.expect(d.hint).to.be.undefined; pm.expect(d.status).to.eql('delivered'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: orders — заказ закрыт после вручения и оплаты",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{eOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_718843'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'closed');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ closed\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: orders — итоговое состояние",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{eOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const o = pm.response.json();",
+                  "pm.test('оплачен, доставка delivered', () => { pm.expect(o.paymentStatus).to.eql('paid'); pm.expect(o.delivery.status).to.eql('delivered'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: координаты после вручения → 404 LOCATION_NOT_AVAILABLE",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{eOrder}}/delivery/courier-location"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('LOCATION_NOT_AVAILABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: самовывоз и чужой заказ: delivery 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/00000000-0000-4000-8000-00000000dead/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: mock курьера — ровно одна заявка на заказ",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courierUrl}}/_inspect/courier"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const mine = pm.response.json().deliveries.filter(d => d.orderId === pm.collectionVariables.get('eOrder'));",
+                  "pm.test('одна заявка, статус delivered', () => { pm.expect(mine.length).to.eql(1); pm.expect(mine[0].status).to.eql('delivered'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. S7: оплата курьеру картой (UC-PAY-03)",
+      "item": [
+        {
+          "name": "mock курьера: сброс",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock шлюза: сброс операций",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{mockUrl}}/_admin/gateway/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('fCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{fCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: setCartFulfillment — доставка в зоне",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{fCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Санкт-Петербург, Невский пр., 30\",\n    \"location\": {\n      \"lat\": 59.94,\n      \"lon\": 30.33\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('адрес с координатами сохранён', () => pm.expect(pm.response.json().fulfillment.address.location.lat).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: createOrder (courier_card)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{fKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{fCart}}\",\n  \"paymentMethod\": \"courier_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('fKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('fOrder', o.id);",
+                  "pm.test('сумма — целые копейки', () => { pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.total.amount).to.eql(47800); });",
+                  "pm.test('доставка', () => pm.expect(o.fulfillment.type).to.eql('delivery'));",
+                  "pm.test('оплата курьеру: заказ принят сразу (ADR-10)', () => { pm.expect(o.status).to.eql('accepted'); pm.expect(o.paymentStatus).to.eql('pending'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: delivery взял заказ без предоплаты и ждёт ссылку/курьера",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{fOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_59a0fe'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (code === 200 && j.payOnDelivery === true);",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"доставка с оплатой курьеру (payOnDelivery)\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: mock курьера получил платёжную ссылку (orders.payments.link)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courierUrl}}/_inspect/courier"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_7fc843'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = ((j.deliveries || []).some(d => d.orderId === pm.collectionVariables.get('fOrder') && !!d.paymentUrl));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"ссылка на оплату передана курьерской системе\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: ждём delivered",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{fOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_b3f5c8'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'delivered');",
+                  "if (!done && n < 80) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"доставка завершена\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: orders — оплачен курьеру и закрыт (деньги подтвердил шлюз)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{fOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_6f04a4'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'closed' && j.paymentStatus === 'paid');",
+                  "if (!done && n < 80) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ closed и paid\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: mock шлюза — одна операция, оплачена",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mockUrl}}/_inspect/payments"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const ops = pm.response.json().operations.filter(o => o.orderId === pm.collectionVariables.get('fOrder'));",
+                  "pm.test('одна операция, paid, 47800 коп.', () => { pm.expect(ops.length).to.eql(1); pm.expect(ops[0].status).to.eql('paid'); pm.expect(ops[0].amount).to.eql(47800); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. S7: E2 — нет курьера, самовывоз вместо доставки",
+      "item": [
+        {
+          "name": "mock курьера: сброс",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock курьера: следующая заявка без курьера",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/next?outcome=nocourier"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{gCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: setCartFulfillment — доставка в зоне",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{gCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"delivery\",\n  \"address\": {\n    \"raw\": \"Санкт-Петербург, Невский пр., 30\",\n    \"location\": {\n      \"lat\": 59.94,\n      \"lon\": 30.33\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('адрес с координатами сохранён', () => pm.expect(pm.response.json().fulfillment.address.location.lat).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: createOrder (online_card)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{gKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{gCart}}\",\n  \"paymentMethod\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('gKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('gOrder', o.id);",
+                  "pm.test('сумма — целые копейки', () => { pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.total.amount).to.eql(47800); });",
+                  "pm.test('доставка', () => pm.expect(o.fulfillment.type).to.eql('delivery'));",
+                  "pm.test('заказ ждёт оплаты', () => pm.expect(o.status).to.eql('pending_payment'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: ждём orders.state в payment (payment-methods)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{gOrder}}/payment-methods"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_39773f'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (code === 200);",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"payment получил заказ\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: initiatePayment → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{gKey}}-pay"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{paymentUrl}}/orders/{{gOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gPayId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: getPayment → paid (вебхук шлюза)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{paymentUrl}}/orders/{{gOrder}}/payments/{{gPayId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_54fd1a'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'paid');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"платёж оплачен по вебхуку шлюза\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: заявка создана, курьера нет (searching)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courierUrl}}/_inspect/courier"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_fc4c2c'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = ((j.deliveries || []).some(d => d.orderId === pm.collectionVariables.get('gOrder') && d.status === 'searching'));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заявка в searching\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: mock курьера — id заявки",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{courierUrl}}/_inspect/courier"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().deliveries.find(x => x.orderId === pm.collectionVariables.get('gOrder'));",
+                  "pm.expect(d, 'заявка не найдена').to.exist; pm.collectionVariables.set('gCourierJob', d.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: mock курьера — «курьера не нашлось»",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/advance?id={{gCourierJob}}&status=failed"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: getDeliveryInfo → failed/no_courier, подсказка самовывоза (E2)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{deliveryUrl}}/orders/{{gOrder}}/delivery"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_25402a'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'failed' && j.failReason === 'no_courier' && j.hint === 'pickup');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"failed/no_courier, hint=pickup\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: заказ готов и не отменён (ждёт, пока клиент заберёт)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{gOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_950ad1'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'ready' && !!j.delivery && j.delivery.hint === 'pickup' && j.delivery.failReason === 'no_courier');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"orders: ready, delivery.hint=pickup\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: markOrderIssued — сотрудник выдаёт заказ клиенту (самовывоз после E2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "e2e-staff"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders/{{gOrder}}/issuance"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// через gateway (jwks) токен сотрудника задаёт раннер (staffToken); напрямую (dev) личность берётся из X-User-*",
+                  "const t = pm.collectionVariables.get('staffToken') || pm.environment.get('staffToken');",
+                  "if (t) { ['X-User-Id', 'X-User-Roles', 'X-Restaurant-Ids'].forEach(h => pm.request.headers.remove(h)); pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "g: заказ закрыт",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{gOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables;",
+                  "const k = 'poll_38f1fc'; const n = Number(cv.get(k) || 0);",
+                  "let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const code = pm.response.code;",
+                  "const done = (j.status === 'closed');",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); }",
+                  "else { cv.unset(k); pm.test(\"заказ closed после выдачи\", () => pm.expect(done, 'не дождались: ' + pm.response.text()).to.be.true); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "7. Метрики и восстановление",
       "item": [
         {
@@ -1593,7 +2889,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{ordersUrl}}/metrics"
+            "url": "{{ordersDirectUrl}}/metrics"
           },
           "event": [
             {
@@ -1645,6 +2941,25 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock курьера: вернуть настройки по умолчанию",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{courierUrl}}/_admin/courier/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
                 ]
               }
             }

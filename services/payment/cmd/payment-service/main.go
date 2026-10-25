@@ -107,7 +107,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	}
 
 	svc = service.New(service.Deps{Pool: pool, Gateway: gw, POS: posGW, Waker: waker, Log: log, Metrics: m,
-		Config: service.Config{GatewayTimeout: cfg.GatewayTimeout, WebhookWait: cfg.WebhookWait, PendingExpiry: cfg.PendingExpiry,
+		Config: service.Config{GatewayTimeout: cfg.GatewayTimeout, WebhookWait: cfg.WebhookWait, PendingExpiry: cfg.PendingExpiry, CourierExpiry: cfg.CourierExpiry,
 			PollMin: cfg.PollMin, PollMax: cfg.PollMax, DefaultReturnURL: cfg.DefaultReturnURL}})
 
 	if len(cfg.KafkaBrokers) > 0 {
