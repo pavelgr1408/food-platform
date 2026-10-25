@@ -1,0 +1,26 @@
+services:
+  loyalty:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        SRC: services/loyalty
+        TARGET: ./services/loyalty/cmd/loyalty-service
+    environment:
+      APP_ENV: dev
+      HTTP_PORT: "8086"
+      DATABASE_URL: postgres://loyalty:loyalty@postgres:5432/loyalty?sslmode=disable
+      KAFKA_BROKERS: kafka:9092
+      # dev — личность из X-User-* (срезы без auth); за gateway: AUTH_MODE=jwks make up SLICE="… auth gateway"
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      AUTH_JWKS_URL: http://auth:8081/auth/.well-known/jwks.json
+      # права на управление акциями проверяет auth-service (POST /auth/authorize); в dev-режиме — по X-User-*
+      AUTH_URL: http://auth:8081
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    mem_limit: 128m

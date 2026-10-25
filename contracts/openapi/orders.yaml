@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.6.0
+  version: 1.7.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -13,6 +13,16 @@ info:
     **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
     `services/orders`; `planned` — целевое поведение, появится в указанном этапе. С S6 все
     операции контракта реализованы.
+
+
+    **Скидки (S8).** Скидку считает orders-service по собственной реплике акций
+    (`promotions.discount`, loyalty-service): правила применения, приоритеты и округление описаны
+    в `loyalty.yaml`. Корзина пересчитывается при каждом чтении, поэтому завершённая акция
+    исчезает из `appliedPromotions` сразу после доставки события. При оформлении сумма
+    считается заново; чтобы клиент не заплатил больше, чем видел, `createOrder` принимает
+    необязательный `expectedTotal` — при расхождении `409 TOTAL_CHANGED`. Применённые акции
+    (`appliedPromotions`) фиксируются в заказе снимком. Реплика недоступна или пуста — скидки
+    нет, оформление не блокируется (E1 UC-PRM-01).
 
 
     **Жизненный цикл (ADR-10).** Заказ создаётся *до* оплаты: онлайн-оплата →
@@ -339,6 +349,7 @@ paths:
         '409':
           description: >-
             `ITEMS_UNAVAILABLE` (E1; список в `unavailableItems`), `PRICE_CHANGED`,
+            `TOTAL_CHANGED` (S8: итог с учётом акций не совпал с `expectedTotal`),
             `RESTAURANT_CLOSED` (E2), `CART_CLOSED`, `CART_CHANGED` (корзина изменена
             параллельно), `IDEMPOTENCY_IN_PROGRESS`
           content:
@@ -708,6 +719,13 @@ components:
           description: >-
             Контакты клиента; переопределяют контакты корзины. Для гостя обязателен
             `phone` (`CONTACT_REQUIRED`).
+        expectedTotal:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/Money'
+          description: >-
+            Итог к оплате, который видел клиент в корзине (S8). Если пересчёт даёт другую сумму
+            (акция началась или закончилась) — `409 TOTAL_CHANGED`, заказ не создаётся; клиент
+            перечитывает корзину и подтверждает новую сумму новым ключом. Не передан — проверки нет.
         channel:
           type: string
           enum: [online, staff_fax]
@@ -756,6 +774,10 @@ components:
         pickupSlot: { $ref: '#/components/schemas/PickupSlot' }
         subtotal: { $ref: '_common.yaml#/components/schemas/Money' }
         discountTotal: { $ref: '_common.yaml#/components/schemas/Money' }
+        appliedPromotions:
+          type: array
+          description: Акции, применённые при оформлении (снимок, S8).
+          items: { $ref: '#/components/schemas/AppliedPromotion' }
         total: { $ref: '_common.yaml#/components/schemas/Money' }
         eta: { $ref: '#/components/schemas/Eta' }
         delivery:

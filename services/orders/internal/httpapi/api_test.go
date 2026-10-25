@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -391,5 +392,34 @@ func TestDeliveryZoneProblemsOverHTTP(t *testing.T) {
 	}
 	if r := put(map[string]any{"raw": "Арбат, 10", "location": map[string]any{"lat": 55.764, "lon": 37.605}}); r.Status != 200 {
 		t.Fatalf("in zone: %d %s", r.Status, r.Body)
+	}
+}
+
+// S8: expectedTotal валидируется на входе; расхождение итога — 409 TOTAL_CHANGED, заказ не создаётся.
+func TestExpectedTotalHTTP(t *testing.T) {
+	srv, _, _, count := newServer(t)
+	id := readyCart(t, srv, nil)
+	body := func(exp any) map[string]any {
+		return map[string]any{"cartId": id, "paymentMethod": "pos", "expectedTotal": exp}
+	}
+	for i, bad := range []any{
+		map[string]any{"amount": -1, "currency": "RUB"},
+		map[string]any{"amount": 100500, "currency": ""},
+	} {
+		wantProblem(t, do(t, srv, "POST", "/orders", body(bad), map[string]string{"Idempotency-Key": fmt.Sprintf("exp-bad-%d", i)}), 400, "INVALID_PARAMETER")
+	}
+	// дробная сумма — не int64: отвергается ещё при разборе JSON
+	wantProblem(t, do(t, srv, "POST", "/orders", body(map[string]any{"amount": 100500.5, "currency": "RUB"}), map[string]string{"Idempotency-Key": "exp-frac"}), 400, "INVALID_JSON")
+	r := do(t, srv, "POST", "/orders", body(map[string]any{"amount": 99999, "currency": "RUB"}), map[string]string{"Idempotency-Key": "exp-mismatch"})
+	wantProblem(t, r, 409, "TOTAL_CHANGED")
+	if count("orders") != 0 {
+		t.Fatal("no order on mismatch")
+	}
+	r = do(t, srv, "POST", "/orders", body(map[string]any{"amount": 100500, "currency": "RUB"}), map[string]string{"Idempotency-Key": "exp-ok"})
+	if r.Status != 201 {
+		t.Fatalf("create: %d %s", r.Status, r.Body)
+	}
+	if o := r.json(t); o["appliedPromotions"] == nil || o["total"].(map[string]any)["amount"].(float64) != 100500 {
+		t.Fatalf("order: %s", r.Body)
 	}
 }

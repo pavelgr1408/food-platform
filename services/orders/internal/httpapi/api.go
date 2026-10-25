@@ -220,11 +220,19 @@ func (h *handlers) createOrder(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
+	var expected *service.Money
+	if e := req.ExpectedTotal; e != nil {
+		if e.Amount == nil || *e.Amount < 0 || len(e.Currency) != 3 {
+			httpx.WriteProblem(w, r, http.StatusBadRequest, "INVALID_PARAMETER", "expectedTotal needs a non-negative integer amount (kopecks) and a 3-letter currency")
+			return
+		}
+		expected = &service.Money{Amount: *e.Amount, Currency: e.Currency}
+	}
 	var body bytes.Buffer
 	claim := idempotency.ClaimFrom(r.Context())
 	o, err := h.svc.CreateOrder(r.Context(), userID(r), service.CreateOrderInput{
 		CartID: req.CartID, PaymentMethod: domain.PaymentMethod(req.PaymentMethod),
-		Contact: req.Contact.domain(), Channel: req.Channel, Actor: actor(r),
+		Contact: req.Contact.domain(), Channel: req.Channel, ExpectedTotal: expected, Actor: actor(r),
 	}, func(ctx context.Context, tx pgx.Tx, o domain.Order) error {
 		// Внутри транзакции заказа: ответ сохраняется под ключом атомарно с заказом.
 		if err := json.NewEncoder(&body).Encode(toOrder(o)); err != nil {

@@ -92,6 +92,8 @@ jobs:
       - run: pip install -r tools/requirements.txt
       - name: периметр — реальные бинарники, newman (auth, gateway), отказ auth, блокировка пользователя
         run: tools/perimeter/ci.sh
+      - name: S8 — loyalty → Kafka (kfake) → orders, скидка в корзине и заказе, newman
+        run: tools/loyalty-e2e/ci.sh
 
   deploy:
     runs-on: ubuntu-latest

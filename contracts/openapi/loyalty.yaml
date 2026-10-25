@@ -2,13 +2,55 @@ openapi: 3.1.0
 
 info:
   title: loyalty-service — REST API
-  version: 1.1.0
+  version: 1.2.0
   description: >-
-    Акции, промокоды и скидки: просмотр действующих предложений клиентом и
-    управление акциями персоналом (локальные / общенациональные). Публикация в
-    orders-service идёт через Kafka. Хранилище — loyalty-db. (UC-
-    PRM-01/02/03/04)
+    Акции и скидки: просмотр действующих предложений клиентом и управление
+    акциями персоналом (локальные для ресторана франшизы / общенациональные).
+    Публикация в orders-service идёт через Kafka (`promotions.discount`), расчёт
+    скидки выполняет orders-service. Хранилище — loyalty-db. (UC-PRM-01/02/03/04)
     Контракт нарезан из единой спецификации ДЗ-1; общие компоненты — `_common.yaml`.
+
+
+    **Статус реализации** (`x-status`): `implemented` — есть в коде `services/loyalty`.
+    С S8 реализованы все операции.
+
+
+    **Жизненный цикл.** `draft → active → completed`. Черновик можно править и
+    удалять из рассмотрения (`completePromotion` на черновике закрывает его без публикации).
+    `activatePromotion` публикует акцию в `promotions.discount`; акция с будущим `startsAt`
+    публикуется сразу и начинает действовать сама («запланирована» — это `active` до `startsAt`,
+    отдельного статуса нет). Акция, у которой прошёл `endsAt`, перестаёт действовать без
+    дополнительных событий (orders и `listActivePromotions` сравнивают срок сами).
+    Завершённую акцию изменить нельзя (`409 PROMOTION_COMPLETED`).
+
+
+    **Права.** Решение принимает auth-service (`POST /auth/authorize`, действие
+    `promotion.manage`, решение по актуальным данным БД): `FRANCHISE_OWNER` — только `local`
+    акции своего ресторана, `HQ_STAFF` — любые. Отказ — `403` с кодом из `reason`
+    (`NOT_ACTIVE`, `ROLE_REQUIRED`, `NOT_BOUND_TO_RESTAURANT`, `SCOPE_NOT_ALLOWED`); расширить охват
+    (`PUT` с `scope=national` у владельца) нельзя — `403 SCOPE_NOT_ALLOWED`. Auth недоступен —
+    `503 AUTH_UNAVAILABLE` (fail-closed: управлять акциями без проверки прав нельзя; клиентский
+    `listActivePromotions` от auth не зависит).
+
+
+    **Конфликты правил (E2).** Две акции конфликтуют, если обе не `stackable`, у них равный
+    `priority`, пересекаются периоды действия, охват (национальная пересекается с любой локальной;
+    две локальные — только в одном ресторане) и целевые позиции (пустой `menuItemIds` = весь заказ).
+    Тогда `activatePromotion`/`updatePromotion` активной акции отвечают `409 PROMOTION_CONFLICT`
+    (`conflictingPromotionIds`). Разный приоритет конфликтом не считается: побеждает больший.
+
+
+    **Расчёт скидки (выполняет orders-service, ADR-13).** Акции применяются по убыванию
+    `priority` (при равенстве — по `promotionId`). Нестекируемые акции: применяется одна,
+    с наибольшим приоритетом из подошедших. `stackable` акции применяются дополнительно, каждая
+    к остатку после предыдущих. База акции — сумма остатков подходящих строк (`menuItemIds`;
+    пусто — весь заказ). `percent` — сотые доли процента (1500 = 15%), `fixed` — копейки; процент
+    округляется банковским способом один раз на акцию, фиксированная скидка не превышает базу;
+    итоговая скидка не превышает подытог. Деньги — только целые (ADR-13).
+
+
+    **Идемпотентность.** `createPromotion` требует `Idempotency-Key`: повтор с тем же ключом и
+    телом возвращает тот же `201`, другое тело — `422 IDEMPOTENCY_KEY_REUSED`.
 
 servers:
   - url: https://api.blt.example/v1
@@ -28,14 +70,22 @@ paths:
     get:
       tags: [loyalty-service]
       operationId: listActivePromotions
+      x-status: implemented
       summary: Действующие акции и спецпредложения
       description: >-
-        Возвращает объединённые национальные и локальные предложения по региону/
-        ресторану, отсеивая недействующие. Без выбранного ресторана возвращаются
-        только общенациональные акции (A1). (UC-PRM-01)
+        Возвращает объединённые национальные и локальные предложения, действующие
+        сейчас (`status=active`, `startsAt ≤ now < endsAt`). Без `restaurantId` возвращаются
+        только общенациональные акции (A1), с ним — национальные и локальные этого ресторана.
+        Порядок: `priority` по убыванию, затем `startsAt`. Доступен гостю (токен не нужен).
+        `region` зарезервирован (сейчас национальные акции действуют во всех регионах) и
+        игнорируется. (UC-PRM-01)
+      security:
+        - {}
+        - bearerAuth: []
       parameters:
         - name: region
           in: query
+          description: Зарезервирован, игнорируется.
           schema: { type: string }
         - name: restaurantId
           in: query
@@ -47,25 +97,28 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: '#/components/schemas/Promotion' }
-        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+                items: { $ref: '#/components/schemas/PromotionPublic' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
         '503':
           description: >-
-            Подсистема акций недоступна (E1). Переход к меню/оформлению не
-            блокируется.
+            Подсистема акций недоступна (`PROMOTIONS_UNAVAILABLE`, E1). Переход к меню и
+            оформлению не блокируется: orders считает скидку по собственной реплике.
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
     post:
       tags: [loyalty-service]
       operationId: createPromotion
+      x-status: implemented
       summary: Создать акцию (персонал)
       description: >-
-        Создаёт акцию с параметрами уровня субъекта. Область действия (локальная
-        для ресторана франшизы или общенациональная для всей сети) валидируется
-        по полномочиям. (UC-PRM-02/03/04)
+        Создаёт акцию в статусе `draft`. Охват (локальная для ресторана франшизы или
+        общенациональная) проверяется по полномочиям (см. «Права»). `Idempotency-Key` обязателен.
+        (UC-PRM-02/03/04)
       security:
         - bearerAuth: [promotions:write]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
       requestBody:
         required: true
         content:
@@ -76,27 +129,36 @@ paths:
           description: Акция создана (в статусе «Черновик»)
           headers:
             Location: { $ref: '_common.yaml#/components/headers/Location' }
+            Idempotent-Replay:
+              description: '`true`, если это повтор уже обработанного запроса.'
+              schema: { type: string, enum: ['true'] }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
-        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
-        '403':
-          description: Недостаточно прав / выход за пределы охвата (E1)
+        '400':
+          description: >-
+            `INVALID_JSON`, `VALIDATION_FAILED` (типы полей), `IDEMPOTENCY_KEY_REQUIRED`
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
         '409':
-          description: Конфликт правил акций (E2)
+          description: '`IDEMPOTENCY_IN_PROGRESS` — параллельный дубликат запроса'
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
-        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+        '422': { $ref: '#/components/responses/PromotionInvalid' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
 
   /promotions/{promotionId}:
     get:
       tags: [loyalty-service]
       operationId: getPromotion
+      x-status: implemented
       summary: Параметры акции (персонал)
+      description: >-
+        Доступна тем, кто вправе управлять этой акцией (та же проверка, что и для изменения).
       security:
         - bearerAuth: [promotions:read]
       parameters:
@@ -107,14 +169,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
     put:
       tags: [loyalty-service]
       operationId: updatePromotion
+      x-status: implemented
       summary: Изменить акцию (персонал)
       description: >-
-        Изменение действующей акции в пределах полномочий субъекта; изменение
-        фиксируется в истории. (UC-PRM-03 A1)
+        Полная замена параметров черновика или действующей акции в пределах полномочий; каждое
+        изменение увеличивает `version`, фиксируется в истории, а у действующей акции — повторно
+        публикуется. `scope` и `restaurantId` после создания не меняются
+        (`422 SCOPE_IMMUTABLE`), но попытка выйти за пределы охвата (например, владелец ставит
+        `scope=national`) — `403 SCOPE_NOT_ALLOWED`, как и в `createPromotion`. (UC-PRM-03 A1)
       security:
         - bearerAuth: [promotions:write]
       parameters:
@@ -130,27 +200,52 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
-        '403':
-          description: Запрет расширения охвата за пределы ресторана (E1)
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '409': { $ref: '#/components/responses/PromotionConflict' }
+        '422': { $ref: '#/components/responses/PromotionInvalid' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
+
+  /promotions/{promotionId}/history:
+    get:
+      tags: [loyalty-service]
+      operationId: getPromotionHistory
+      x-status: implemented
+      summary: История изменений акции (персонал)
+      description: >-
+        Журнал версий акции от создания: действие, автор, время и снимок параметров.
+        Новые записи — в конце. (UC-PRM-03: изменение фиксируется в истории)
+      security:
+        - bearerAuth: [promotions:read]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      responses:
+        '200':
+          description: История изменений
           content:
-            application/problem+json:
-              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
-        '409':
-          description: Конфликт правил акций (E2)
-          content:
-            application/problem+json:
-              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PromotionRevision' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
 
   /promotions/{promotionId}/activation:
     post:
       tags: [loyalty-service]
       operationId: activatePromotion
+      x-status: implemented
       summary: Активировать и опубликовать акцию (персонал)
       description: >-
-        Валидирует параметры и правила приоритета, сохраняет акцию и публикует её
-        целевой аудитории. Публикация в orders-service выполняется асинхронно
-        через Kafka-топик `promotions.discount`. (UC-PRM-02/03/04, «Публикация акции»)
+        Проверяет правила приоритета (E2), переводит `draft → active` и в той же транзакции
+        кладёт событие в outbox; публикация в orders-service идёт асинхронно через
+        `promotions.discount`. Повторная активация уже действующей акции — `200` без эффекта.
+        Акция с истёкшим `endsAt` не активируется (`422 PROMOTION_EXPIRED`). (UC-PRM-02/03/04)
       security:
         - bearerAuth: [promotions:write]
       parameters:
@@ -161,20 +256,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
-        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
-        '409':
-          description: Конфликт правил акций (E2)
-          content:
-            application/problem+json:
-              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '409': { $ref: '#/components/responses/PromotionConflict' }
+        '422': { $ref: '#/components/responses/PromotionInvalid' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
 
   /promotions/{promotionId}/completion:
     post:
       tags: [loyalty-service]
       operationId: completePromotion
+      x-status: implemented
       summary: Завершить акцию (персонал)
       description: >-
-        Переводит акцию в статус «Завершена» и прекращает её публикацию.
+        Переводит акцию в `completed` и публикует событие `status=completed` (orders прекращает
+        применять скидку); для черновика публикации нет. Повторное завершение — `200` без эффекта.
         (UC-PRM-02 A3, UC-PRM-04 A1)
       security:
         - bearerAuth: [promotions:write]
@@ -186,8 +284,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
-        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
-        '404': { $ref: '_common.yaml#/components/responses/NotFound' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
 
 components:
 
@@ -201,6 +302,48 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Уникальный ключ (1–128 печатных ASCII-символов), гарантирующий однократное
+        создание акции при повторной отправке.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+
+  responses:
+    PromotionForbidden:
+      description: >-
+        Недостаточно прав (`code` = причина auth-service: `NOT_ACTIVE`, `ROLE_REQUIRED`,
+        `NOT_BOUND_TO_RESTAURANT`, `SCOPE_NOT_ALLOWED`)
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    PromotionNotFound:
+      description: Акция не найдена (`PROMOTION_NOT_FOUND`)
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    PromotionConflict:
+      description: >-
+        `PROMOTION_CONFLICT` (E2; расширение `conflictingPromotionIds`) или
+        `PROMOTION_COMPLETED` (акция завершена и не меняется)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/PromotionConflictProblem' }
+    PromotionInvalid:
+      description: >-
+        Семантически некорректные параметры: `PROMOTION_INVALID` (период, размер скидки,
+        значения условий, `restaurantId` не соответствует `scope`), `SCOPE_IMMUTABLE`, `PROMOTION_EXPIRED`,
+        `IDEMPOTENCY_KEY_REUSED`
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+    AuthUnavailable:
+      description: auth-service недоступен (`AUTH_UNAVAILABLE`), права проверить нельзя — отказ (fail-closed)
+      content:
+        application/problem+json:
+          schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   schemas:
     PromotionScope:
@@ -210,39 +353,118 @@ components:
     PromotionStatus:
       type: string
       enum: [draft, active, completed]
-    Promotion:
+    DiscountType:
+      type: string
+      enum: [percent, fixed]
+      description: >-
+        `gift` из AsyncAPI не поддерживается: `422 PROMOTION_INVALID`.
+    PromotionDiscountValue:
       type: object
+      required: [type, value]
+      properties:
+        type: { $ref: '#/components/schemas/DiscountType' }
+        value:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            `percent` — сотые доли процента, 1…10000 (1500 = 15%, 1250 = 12,5%);
+            `fixed` — копейки, > 0 (10000 = 100 ₽). Только целые числа (ADR-13).
+    PromotionConditions:
+      type: object
+      additionalProperties: false
+      description: Условия применения. Неизвестное поле — `400 INVALID_JSON` (как и любое неизвестное поле тела).
+      properties:
+        menuItemIds:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, format: uuid }
+          description: Позиции меню, на которые действует скидка. Пусто или нет — на весь заказ.
+        minSubtotal:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Минимальный подытог заказа (до скидок), копейки.
+        fulfillment:
+          type: string
+          enum: [pickup, delivery]
+          description: Только для указанного способа получения. Нет — для любого.
+        stackable:
+          type: boolean
+          default: false
+          description: Суммируется с другими акциями (см. «Расчёт скидки»).
+    PromotionPublic:
+      type: object
+      required: [id, title, scope, discount, priority, startsAt, endsAt]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
         description: { type: string }
         scope: { $ref: '#/components/schemas/PromotionScope' }
-        status: { $ref: '#/components/schemas/PromotionStatus' }
         restaurantId:
           type: string
           format: uuid
           description: Заполняется для локальных акций.
-        priority: { type: integer }
+        priority: { type: integer, minimum: 0, maximum: 1000 }
         startsAt: { type: string, format: date-time }
         endsAt: { type: string, format: date-time }
-        conditions:
-          type: object
-          additionalProperties: true
-          description: Условия акции (позиции, пороги, скидка).
+        currency: { type: string, minLength: 3, maxLength: 3, example: RUB }
+        discount: { $ref: '#/components/schemas/PromotionDiscountValue' }
+        conditions: { $ref: '#/components/schemas/PromotionConditions' }
+    Promotion:
+      allOf:
+        - $ref: '#/components/schemas/PromotionPublic'
+        - type: object
+          required: [status, version, createdAt, updatedAt]
+          properties:
+            status: { $ref: '#/components/schemas/PromotionStatus' }
+            version:
+              type: integer
+              minimum: 1
+              description: Растёт при каждом изменении; передаётся в `promotions.discount`.
+            createdBy: { type: string, description: Идентификатор автора (userId). }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
     PromotionInput:
       type: object
-      required: [title, scope, startsAt, endsAt]
+      required: [title, scope, discount, startsAt, endsAt]
+      additionalProperties: false
       properties:
-        title: { type: string }
-        description: { type: string }
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 1000 }
         scope: { $ref: '#/components/schemas/PromotionScope' }
         restaurantId:
           type: string
           format: uuid
-          description: Обязателен для локальной акции; должен совпадать с привязкой владельца.
-        priority: { type: integer }
+          description: >-
+            Обязателен для `local` и запрещён для `national`; должен совпадать с привязкой
+            владельца (`403 NOT_BOUND_TO_RESTAURANT`).
+        priority: { type: integer, minimum: 0, maximum: 1000, default: 0 }
         startsAt: { type: string, format: date-time }
-        endsAt: { type: string, format: date-time }
-        conditions:
-          type: object
-          additionalProperties: true
+        endsAt:
+          type: string
+          format: date-time
+          description: Строго позже `startsAt`.
+        currency: { type: string, minLength: 3, maxLength: 3, default: RUB }
+        discount: { $ref: '#/components/schemas/PromotionDiscountValue' }
+        conditions: { $ref: '#/components/schemas/PromotionConditions' }
+    PromotionRevision:
+      type: object
+      required: [version, action, occurredAt, snapshot]
+      properties:
+        version: { type: integer, minimum: 1 }
+        action:
+          type: string
+          enum: [created, updated, activated, completed]
+        actorId: { type: string }
+        occurredAt: { type: string, format: date-time }
+        snapshot: { $ref: '#/components/schemas/Promotion' }
+    PromotionConflictProblem:
+      allOf:
+        - $ref: '_common.yaml#/components/schemas/Problem'
+        - type: object
+          properties:
+            conflictingPromotionIds:
+              type: array
+              items: { type: string, format: uuid }

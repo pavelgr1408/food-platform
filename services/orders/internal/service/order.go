@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,12 +18,19 @@ import (
 	"github.com/pavelgr1408/food-platform/services/orders/internal/store"
 )
 
+// Money — сумма в копейках и валюта (вход expectedTotal).
+type Money struct {
+	Amount   int64
+	Currency string
+}
+
 // CreateOrderInput — параметры createOrder.
 type CreateOrderInput struct {
 	CartID        string
 	PaymentMethod domain.PaymentMethod
 	Contact       domain.Contact
 	Channel       string // "" | online | staff_fax
+	ExpectedTotal *Money // итог, который видел клиент (S8): расхождение → 409 TOTAL_CHANGED; nil — без проверки
 	Actor         Actor  // субъект запроса; для staff_fax должен быть персоналом ресторана корзины (S6)
 }
 
@@ -115,13 +123,18 @@ func (s *Service) CreateOrder(ctx context.Context, userID string, in CreateOrder
 		}
 	}
 	sub := domain.Subtotal(lines)
-	d := s.disc.Apply(cart.RestaurantID, lines, sub)
+	d := s.disc.Apply(ctx, domain.DiscountInput{RestaurantID: cart.RestaurantID, Currency: cart.Currency, Fulfillment: cart.Fulfillment,
+		Lines: lines, Subtotal: sub, Now: now})
 	discount, total := domain.Net(sub, d)
+	if exp := in.ExpectedTotal; exp != nil && (exp.Amount != total || !strings.EqualFold(exp.Currency, cart.Currency)) {
+		return domain.Order{}, httpx.NewError(409, "TOTAL_CHANGED",
+			fmt.Sprintf("the order total changed: expected %d %s, now %d %s (prices or promotions changed); review the cart and confirm", exp.Amount, exp.Currency, total, cart.Currency))
+	}
 	order := domain.Order{
 		ID: uuid.NewString(), CartID: cart.ID, RestaurantID: cart.RestaurantID, OwnerUserID: cart.OwnerUserID,
 		Channel: "online", Status: domain.InitialStatus(in.PaymentMethod), PaymentMethod: in.PaymentMethod,
 		PaymentStatus: domain.PaymentPending, Fulfillment: cart.Fulfillment, Address: cart.Address, Contact: contact,
-		Currency: cart.Currency, Items: lines, Subtotal: sub, DiscountTotal: discount, Total: total,
+		Currency: cart.Currency, Items: lines, Subtotal: sub, DiscountTotal: discount, Total: total, Applied: d.Applied,
 		Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	actor := actorCustomer

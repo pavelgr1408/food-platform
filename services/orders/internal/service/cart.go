@@ -35,9 +35,10 @@ type CartView struct {
 	Total         int64
 }
 
-func (s *Service) view(c domain.Cart) CartView {
+func (s *Service) view(ctx context.Context, c domain.Cart) CartView {
 	sub := c.Subtotal()
-	d := s.disc.Apply(c.RestaurantID, c.Items, sub)
+	d := s.disc.Apply(ctx, domain.DiscountInput{RestaurantID: c.RestaurantID, Currency: c.Currency, Fulfillment: c.Fulfillment,
+		Lines: c.Items, Subtotal: sub, Now: s.now()})
 	disc, total := domain.Net(sub, d)
 	return CartView{Cart: c, Applied: d.Applied, Subtotal: sub, DiscountTotal: disc, Total: total}
 }
@@ -103,7 +104,7 @@ func (s *Service) CreateCart(ctx context.Context, userID string, in CreateCartIn
 	if err != nil {
 		return CartView{}, err
 	}
-	return s.view(got), nil
+	return s.view(ctx, got), nil
 }
 
 // loadCart читает корзину и проверяет доступ; чужая корзина — 404 (существование не раскрываем).
@@ -124,7 +125,7 @@ func (s *Service) GetCart(ctx context.Context, userID, id string) (CartView, err
 	if err != nil {
 		return CartView{}, err
 	}
-	return s.view(c), nil
+	return s.view(ctx, c), nil
 }
 
 func lineKey(it ItemInput) string {
@@ -241,7 +242,7 @@ func (s *Service) UpdateCartItems(ctx context.Context, userID, id string, items 
 	if err != nil {
 		return CartView{}, err
 	}
-	v := s.view(out)
+	v := s.view(ctx, out)
 	if len(unavailable) > 0 {
 		s.log.InfoContext(ctx, "cart items dropped as unavailable", "cart_id", id, "items", shortList(unavailable))
 		return v, &ItemsUnavailableError{Items: unavailable}
@@ -321,5 +322,5 @@ func (s *Service) SetFulfillment(ctx context.Context, userID, id string, in Fulf
 	if err != nil {
 		return CartView{}, err
 	}
-	return s.view(out), nil
+	return s.view(ctx, out), nil
 }

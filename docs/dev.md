@@ -113,6 +113,24 @@ make newman-e2e-gateway
 Коллекция та же, окружение `postman/e2e/gateway.postman_environment.json` (клиентские вызовы идут на `:8080`; `/metrics` и probes — напрямую, gateway их не публикует),
 токен сотрудника подставляет Makefile. Вебхуки курьерской системы идут мимо gateway (ingress, подпись `X-Signature`).
 
+## Акции и скидки (S8)
+```bash
+make up SLICE="restaurant menu orders loyalty"
+make newman SERVICE=loyalty         # loyalty напрямую: права, идемпотентность, конфликты E2, жизненный цикл, история
+make newman SERVICE=e2e             # раздел 12: акция → promotions.discount → скидка в корзине и заказе (нужны Kafka и loyalty)
+make loyalty-e2e                    # то же без Docker: реальные бинарники + in-memory Kafka (tools/kfake-broker)
+```
+- Права на акции проверяет сам `loyalty-service` через `auth /auth/authorize` (`action=promotion.manage`, `AUTH_URL`); в `AUTH_MODE=dev` — локальные правила, зеркало политики auth
+  (тест-таблица совпадает с auth). Владелец франшизы создаёт и ведёт только локальные акции своих ресторанов, HQ — любые; национальные акции — только HQ.
+- Жизненный цикл: `draft → active → completed`; `scheduled` и `expired` выводятся из окна `startsAt/endsAt`. Две акции одного охвата и приоритета с пересечением по времени и позициям
+  не могут быть активны вместе: `409 PROMOTION_CONFLICT` + `conflictingPromotionIds` (E2). Активации сериализуются advisory-lock'ом.
+- Каждое изменение пишет полный снимок в `promotions.discount` (compact, ключ `promotionId`, `version`) через outbox; orders держит реплику (`promotions_replica`) и читает топик с начала,
+  поэтому новая БД orders восстанавливает акции из компактного топика. Старая версия снимка игнорируется, битый снимок идёт в retry → `promotions.discount.dlq`.
+- Расчёт в orders (`domain.Calculate`): проценты в сотых долях процента (1500 = 15 %), банковское округление один раз на акцию, фикс. скидка не больше суммы, итог не отрицательный,
+  распределение по позициям без потери копеек. Кэш реплики — `PROMOTION_CACHE_TTL` (по умолчанию 2 с, `0s` — без кэша); при недоступной реплике берётся последний снимок.
+- `createOrder` принимает необязательный `expectedTotal`: итог изменился (появилась/закончилась акция) → `409 TOTAL_CHANGED`, клиент перечитывает корзину. Скидка фиксируется в заказе
+  (`appliedPromotions`) и не меняется при завершении акции.
+
 ## Сценарии персонала (S6): касса, факс, выдача, отмена и возврат
 ```bash
 make up SLICE="restaurant menu orders payment mock-externals"

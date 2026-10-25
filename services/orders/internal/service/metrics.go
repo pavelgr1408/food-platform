@@ -15,6 +15,8 @@ type Metrics struct {
 	UpstreamFailures *prometheus.CounterVec // upstream
 	CartsPurged      prometheus.Counter
 	PaidAfterCancel  prometheus.Counter
+	PromotionEvents  *prometheus.CounterVec // result (applied|applied_ignored|stale), S8
+	PromotionLoads   *prometheus.CounterVec // result (ok|error): чтение реплики акций для расчёта скидки
 	ProductionEvents *prometheus.CounterVec // event (dish_status|lead_time), result (applied|stale|ignored_status)
 	RefundEvents     *prometheus.CounterVec // status (pending|refunded|failed): ход возврата от payment (S6)
 	DeliveryEvents   *prometheus.CounterVec // result (applied|stale|ignored_fulfillment): orders.delivery.status (S7)
@@ -33,6 +35,10 @@ func NewMetrics() *Metrics {
 			Help: "Удалённые заброшенные корзины."}),
 		PaidAfterCancel: prometheus.NewCounter(prometheus.CounterOpts{Name: "orders_paid_after_cancel_total",
 			Help: "Оплата пришла по уже отменённому заказу — нужен возврат (тревога)."}),
+		PromotionEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_promotion_events_total",
+			Help: "Обработка promotions.discount по результату."}, []string{"result"}),
+		PromotionLoads: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_promotion_replica_loads_total",
+			Help: "Чтение реплики акций для расчёта скидки."}, []string{"result"}),
 		ProductionEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_production_events_total",
 			Help: "События системы производства: применены, устарели или проигнорированы по статусу заказа."}, []string{"event", "result"}),
 		RefundEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "orders_refund_events_total",
@@ -44,7 +50,7 @@ func NewMetrics() *Metrics {
 
 // Collectors — для metrics.Registry.MustRegister.
 func (m *Metrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged, m.PaidAfterCancel, m.ProductionEvents, m.RefundEvents, m.DeliveryEvents}
+	return []prometheus.Collector{m.OrdersCreated, m.Transitions, m.UpstreamFailures, m.CartsPurged, m.PaidAfterCancel, m.PromotionEvents, m.PromotionLoads, m.ProductionEvents, m.RefundEvents, m.DeliveryEvents}
 }
 
 // StuckCollectors — метрики «заказ завис в accepted»: производство не берёт принятый заказ

@@ -1,0 +1,23 @@
+# Helm-values сервиса loyalty для общего чарта deploy/charts/service.
+# Секреты в git не хранятся: Secret `loyalty-secrets` создаёт `make k8s-dev-secrets` / CI/CD / Vault.
+name: loyalty
+image:
+  repository: food/loyalty
+  tag: dev
+port: 8086
+replicas: 2
+env:
+  APP_ENV: dev
+  LOG_LEVEL: info
+  AUTH_MODE: jwks # личность — только из JWT, проверенного локально по JWKS (ADR-11)
+  AUTH_JWKS_URL: http://auth/auth/.well-known/jwks.json
+  AUTH_URL: http://auth # POST /auth/authorize: права на управление акциями
+  KAFKA_BROKERS: kafka:9092
+existingSecret: loyalty-secrets # ключи: DATABASE_URL
+migrations:
+  enabled: true # Job `loyalty-service --migrate-only` (pre-install/pre-upgrade hook)
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 192Mi }
+ingress:
+  paths: [] # снаружи сервис доступен только через gateway (маршрут добавляется в routes.json и contracts/openapi/gateway.yaml)

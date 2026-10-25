@@ -62,6 +62,13 @@ type orderCreateRequest struct {
 	PaymentMethod string      `json:"paymentMethod"`
 	Contact       *contactDTO `json:"contact"`
 	Channel       string      `json:"channel"`
+	ExpectedTotal *moneyIn    `json:"expectedTotal"`
+}
+
+// moneyIn — Money из запроса (expectedTotal).
+type moneyIn struct {
+	Amount   *int64 `json:"amount"`
+	Currency string `json:"currency"`
 }
 
 type pickupSlotRequest struct {
@@ -123,6 +130,7 @@ type orderDTO struct {
 	PickupSlot    *slotDTO       `json:"pickupSlot,omitempty"`
 	Subtotal      money          `json:"subtotal"`
 	DiscountTotal money          `json:"discountTotal"`
+	Applied       []appliedDTO   `json:"appliedPromotions"`
 	Total         money          `json:"total"`
 	Delivery      *deliveryDTO   `json:"delivery,omitempty"`
 	CreatedAt     time.Time      `json:"createdAt"`
@@ -212,7 +220,10 @@ func toOrder(o domain.Order) orderDTO {
 		Channel: o.Channel, PaymentStatus: string(o.PaymentStatus), RefundStatus: string(o.RefundStatus), PaymentMethod: string(o.PaymentMethod), Items: toItems(o.Items, o.Currency),
 		Fulfillment: fulfillmentDTO{Type: string(o.Fulfillment), Address: toAddress(o.Address)},
 		Subtotal:    money{o.Subtotal, o.Currency}, DiscountTotal: money{o.DiscountTotal, o.Currency}, Total: money{o.Total, o.Currency},
-		CreatedAt: o.CreatedAt}
+		Applied: make([]appliedDTO, 0, len(o.Applied)), CreatedAt: o.CreatedAt}
+	for _, a := range o.Applied {
+		d.Applied = append(d.Applied, appliedDTO{a.PromotionID, a.Title, money{a.Discount, o.Currency}})
+	}
 	if o.PickupFrom != nil && o.PickupTo != nil {
 		d.PickupSlot = &slotDTO{From: *o.PickupFrom, To: *o.PickupTo}
 	}

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "e2e: сквозной MVP (веха M1)",
-    "description": "Сквозной сценарий платформы (S4): каталог → корзина → заказ → онлайн-оплата (mock шлюза) → производство (mock) → cooking → ready, ETA по загрузке производства, заказ без предоплаты, неоплаченный заказ не уходит в производство (ADR-10), «авария очереди» производства (E3). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\" (MOCKS=ping,payment,production). Запуск: make newman SERVICE=e2e. Ресторан №4 работает 24/7. Коллекция сама задаёт тайминги mock производства и возвращает их в конце; повторные прогоны безопасны.",
+    "description": "Сквозной сценарий платформы (S4): каталог → корзина → заказ → онлайн-оплата (mock шлюза) → производство (mock) → cooking → ready, ETA по загрузке производства, заказ без предоплаты, неоплаченный заказ не уходит в производство (ADR-10), «авария очереди» производства (E3). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\" (MOCKS=ping,payment,production). Запуск: make newman SERVICE=e2e. Ресторан №4 работает 24/7. Коллекция сама задаёт тайминги mock производства и возвращает их в конце; повторные прогоны безопасны. S8: папка 12 — акция loyalty → Kafka → скидка в orders (нужны loyalty и Kafka; через gateway — токен владельца: --env-var ownerToken=...).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -48,6 +48,14 @@
     {
       "key": "paymentDirectUrl",
       "value": "http://localhost:8085"
+    },
+    {
+      "key": "loyaltyUrl",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "ownerToken",
+      "value": ""
     }
   ],
   "item": [
@@ -2960,6 +2968,485 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('сброс выполнен', () => pm.expect(pm.response.code).to.be.within(200, 204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "12. S8: акция → скидка в корзине и заказе (loyalty → Kafka → orders)",
+      "description": "Требует loyalty и Kafka в срезе. Без Kafka шаги ожидания реплики исчерпают 40 попыток и упадут.",
+      "item": [
+        {
+          "name": "0: меню: id бургера и колы (для самостоятельного запуска папки)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const all = pm.response.json().categories.flatMap(c => c.items);",
+                  "const burger = all.find(i => i.name === 'BLT Классик'), cola = all.find(i => i.name === 'Кола 0,5');",
+                  "pm.test('позиции есть в меню', () => { pm.expect(burger).to.exist; pm.expect(cola).to.exist; });",
+                  "pm.collectionVariables.set('burgerId', burger.id); pm.collectionVariables.set('colaId', cola.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: loyalty — владелец создаёт локальную акцию −10 %",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "owner4"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "FRANCHISE_OWNER"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "a1000000-0000-4000-8000-000000000004"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "e2e-s8-{{$timestamp}}-{{$randomInt}}"
+              }
+            ],
+            "url": "{{loyaltyUrl}}/promotions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"E2E −10%\",\n  \"scope\": \"local\",\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"priority\": 1,\n  \"startsAt\": \"2026-01-01T00:00:00Z\",\n  \"endsAt\": \"2099-01-01T00:00:00Z\",\n  \"discount\": {\n    \"type\": \"percent\",\n    \"value\": 1000\n  },\n  \"conditions\": {\n    \"stackable\": false\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('ownerToken') || pm.environment.get('ownerToken');",
+                  "if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 draft', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('draft'); });",
+                  "pm.collectionVariables.set('s8Promo', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: loyalty — активация (promotions.discount в Kafka)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "owner4"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "FRANCHISE_OWNER"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "a1000000-0000-4000-8000-000000000004"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{loyaltyUrl}}/promotions/{{s8Promo}}/activation"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('ownerToken') || pm.environment.get('ownerToken');",
+                  "if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 active', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('active'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8a: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s8aCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8a: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s8aCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8a: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s8aCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8a: getCart — ждём реплику акции в orders (Kafka)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/carts/{{s8aCart}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables; const k = 'poll_s8a'; const n = Number(cv.get(k) || 0); let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.discountTotal && j.discountTotal.amount > 0);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); } else { cv.unset(k); }",
+                  "if (done) {",
+                  "  pm.test('скидка 10 %: 82700 → 8270 → 74430 (целые копейки)', () => { pm.expect(j.subtotal.amount).to.eql(82700); pm.expect(j.discountTotal.amount).to.eql(8270); pm.expect(j.total.amount).to.eql(74430); });",
+                  "  pm.test('appliedPromotions содержит акцию', () => { pm.expect(j.appliedPromotions.map(a => a.promotionId)).to.include(pm.collectionVariables.get('s8Promo')); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8a: createOrder с expectedTotal = итог из корзины → 201, скидка зафиксирована",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "e2e-s8a-{{$timestamp}}-{{$randomInt}}"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{s8aCart}}\",\n  \"paymentMethod\": \"pos\",\n  \"expectedTotal\": {\n    \"amount\": 74430,\n    \"currency\": \"RUB\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.collectionVariables.set('s8Order', o.id);",
+                  "pm.test('итог и скидка в заказе', () => { pm.expect(o.total.amount).to.eql(74430); pm.expect(o.discountTotal.amount).to.eql(8270); pm.expect(o.appliedPromotions.map(a => a.promotionId)).to.include(pm.collectionVariables.get('s8Promo')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8b: createCart (гость)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Иван\",\n    \"phone\": \"+7 (999) 123-45-67\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s8bCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8b: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s8bCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 2\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8b: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s8bCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8b: createOrder с устаревшим expectedTotal (без скидки) → 409 TOTAL_CHANGED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "e2e-s8b-{{$timestamp}}-{{$randomInt}}"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{s8bCart}}\",\n  \"paymentMethod\": \"pos\",\n  \"expectedTotal\": {\n    \"amount\": 82700,\n    \"currency\": \"RUB\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 TOTAL_CHANGED', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().code).to.eql('TOTAL_CHANGED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: loyalty — завершение акции",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "owner4"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "FRANCHISE_OWNER"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "a1000000-0000-4000-8000-000000000004"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{loyaltyUrl}}/promotions/{{s8Promo}}/completion"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('ownerToken') || pm.environment.get('ownerToken');",
+                  "if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 completed', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('completed'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8b: getCart — ждём, пока скидка исчезнет (completed → реплика)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/carts/{{s8bCart}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables; const k = 'poll_s8c'; const n = Number(cv.get(k) || 0); let j = {}; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = (j.discountTotal && j.discountTotal.amount === 0);",
+                  "if (!done && n < 40) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); } else { cv.unset(k); }",
+                  "if (done) { pm.test('скидки нет', () => { pm.expect(j.total.amount).to.eql(82700); pm.expect(j.appliedPromotions).to.eql([]); }); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "s8: заказ с уже зафиксированной скидкой не меняется",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{ordersUrl}}/orders/{{s8Order}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('снимок скидки неизменен', () => { const o = pm.response.json(); pm.expect(o.discountTotal.amount).to.eql(8270); pm.expect(o.total.amount).to.eql(74430); });"
                 ]
               }
             }

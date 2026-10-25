@@ -1,0 +1,1073 @@
+{
+  "info": {
+    "name": "loyalty-service",
+    "description": "S8: жизненный цикл акций, права (auth /authorize, в dev — локальные правила), конфликты E2, идемпотентность. Запуск: make newman SERVICE=loyalty (AUTH_MODE=dev). Сквозной сценарий скидка→корзина — postman/e2e (требует Kafka).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "runId",
+      "value": "run"
+    },
+    {
+      "key": "startsAt",
+      "value": ""
+    },
+    {
+      "key": "endsAt",
+      "value": ""
+    },
+    {
+      "key": "promoA",
+      "value": ""
+    },
+    {
+      "key": "promoB",
+      "value": ""
+    },
+    {
+      "key": "promoN",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.collectionVariables.get('runId') === 'run') { const now = Date.now(); pm.collectionVariables.set('runId', 'r' + now); pm.collectionVariables.set('startsAt', new Date(now - 3600e3).toISOString()); pm.collectionVariables.set('endsAt', new Date(now + 30 * 86400e3).toISOString()); }"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "liveness",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health/"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "readiness",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/actuator/health"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "guest: список действующих (публично)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions?restaurantId=a1000000-0000-4000-8000-000000000004"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('array', () => pm.expect(pm.response.json()).to.be.an('array'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "create без Idempotency-Key → 400",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Без ключа\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":1,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('code IDEMPOTENCY_KEY_REQUIRED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "клиент не управляет акциями → 403",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "c1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-cust"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Клиент\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":1,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "владелец: национальная акция → 403 SCOPE_NOT_ALLOWED",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-nat"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Нац\",\"scope\":\"national\",\"priority\":1,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('code SCOPE_NOT_ALLOWED', () => pm.expect(pm.response.json().code).to.eql('SCOPE_NOT_ALLOWED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "владелец: чужой ресторан → 403 NOT_BOUND_TO_RESTAURANT",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-r1"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Чужой\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000001\",\"priority\":1,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('code NOT_BOUND_TO_RESTAURANT', () => pm.expect(pm.response.json().code).to.eql('NOT_BOUND_TO_RESTAURANT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "владелец: создание локальной акции → 201 draft",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-a"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Скидка 15%\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "const p = pm.response.json();",
+              "pm.test('draft v1', () => { pm.expect(p.status).to.eql('draft'); pm.expect(p.version).to.eql(1); pm.expect(p.currency).to.eql('RUB'); });",
+              "pm.test('money as integers', () => pm.expect(pm.response.text()).to.include('\"value\":1500'));",
+              "pm.test('Location', () => pm.expect(pm.response.headers.get('Location')).to.eql('/promotions/' + p.id));",
+              "pm.collectionVariables.set('promoA', p.id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "повтор с тем же ключом → тот же ответ",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-a"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Скидка 15%\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "pm.test('same id', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('promoA')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "тот же ключ, другое тело → 422",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-a"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Другая\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":6,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 422', () => pm.response.to.have.status(422));",
+              "pm.test('code IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "черновик не виден гостю",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions?restaurantId=a1000000-0000-4000-8000-000000000004"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('draft hidden', () => pm.expect(pm.response.json().map(p => p.id)).to.not.include(pm.collectionVariables.get('promoA')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "get",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('draft', () => pm.expect(pm.response.json().status).to.eql('draft'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "get: неизвестная → 404",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/00000000-0000-4000-8000-000000000000"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('code PROMOTION_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "update (черновик)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Скидка 15% (ред.)\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('title updated', () => pm.expect(pm.response.json().title).to.eql('Скидка 15% (ред.)'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "активация → active, version растёт",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}/activation"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json();",
+              "pm.test('active', () => { pm.expect(p.status).to.eql('active'); pm.expect(p.version).to.be.above(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "активная акция видна гостю (скрытые поля нет)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions?restaurantId=a1000000-0000-4000-8000-000000000004"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const l = pm.response.json(); const p = l.find(x => x.id === pm.collectionVariables.get('promoA'));",
+              "pm.test('listed', () => pm.expect(p).to.exist);",
+              "pm.test('no internal fields', () => { pm.expect(p).to.not.have.property('createdBy'); pm.expect(p).to.not.have.property('status'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "правка активной акции → 200 (новая версия)",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Скидка 15% (ред. 2)\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('still active', () => pm.expect(pm.response.json().status).to.eql('active'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "конфликт E2: вторая акция того же охвата и приоритета",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-b"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Конкурент\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "pm.collectionVariables.set('promoB', pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "активация конфликтующей → 409 + conflictingPromotionIds",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoB}}/activation"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "pm.test('code PROMOTION_CONFLICT', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_CONFLICT'));",
+              "pm.test('lists the blocker', () => pm.expect(pm.response.json().conflictingPromotionIds).to.include(pm.collectionVariables.get('promoA')));",
+              "pm.test('problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "история изменений",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}/history"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const h = pm.response.json();",
+              "pm.test('created → activated', () => { pm.expect(h[0].action).to.eql('created'); pm.expect(h.map(x => x.action)).to.include('activated'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "завершение → completed",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}/completion"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('completed', () => pm.expect(pm.response.json().status).to.eql('completed'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "завершённая не видна гостю",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions?restaurantId=a1000000-0000-4000-8000-000000000004"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('hidden', () => pm.expect(pm.response.json().map(p => p.id)).to.not.include(pm.collectionVariables.get('promoA')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "правка завершённой → 409",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"X\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":5,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "pm.test('code PROMOTION_COMPLETED', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_COMPLETED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "после завершения конкурент активируется",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoB}}/activation"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('active', () => pm.expect(pm.response.json().status).to.eql('active'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "HQ: национальная акция (создание+активация)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-n"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Национальная\",\"scope\":\"national\",\"priority\":1,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":1500},\"conditions\":{\"minSubtotal\":0,\"stackable\":false}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "pm.collectionVariables.set('promoN', pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "HQ: активация национальной",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoN}}/activation"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "национальная видна в любом ресторане",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions?restaurantId=a1000000-0000-4000-8000-000000000001"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('national visible', () => pm.expect(pm.response.json().map(p => p.id)).to.include(pm.collectionVariables.get('promoN')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "уборка: завершение национальной",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoN}}/completion"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "уборка: завершение локальной",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoB}}/completion"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

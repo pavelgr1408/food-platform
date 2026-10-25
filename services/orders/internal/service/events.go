@@ -82,7 +82,7 @@ func StateEvent(o domain.Order) OrderStateEvent {
 		Source: "online", FulfillmentType: string(o.Fulfillment), DeliveryAddress: o.Address.Raw,
 		Customer:    stateCustomer{UserID: o.OwnerUserID, Guest: o.OwnerUserID == "", Phone: o.Contact.Phone, Name: o.Contact.Name},
 		TotalAmount: moneyEvent{o.Total, o.Currency}, PaymentMethod: o.PaymentMethod.EventForm(),
-		PaymentStatus: "pending", AppliedPromotions: []string{}, CreatedAt: o.CreatedAt,
+		PaymentStatus: "pending", AppliedPromotions: appliedIDs(o.Applied), CreatedAt: o.CreatedAt,
 	}
 	if o.Fulfillment == domain.FulfillmentDelivery && o.Address.Lat != nil && o.Address.Lon != nil {
 		ev.DeliveryLocation = &geoEvent{Lat: *o.Address.Lat, Lon: *o.Address.Lon}
@@ -139,4 +139,12 @@ func shortList(items []Unavailable) string {
 		ids = append(ids, fmt.Sprintf("%s(%s)", u.MenuItemID, u.ReasonCode))
 	}
 	return strings.Join(ids, ", ")
+}
+
+func appliedIDs(a []domain.AppliedPromotion) []string {
+	out := make([]string, 0, len(a))
+	for _, p := range a {
+		out = append(out, p.PromotionID)
+	}
+	return out
 }

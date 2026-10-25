@@ -25,5 +25,12 @@
   {"pattern": "POST /orders/{orderId}/payments/pos",              "upstream": "payment",    "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
   {"pattern": "GET /orders/{orderId}/payments/{paymentId}",       "upstream": "payment",    "access": "optional"},
   {"pattern": "GET /orders/{orderId}/delivery",                   "upstream": "delivery",   "access": "optional"},
-  {"pattern": "GET /orders/{orderId}/delivery/courier-location",  "upstream": "delivery",   "access": "optional"}
+  {"pattern": "GET /orders/{orderId}/delivery/courier-location",  "upstream": "delivery",   "access": "optional"},
+  {"pattern": "GET /promotions",                                    "upstream": "loyalty",    "access": "optional"},
+  {"pattern": "POST /promotions",                                   "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
+  {"pattern": "GET /promotions/{promotionId}",                      "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"]},
+  {"pattern": "PUT /promotions/{promotionId}",                      "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
+  {"pattern": "GET /promotions/{promotionId}/history",              "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"]},
+  {"pattern": "POST /promotions/{promotionId}/activation",          "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
+  {"pattern": "POST /promotions/{promotionId}/completion",          "upstream": "loyalty",    "access": "required", "roles": ["FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true}
 ]

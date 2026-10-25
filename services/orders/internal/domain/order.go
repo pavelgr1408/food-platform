@@ -202,6 +202,7 @@ type Order struct {
 	Currency                         string
 	Items                            []Line
 	Subtotal, DiscountTotal, Total   int64
+	Applied                          []AppliedPromotion // акции, применённые при оформлении (снимок, S8)
 	Revision                         int
 	Delivery                         *DeliverySnapshot // снимок доставки (S7), nil — событий доставки не было
 	CreatedAt, UpdatedAt             time.Time
