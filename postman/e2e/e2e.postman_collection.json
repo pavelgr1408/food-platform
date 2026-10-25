@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "e2e: сквозной MVP (веха M1)",
-    "description": "Сквозной сценарий платформы (S4): каталог → корзина → заказ → онлайн-оплата (mock шлюза) → производство (mock) → cooking → ready, ETA по загрузке производства, заказ без предоплаты, неоплаченный заказ не уходит в производство (ADR-10), «авария очереди» производства (E3). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\" (MOCKS=ping,payment,production). Запуск: make newman SERVICE=e2e. Ресторан №4 работает 24/7. Коллекция сама задаёт тайминги mock производства и возвращает их в конце; повторные прогоны безопасны. S8: папка 12 — акция loyalty → Kafka → скидка в orders (нужны loyalty и Kafka; через gateway — токен владельца: --env-var ownerToken=...).",
+    "description": "Сквозной сценарий платформы (S4): каталог → корзина → заказ → онлайн-оплата (mock шлюза) → производство (mock) → cooking → ready, ETA по загрузке производства, заказ без предоплаты, неоплаченный заказ не уходит в производство (ADR-10), «авария очереди» производства (E3). Срез: make up SLICE=\"restaurant menu orders payment mock-externals\" (MOCKS=ping,payment,production). Запуск: make newman SERVICE=e2e. Ресторан №4 работает 24/7. Коллекция сама задаёт тайминги mock производства и возвращает их в конце; повторные прогоны безопасны. S8: папка 12 — акция loyalty → Kafka → скидка в orders (нужны loyalty и Kafka; через gateway — токен владельца: --env-var ownerToken=...). S9: папка 13 — заказ зарегистрированного пользователя → push через mock провайдеров (нужны notification, Kafka, mock-externals с модулем push; через gateway — токены customerToken, customer2Token, staffToken). S9: папка 13 — заказ зарегистрированного пользователя → push через mock провайдеров (нужны notification, Kafka, mock-externals с модулем push; через gateway — токены customerToken, customer2Token, staffToken).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -55,6 +55,30 @@
     },
     {
       "key": "ownerToken",
+      "value": ""
+    },
+    {
+      "key": "notificationUrl",
+      "value": "http://localhost:8088"
+    },
+    {
+      "key": "pushUrl",
+      "value": "http://localhost:9095"
+    },
+    {
+      "key": "customerToken",
+      "value": ""
+    },
+    {
+      "key": "customer2Token",
+      "value": ""
+    },
+    {
+      "key": "staffToken",
+      "value": ""
+    },
+    {
+      "key": "s9Run",
       "value": ""
     }
   ],
@@ -3447,6 +3471,881 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "pm.test('снимок скидки неизменен', () => { const o = pm.response.json(); pm.expect(o.discountTotal.amount).to.eql(8270); pm.expect(o.total.amount).to.eql(74430); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "13. S9: заказ → push (orders.status → Kafka → notification → mock FCM/APNs)",
+      "item": [
+        {
+          "name": "0: меню: id бургера и колы (для самостоятельного запуска папки)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{menuUrl}}/restaurants/{{restaurantId}}/menu"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const all = pm.response.json().categories.flatMap(c => c.items);",
+                  "const burger = all.find(i => i.name === 'BLT Классик'), cola = all.find(i => i.name === 'Кола 0,5');",
+                  "pm.test('позиции есть в меню', () => { pm.expect(burger).to.exist; pm.expect(cola).to.exist; });",
+                  "pm.collectionVariables.set('burgerId', burger.id); pm.collectionVariables.set('colaId', cola.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0: mock push-провайдеров: сброс",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{pushUrl}}/_admin/push/reset"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: registerDeviceToken без токена доступа → 401 (гость не получает push)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"fcm\",\n  \"token\": \"guest\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: registerDeviceToken — рабочий fcm-токен покупателя (en) → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Accept-Language",
+                "value": "en"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"fcm\",\n  \"token\": \"e2e-s9-fcm-{{s9Run}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('s9Run', Date.now() + '' + Math.floor(Math.random() * 1000));",
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json(); pm.test('en', () => pm.expect(j.locale).to.eql('en')); pm.collectionVariables.set('s9Token', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: registerDeviceToken — «мёртвый» apns-токен (провайдер ответит Unregistered) → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"apns\",\n  \"token\": \"e2e-s9-invalid-{{s9Run}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s9DeadToken', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: listDeviceTokens — два токена",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('два токена', () => pm.expect(pm.response.json().length).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a: другой пользователь не может удалить чужой токен → 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-intruder-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens/{{s9Token}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customer2Token') || pm.environment.get('customer2Token'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 DEVICE_TOKEN_NOT_FOUND', () => { pm.response.to.have.status(404); pm.expect(pm.response.json().code).to.eql('DEVICE_TOKEN_NOT_FOUND'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: createCart (зарегистрированный покупатель)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s9Cart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s9Cart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    },\n    {\n      \"menuItemId\": \"{{colaId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: setCartFulfillment — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s9Cart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "b: createOrder (оплата в ресторане → accepted сразу) → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "e2e-s9-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{s9Cart}}\",\n  \"paymentMethod\": \"pos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const o = pm.response.json(); pm.test('accepted', () => pm.expect(o.status).to.eql('accepted')); pm.collectionVariables.set('s9Order', o.id); pm.collectionVariables.set('s9Number', String(o.number || ''));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: mock FCM — ждём push «заказ принят» (orders.status → notification → провайдер)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{pushUrl}}/_inspect/pushes?orderId={{s9Order}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables; const k = 'poll_s9a'; const n = Number(cv.get(k) || 0); let j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = !!j && (j.some(p => p.type === 'order_created'));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); } else { cv.unset(k); }",
+                  "if (!done && n >= 60) { pm.test('дождались результата (за 60 опросов)', () => pm.expect(done).to.be.true); }",
+                  "if (done) {",
+                  "  const p = j.find(x => x.type === 'order_created');",
+                  "  pm.test('ушёл на fcm-токен покупателя', () => { pm.expect(p.provider).to.eql('fcm'); pm.expect(p.token).to.eql('e2e-s9-fcm-' + pm.collectionVariables.get('s9Run')); });",
+                  "  pm.test('текст на языке устройства (en) и ссылка на заказ', () => { pm.expect(p.title).to.be.a('string').and.not.empty; pm.expect(p.body).to.match(/order/i); pm.expect(p.orderId).to.eql(pm.collectionVariables.get('s9Order')); });",
+                  "  pm.test('«мёртвый» токен push не получил', () => pm.expect(j.filter(x => x.provider === 'apns').length).to.eql(0));",
+                  "  pm.test('ровно одно уведомление этого типа', () => pm.expect(j.filter(x => x.type === 'order_created').length).to.eql(1));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "c: listDeviceTokens — недействительный токен удалён автоматически",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables; const k = 'poll_s9b'; const n = Number(cv.get(k) || 0); let j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = !!j && (j.length === 1);",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); } else { cv.unset(k); }",
+                  "if (!done && n >= 60) { pm.test('дождались результата (за 60 опросов)', () => pm.expect(done).to.be.true); }",
+                  "if (done) {",
+                  "  pm.test('остался рабочий токен', () => pm.expect(j[0].id).to.eql(pm.collectionVariables.get('s9Token')));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: гость оформляет заказ (userId нет) → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"restaurantId\": \"{{restaurantId}}\",\n  \"guest\": true,\n  \"contact\": {\n    \"name\": \"Гость\",\n    \"phone\": \"+79990000099\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s9GCart', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: гость — updateCartItems",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s9GCart}}/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"menuItemId\": \"{{burgerId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: гость — самовывоз",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/carts/{{s9GCart}}/fulfillment",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"pickup\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "d: гость — createOrder (pos)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "e2e-s9g-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cartId\": \"{{s9GCart}}\",\n  \"paymentMethod\": \"pos\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('s9GOrder', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: персонал отменяет заказ покупателя (accepted → cancelled)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-s9"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{ordersUrl}}/orders/{{s9Order}}/cancellation",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"out_of_stock\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('staffToken') || pm.environment.get('staffToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 cancelled', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('cancelled'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: mock FCM — ждём push «заказ отменён» (высокий приоритет, причина в тексте)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{pushUrl}}/_inspect/pushes?orderId={{s9Order}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cv = pm.collectionVariables; const k = 'poll_s9c'; const n = Number(cv.get(k) || 0); let j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "const done = !!j && (j.some(p => p.type === 'order_cancelled'));",
+                  "if (!done && n < 60) { cv.set(k, n + 1); setTimeout(() => {}, 500); (pm.execution && pm.execution.setNextRequest ? pm.execution.setNextRequest : postman.setNextRequest)(pm.info.requestName); } else { cv.unset(k); }",
+                  "if (!done && n >= 60) { pm.test('дождались результата (за 60 опросов)', () => pm.expect(done).to.be.true); }",
+                  "if (done) {",
+                  "  const p = j.find(x => x.type === 'order_cancelled');",
+                  "  pm.test('приоритет высокий, причина в тексте', () => { pm.expect(p.priority).to.eql('high'); pm.expect(p.body.toLowerCase()).to.include('stock'); });",
+                  "  pm.test('по заказу ровно два push: принят и отменён', () => pm.expect(j.map(x => x.type).sort()).to.eql(['order_cancelled', 'order_created']));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: push гостю не отправлялся (токенов нет)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{pushUrl}}/_inspect/pushes?orderId={{s9GOrder}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('пусто', () => pm.expect(pm.response.json()).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "e: счётчики mock — отказ по «мёртвому» токену не создал повторов",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{pushUrl}}/_inspect/push"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('принято ровно 2 push; один отказ invalid_token', () => { pm.expect(j.accepted).to.eql(2); pm.expect((j.counts || {}).invalid_token || 0).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: deleteDeviceToken — выход из аккаунта → 204",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens/{{s9Token}}"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "f: listDeviceTokens — пусто",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "s9-customer-{{s9Run}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{notificationUrl}}/notifications/device-tokens"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.collectionVariables.get('customerToken') || pm.environment.get('customerToken'); if (t) { pm.request.headers.add({ key: 'Authorization', value: 'Bearer ' + t }); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('пусто', () => pm.expect(pm.response.json()).to.eql([]));"
                 ]
               }
             }
