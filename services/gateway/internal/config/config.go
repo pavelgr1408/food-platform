@@ -14,11 +14,11 @@ import (
 )
 
 // Upstreams — сервисы, на которые ссылается таблица маршрутов.
-var Upstreams = []string{"auth", "restaurant", "menu", "orders", "payment"}
+var Upstreams = []string{"auth", "restaurant", "menu", "orders", "payment", "delivery"}
 
 var defaultUpstreamURL = map[string]string{
 	"auth": "http://localhost:8081", "restaurant": "http://localhost:8082", "menu": "http://localhost:8083",
-	"orders": "http://localhost:8084", "payment": "http://localhost:8085",
+	"orders": "http://localhost:8084", "payment": "http://localhost:8085", "delivery": "http://localhost:8087",
 }
 
 // Config — настройки gateway.

@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: payment-service — REST API
-  version: 1.3.1
+  version: 1.4.0
   description: >-
     Обработка платежей: способы оплаты, инициализация онлайн-оплаты, оплаты на
     кассе/терминале, статус платежа. Интеграция с платёжным шлюзом и кассовой
@@ -13,7 +13,7 @@ info:
     **Статус реализации** (`x-status` на операциях): `implemented` — есть в коде
     `services/payment`; `planned` — целевое поведение, появится в указанном этапе.
     Реализованы **онлайн-оплата картой** (`online_card`, S3) и **оплата на кассе** (`pos`,
-    инициация персоналом, S6); оплата курьеру (`courier_card`) — S7.
+    инициация персоналом, S6) и **оплата курьеру** (`courier_card`, система создаёт платёж сама, S7).
 
 
     **Оплата на кассе (S6).** `initiatePosPayment` вызывает сотрудник ресторана заказа
@@ -25,6 +25,19 @@ info:
     кассы `/webhooks/payments/pos` вместе с `fiscalData` (фискальный документ сохраняется как
     JSON и отдаётся в `Payment.fiscalData`), недостающее добирает reconciler. Наличные тоже
     проводятся через терминал (`tender=cash`).
+
+
+    **Оплата курьеру (S7, UC-PAY-03).** Для заказа с доставкой и способом `courier_card` клиент
+    ничего не инициирует: на `orders.state` (`revision=1`) payment-service сам создаёт платёж
+    (`method=courier_card`, `pending`, одна живая попытка на заказ) и операцию у шлюза (идемпотентно, ключ —
+    `paymentId`), после чего публикует `orders.payments.link` с платёжной ссылкой; delivery-service
+    передаёт её курьерской системе. Курьер (или клиент) оплачивает по ссылке, итог приходит обычным
+    вебхуком шлюза (`/webhooks/payments/gateway`) — **единственный источник правды о деньгах**;
+    признак «оплачено» от курьерской системы (`paid` в вебхуке доставки) на статус платежа не влияет.
+    Срок жизни такого платежа — `COURIER_PAYMENT_TTL` (по умолчанию 4 ч, а не `PENDING_EXPIRY`:
+    доставка длится дольше онлайн-оплаты); по истечении — `declined/expired`. Платёж виден в
+    `getPayment` с `paymentUrl`. Отмена заказа снимает операцию у шлюза (как у неоплаченного онлайн-платежа).
+    Отказ банка (`declined`) в S7 не порождает новую ссылку автоматически (ограничение).
 
 
     **Возвраты (S6).** payment-service потребляет `orders.status`: `cancelled` по оплаченному
@@ -95,7 +108,8 @@ paths:
         Способы оплаты для способа получения заказа: самовывоз — `online_card`, `pos`;
         доставка — `online_card`, `courier_card`. `enabled=true` — только способ, выбранный
         при оформлении заказа, и только пока его можно оплатить: для `online_card` заказ
-        должен быть в `pending_payment` (не отменён, не оплачен). Способ оплаты меняется
+        должен быть в `pending_payment` (не отменён, не оплачен); `courier_card` и `pos` всегда
+        `enabled=false`: курьерский платёж создаёт система (S7), кассовый — персонал. Способ оплаты меняется
         пересозданием заказа; смена способа у существующего заказа не поддерживается.
         Платёжный сервис знает о заказе из события `orders.state`. (UC-PAY-01)
       parameters:
@@ -137,8 +151,9 @@ paths:
         мог быть создан, ждите итога (`getPayment`).
 
 
-        `courier_card` (UC-PAY-03) — S7, `pos` — отдельная операция `initiatePosPayment` (S6);
-        для них здесь `422 PAYMENT_METHOD_NOT_SUPPORTED`.
+        `courier_card` (UC-PAY-03) создаётся системой по событию заказа (S7, см. описание контракта),
+        `pos` — отдельная операция `initiatePosPayment` (S6); для них здесь
+        `422 PAYMENT_METHOD_NOT_SUPPORTED`.
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
         - { $ref: '#/components/parameters/IdempotencyKeyRequired' }
@@ -186,7 +201,7 @@ paths:
         '422':
           description: >-
             `PAYMENT_METHOD_NOT_ALLOWED` (способ не совпадает со способом заказа),
-            `PAYMENT_METHOD_NOT_SUPPORTED` (`courier_card`/`pos` — S6/S7),
+            `PAYMENT_METHOD_NOT_SUPPORTED` (`courier_card` создаётся системой, `pos` — персоналом),
             `IDEMPOTENCY_KEY_REUSED`
           content:
             application/problem+json:

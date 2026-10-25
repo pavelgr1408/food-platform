@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: Система управления заказами — асинхронные взаимодействия
-  version: 1.2.0
+  version: 1.3.0
   description: |
     Асинхронный контракт платформы управления заказами сети кафе.
 
@@ -131,8 +131,11 @@ channels:
     address: orders.payments.link
     title: Платёжная ссылка
     description: |
-      Ссылка на оплату для оффлайн-сценариев (оплата курьеру через терминал).
-      Продюсер — payment-service. Потребитель — delivery-service. См. UC-PAY-03.
+      Ссылка на оплату для оффлайн-сценариев (оплата курьеру картой при вручении).
+      Продюсер — payment-service: для заказа с доставкой и способом оплаты `courier` создаёт платёж
+      и ссылку сразу после `orders.state` (`revision=1`). Потребитель — delivery-service: хранит
+      ссылку и передаёт курьерской системе. Оплату подтверждает только payment-service по вебхуку
+      платёжного шлюза (`orders.payments.status`). См. UC-PAY-03.
     servers:
       - $ref: '#/servers/kafka'
     bindings:
@@ -169,6 +172,8 @@ channels:
     description: |
       Статус доставки заказа. Продюсер — delivery-service (по данным
       курьерской системы). Потребитель — orders-service. См. UC-RCV-02, UC-PAY-03.
+      Событие — снимок текущего статуса доставки (не дельта): публикуется при каждой смене
+      статуса; `updatedAt` монотонен, потребитель игнорирует событие не новее обработанного.
     servers:
       - $ref: '#/servers/kafka'
     bindings:
@@ -804,6 +809,15 @@ components:
           enum: [delivery, pickup]
         deliveryAddress:
           type: string
+        deliveryLocation:
+          type: object
+          required: [lat, lon]
+          description: >-
+            Координаты адреса доставки (S7); есть у заказов с `fulfillmentType=delivery`.
+            delivery-service передаёт их курьерской системе как точку вручения.
+          properties:
+            lat: { type: number, format: double }
+            lon: { type: number, format: double }
         customer:
           type: object
           properties:
@@ -872,6 +886,9 @@ components:
             payment-service по `cancelled` возвращает деньги или отменяет операцию у шлюза.
             `handed_over` → `closed` с `reason=issued` — выдача в ресторане (оба события публикуются
             подряд, S6); `not_received` с `reason=pickup_timeout` — самовывоз не забрали.
+            Доставка (S7): `on_delivery` с `reason=courier_picked_up` — курьер забрал заказ;
+            `delivered` с `reason=delivered`; `delivered` → `closed` — как только заказ оплачен;
+            `not_received` с `reason=undelivered` — курьер не доставил.
         etaReadyAt:
           type: string
           format: date-time
@@ -883,8 +900,8 @@ components:
         reason:
           type: string
           description: >-
-            Пояснение статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued` или код причины
-            отмены персоналом.
+            Пояснение статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued`,
+            `courier_picked_up`, `delivered`, `undelivered` или код причины отмены персоналом.
         updatedAt: { type: string, format: date-time }
 
     PaymentStatus:
@@ -979,6 +996,14 @@ components:
     DeliveryStatus:
       type: object
       required: [orderId, deliveryId, status, updatedAt]
+      description: >-
+        Снимок статуса доставки (ключ партиции — `orderId`). Статусы только вперёд:
+        `searching → assigned → picked_up → en_route → delivered`, либо `failed`. orders-service
+        применяет событие, если `updatedAt` новее обработанного: `picked_up`/`en_route` ведут
+        `ready → on_delivery` (если заказ ещё не `ready`, переход откладывается до готовности),
+        `delivered` — `on_delivery → delivered` (и `closed` при оплате), `failed` при `on_delivery`
+        с `reason=undelivered` — `not_received`; `failed` с `reason=no_courier` заказ не меняет
+        (E2: клиенту предлагается самовывоз).
       properties:
         orderId: { type: string, format: uuid }
         deliveryId: { type: string }
@@ -986,6 +1011,14 @@ components:
         status:
           type: string
           enum: [searching, assigned, picked_up, en_route, delivered, failed]
+        reason:
+          type: string
+          enum: [no_courier, undelivered, cancelled]
+          description: Причина `failed`.
+        etaAt:
+          type: string
+          format: date-time
+          description: Оценка времени вручения от курьерской системы.
         updatedAt: { type: string, format: date-time }
 
     ProductionLeadTime:
@@ -1095,14 +1128,29 @@ components:
 
     DeliveryWebhook:
       type: object
-      required: [orderId, deliveryId, status, timestamp]
+      required: [eventId, orderId, status, timestamp]
+      description: >-
+        Уведомление курьерской системы, подпись `X-Signature` (HMAC-SHA256, как у вебхуков
+        платежей). Дедупликация по `eventId`. `paid` информативен: деньги подтверждает только
+        payment-service.
       properties:
+        eventId: { type: string }
         orderId: { type: string, format: uuid }
         deliveryId: { type: string }
         courierId: { type: string }
+        courier:
+          type: object
+          properties:
+            name: { type: string }
+            phone: { type: string }
         status:
           type: string
-          enum: [assigned, picked_up, delivered, paid, failed]
+          enum: [assigned, picked_up, en_route, delivered, failed]
+        reason:
+          type: string
+          description: Причина `failed` (`no_courier`, `undelivered`).
+        etaAt: { type: string, format: date-time }
+        paid: { type: boolean }
         timestamp: { type: string, format: date-time }
 
     PushNotification:

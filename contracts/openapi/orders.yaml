@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.5.0
+  version: 1.6.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -71,6 +71,32 @@ info:
     Каждый переход публикуется в `orders.status`, для `accepted`/`cooking` — с `etaReadyAt`.
 
 
+    **Доставка (S7).** Для заказа с доставкой orders потребляет `orders.delivery.status`
+    (delivery-service). Снимок статуса доставки хранится у заказа (`Order.delivery`) и применяется
+    по `updatedAt` (устаревшее событие игнорируется). Курьер ищется параллельно с приготовлением,
+    поэтому доставка может ждать готовности заказа: `picked_up`/`en_route` переводит
+    `ready → on_delivery` (если заказ ещё не `ready`, переход выполняется в момент готовности,
+    в той же транзакции); `delivered` — `on_delivery → delivered`; после `delivered` заказ
+    закрывается (`delivered → closed`), как только `paymentStatus=paid` (при онлайн-оплате — сразу,
+    при оплате курьеру — когда payment подтвердит деньги). `failed/undelivered` у `on_delivery`
+    заказа — `not_received` (`statusReason=undelivered`). `failed/no_courier` заказ **не
+    отменяет и не двигает**: он остаётся `ready`, клиенту предлагается самовывоз, а сотрудник
+    выдаёт заказ в ресторане операцией `markOrderIssued` (E2 UC-ORD-06). Такой заказ, как и
+    не забранный самовывоз, не получаемый за `NOT_RECEIVED_AFTER`, переходит в `not_received`
+    (`pickup_timeout`). Событие по заказу вне `ready`/`on_delivery`/`delivered` (кроме
+    запоминания снимка) ничего не меняет.
+
+
+    **Адрес и зона доставки (S7, долг №10).** Доставка требует координат адреса
+    (`address.location`, клиент получает их от карты на своей стороне): без них —
+    `422 ADDRESS_LOCATION_REQUIRED`. Расстояние от ресторана до адреса считается по
+    данным `getRestaurant` (`location`, `deliveryRadiusMeters`) и не должно превышать радиус
+    доставки: иначе `422 ADDRESS_OUT_OF_ZONE` с расширением `distanceMeters`, `radiusMeters` и
+    `hint=pickup`. Проверка выполняется при `setCartFulfillment` (раннее сообщение клиенту) и
+    повторно при `createOrder` (ресторан мог изменить радиус); недоступность restaurant-service
+    — `503 RESTAURANT_UNAVAILABLE` (fail-closed).
+
+
     **Деньги** — целые копейки (ADR-13); скидки пока `0` (расчёт — S8, интерфейс
     `Discounter` заложен, реализация-заглушка).
 
@@ -85,6 +111,7 @@ info:
     `IDEMPOTENCY_KEY_REQUIRED|INVALID|REUSED|IN_PROGRESS`, `RESTAURANT_NOT_FOUND`,
     `CART_NOT_FOUND`, `CART_EMPTY`, `CART_CLOSED`, `CART_CHANGED`, `ITEMS_UNAVAILABLE`,
     `PRICE_CHANGED`, `RESTAURANT_CLOSED`, `DELIVERY_NOT_AVAILABLE`, `ADDRESS_REQUIRED`,
+    `ADDRESS_LOCATION_REQUIRED`, `ADDRESS_OUT_OF_ZONE`,
     `FULFILLMENT_REQUIRED`, `CONTACT_REQUIRED`, `PAYMENT_METHOD_NOT_ALLOWED`,
     `ORDER_NOT_FOUND`, `ORDER_STATE_CONFLICT`, `INVALID_SLOT`, `MENU_UNAVAILABLE`,
     `RESTAURANT_UNAVAILABLE`, `UNAUTHORIZED`, `FORBIDDEN`, `ORDER_NOT_PAID`,
@@ -210,7 +237,9 @@ paths:
       description: >-
         Устанавливает способ получения (доставка / самовывоз) и, при доставке, адрес
         (`ADDRESS_REQUIRED`, если пуст; ресторан должен поддерживать доставку —
-        `DELIVERY_NOT_AVAILABLE`). Проверка радиуса доставки по адресу клиента — S7.
+        `DELIVERY_NOT_AVAILABLE`). **S7:** у адреса обязательны координаты
+        (`ADDRESS_LOCATION_REQUIRED`), а адрес должен быть в радиусе доставки ресторана
+        (`ADDRESS_OUT_OF_ZONE`, расширения `distanceMeters`/`radiusMeters`, `hint=pickup`).
         (UC-ORD-01, UC-RCV-01)
       parameters:
         - { $ref: '#/components/parameters/CartId' }
@@ -232,7 +261,13 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
-        '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
+        '422':
+          description: >-
+            `ADDRESS_REQUIRED`, `ADDRESS_LOCATION_REQUIRED`, `ADDRESS_OUT_OF_ZONE`,
+            `DELIVERY_NOT_AVAILABLE`
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/OutOfZoneProblem' }
         '503':
           description: restaurant-service недоступен (`RESTAURANT_UNAVAILABLE`)
           content:
@@ -312,10 +347,12 @@ paths:
         '422':
           description: >-
             `CART_EMPTY`, `FULFILLMENT_REQUIRED`, `CONTACT_REQUIRED`,
-            `PAYMENT_METHOD_NOT_ALLOWED` (для `staff_fax` — и `online_card`), `IDEMPOTENCY_KEY_REUSED`
+            `PAYMENT_METHOD_NOT_ALLOWED` (для `staff_fax` — и `online_card`), `IDEMPOTENCY_KEY_REUSED`,
+            `DELIVERY_NOT_AVAILABLE`, `ADDRESS_LOCATION_REQUIRED`, `ADDRESS_OUT_OF_ZONE` (S7: повторная
+            проверка зоны; расширения `distanceMeters`/`radiusMeters`)
           content:
             application/problem+json:
-              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+              schema: { $ref: '#/components/schemas/OutOfZoneProblem' }
         '503':
           description: menu-/restaurant-service недоступны (`MENU_UNAVAILABLE`, `RESTAURANT_UNAVAILABLE`); корзина сохранена
           content:
@@ -353,7 +390,14 @@ paths:
         `approximate=false`. Реплики нет или она устарела (производство молчит, E1) →
         типовое время (настраивается) и `approximate=true`; сам заказ при этом не теряется.
         Для заказа, уже ставшего `ready`, `readyAt` — момент готовности, `estimateMinutes=0`.
-        (UC-ORD-05)
+
+
+        **Доставка (S7).** `deliveryAt` — время вручения. Если delivery-service сообщил оценку
+        курьерской системы (`etaAt` в `orders.delivery.status`, не старше срока годности), то
+        `deliveryAt` = она и `approximate=false` (при условии свежей оценки производства или
+        готового заказа); иначе — `readyAt` + типовое время доставки (`ETA_DELIVERY_MINUTES`)
+        и `approximate=true`. Для доставленного заказа `deliveryAt` — фактическое время
+        `delivered`. (UC-ORD-05, UC-RCV-02)
       parameters:
         - { $ref: '_common.yaml#/components/parameters/OrderId' }
       responses:
@@ -447,7 +491,10 @@ paths:
       description: >-
         Фиксирует факт выдачи заказа клиенту (`ready → handed_over → closed`, одна транзакция,
         два события `orders.status`). Доступно сотруднику ресторана заказа при получении в
-        ресторане (самовывоз). Условия: статус `ready`, `paymentStatus=paid`. Если оплата
+        ресторане (самовывоз). **S7:** заказ с доставкой выдаётся в ресторане только если
+        доставка не состоялась из-за отсутствия курьера (`delivery.status=failed`,
+        `failReason=no_courier`) — клиент принял предложение забрать заказ сам (E2). Условия:
+        статус `ready`, `paymentStatus=paid`. Если оплата
         `pos` ещё не принята — `409 ORDER_NOT_PAID`: сначала `initiatePosPayment`. Повтор для
         уже выданного (`closed` через `handed_over`) заказа — `200` без эффекта.
         (UC-RCV-03, UC-RCV-01)
@@ -472,7 +519,9 @@ paths:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '422':
-          description: '`NOT_PICKUP_ORDER` — заказ с доставкой выдаёт курьер (S7)'
+          description: >-
+            `NOT_PICKUP_ORDER` — заказ с доставкой выдаёт курьер (исключение — `failed/no_courier`,
+            см. выше)
           content:
             application/problem+json:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
@@ -549,7 +598,12 @@ components:
       type: object
       properties:
         raw: { type: string, maxLength: 300 }
-        location: { $ref: '_common.yaml#/components/schemas/GeoPoint' }
+        location:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/GeoPoint'
+          description: >-
+            Координаты адреса от карты клиента. Для доставки обязательны (S7,
+            `ADDRESS_LOCATION_REQUIRED`); для самовывоза не нужны.
     CartItemInput:
       type: object
       required: [menuItemId, quantity]
@@ -683,8 +737,9 @@ components:
         statusReason:
           type: string
           description: >-
-            Причина статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued` или код причины
-            отмены персоналом (`customer_request`, `out_of_stock`, `restaurant_closed`, `other`).
+            Причина статуса: `paid`, `payment_timeout`, `pickup_timeout`, `issued`, `courier_picked_up`,
+            `delivered`, `undelivered` (S7) или код причины отмены персоналом (`customer_request`,
+            `out_of_stock`, `restaurant_closed`, `other`).
         channel:
           type: string
           enum: [online, staff_fax]
@@ -703,7 +758,40 @@ components:
         discountTotal: { $ref: '_common.yaml#/components/schemas/Money' }
         total: { $ref: '_common.yaml#/components/schemas/Money' }
         eta: { $ref: '#/components/schemas/Eta' }
+        delivery:
+          $ref: '#/components/schemas/OrderDelivery'
         createdAt: { type: string, format: date-time }
+    OrderDelivery:
+      type: object
+      required: [status]
+      description: >-
+        Снимок доставки из `orders.delivery.status` (только заказ с доставкой, после первого
+        события delivery-service). Подробности (курьер, координаты) — `getDeliveryInfo` и
+        `getCourierLocation` (delivery.yaml).
+      properties:
+        status:
+          type: string
+          enum: [searching, assigned, picked_up, en_route, delivered, failed]
+        failReason:
+          type: string
+          enum: [no_courier, undelivered, cancelled]
+        hint:
+          type: string
+          enum: [pickup]
+          description: '`pickup` при `failed/no_courier`: предложить клиенту забрать заказ в ресторане (E2).'
+        etaAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    OutOfZoneProblem:
+      description: >-
+        Problem Details; при `ADDRESS_OUT_OF_ZONE` содержит расстояние до ресторана, радиус
+        доставки и подсказку `pickup`.
+      allOf:
+        - $ref: '_common.yaml#/components/schemas/Problem'
+        - type: object
+          properties:
+            distanceMeters: { type: integer, minimum: 0 }
+            radiusMeters: { type: integer, minimum: 0 }
+            hint: { type: string, enum: [pickup] }
     StaffOrder:
       description: Заказ с контактами клиента — ответ `searchOrder`.
       allOf:

@@ -23,5 +23,7 @@
   {"pattern": "GET /orders/{orderId}/payment-methods",            "upstream": "payment",    "access": "optional"},
   {"pattern": "POST /orders/{orderId}/payments",                  "upstream": "payment",    "access": "optional", "sensitive": true},
   {"pattern": "POST /orders/{orderId}/payments/pos",              "upstream": "payment",    "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"], "sensitive": true},
-  {"pattern": "GET /orders/{orderId}/payments/{paymentId}",       "upstream": "payment",    "access": "optional"}
+  {"pattern": "GET /orders/{orderId}/payments/{paymentId}",       "upstream": "payment",    "access": "optional"},
+  {"pattern": "GET /orders/{orderId}/delivery",                   "upstream": "delivery",   "access": "optional"},
+  {"pattern": "GET /orders/{orderId}/delivery/courier-location",  "upstream": "delivery",   "access": "optional"}
 ]
