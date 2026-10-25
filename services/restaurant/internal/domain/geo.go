@@ -1,6 +1,10 @@
 package domain
 
-import "math"
+import (
+	"math"
+
+	"github.com/pavelgr1408/food-platform/pkg/geo"
+)
 
 // EarthRadiusM — средний радиус Земли, м.
 const EarthRadiusM = 6371000.0
@@ -11,12 +15,7 @@ type Point struct{ Lat, Lon float64 }
 // DistanceMeters — расстояние по большому кругу (формула гаверсинуса), округлённое до метра.
 // Эталон для тестов SQL-реализации в store.
 func DistanceMeters(a, b Point) int {
-	const rad = math.Pi / 180
-	dLat := (b.Lat - a.Lat) * rad
-	dLon := (b.Lon - a.Lon) * rad
-	h := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(a.Lat*rad)*math.Cos(b.Lat*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
-	return int(math.Round(2 * EarthRadiusM * math.Asin(math.Min(1, math.Sqrt(h)))))
+	return int(math.Round(geo.DistanceMeters(a.Lat, a.Lon, b.Lat, b.Lon)))
 }
 
 // BBox — прямоугольник широта/долгота. Если LonAll — фильтр по долготе не нужен (полюс).
