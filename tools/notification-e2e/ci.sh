@@ -18,7 +18,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-dburl() { echo "${ADMIN%/*}/$1?sslmode=disable"; }
+# Отдельные БД с суффиксом _e2e: базы compose-стенда (владелец — роль сервиса) не трогаем, иначе после прогона
+# контейнеры падают с «permission denied for schema public».
+dburl() { echo "${ADMIN%/*}/$1_e2e?sslmode=disable"; }
 P_RESTAURANT=8082 P_MENU=8083 P_ORDERS=8084 P_NOTIFICATION=8088 P_PUSH=9095 P_KAFKA=19092
 BROKER=127.0.0.1:$P_KAFKA
 
@@ -41,7 +43,7 @@ if [ "${#busy[@]}" -gt 0 ]; then
 fi
 
 for db in restaurant menu orders notification; do
-  psql "$ADMIN" -qc "DROP DATABASE IF EXISTS $db WITH (FORCE)" -c "CREATE DATABASE $db"
+  psql "$ADMIN" -qc "DROP DATABASE IF EXISTS ${db}_e2e WITH (FORCE)" -c "CREATE DATABASE ${db}_e2e"
 done
 for svc in restaurant menu orders notification; do
   go build -o "$WORK/$svc" "./services/$svc/cmd/$svc-service"
