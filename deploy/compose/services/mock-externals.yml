@@ -3,6 +3,7 @@
 # pos — кассовая система (:9093, S6): оплата на кассе с фискальными данными, тот же протокол и возвраты.
 # courier — курьерская система (:9094, S7): назначает курьера, ведёт доставку вебхуками, отдаёт координаты; оплата курьеру — через мок шлюза.
 # production — система производства (:9092, S4): читает orders.state, публикует orders.dish.status и production.lead.time.
+# push — провайдеры push APNs/FCM/HMS (:9095, S9): принимают уведомления notification-service, /_inspect/pushes показывает принятые.
 services:
   mock-externals:
     build:
@@ -12,7 +13,7 @@ services:
         SRC: tools/mock-externals
         TARGET: ./tools/mock-externals
     environment:
-      MOCKS: ${MOCKS:-ping,payment,pos,production,courier}
+      MOCKS: ${MOCKS:-ping,payment,pos,production,courier,push}
       MOCK_DELAY: ${MOCK_DELAY:-2s}
       KAFKA_BROKERS: kafka:9092
       MOCK_PAYMENT_WEBHOOK_URL: http://payment:8085/webhooks/payments/gateway

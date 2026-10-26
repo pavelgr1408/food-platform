@@ -132,6 +132,20 @@ make loyalty-e2e                    # то же без Docker: реальные 
 - `createOrder` принимает необязательный `expectedTotal`: итог изменился (появилась/закончилась акция) → `409 TOTAL_CHANGED`, клиент перечитывает корзину. Скидка фиксируется в заказе
   (`appliedPromotions`) и не меняется при завершении акции.
 
+## Push-уведомления (S9)
+```bash
+make up SLICE="restaurant menu orders notification mock-externals"
+make newman SERVICE=notification    # токены устройств напрямую (AUTH_MODE=dev): изоляция пользователей, язык, валидация
+make newman SERVICE=e2e             # раздел 13: заказ → orders.status → push на мок FCM, недействительный токен, отмена, гость без push
+make notification-e2e               # то же без Docker: реальные бинарники + in-memory Kafka (tools/kfake-broker)
+```
+- `make notification-e2e` проверяет, что порты 8082/8083/8084/8088/9095/19092 свободны (код 2 и список занятых при конфликте).
+- Провайдеры APNs/FCM/HMS — один мок на `:9095` (модуль `push` в mock-externals, `MOCKS=…,push`): принятые уведомления — `GET :9095/_inspect/pushes?orderId=…`, счётчики — `/_inspect/push`.
+  Режимы: `POST /_admin/push/mode`, исход следующего запроса — `POST /_admin/push/next?outcome=ok|error|invalid`, сброс — `POST /_admin/push/reset`.
+  Токен, содержащий `invalid`, получает «устройство не зарегистрировано», `reject` — постоянный отказ, `flaky` — первый запрос 503.
+- Пауза повтора в compose-срезе сокращена до 1 с (`NOTIFICATION_SEND_BACKOFF`); в проде по умолчанию 2 с … 5 мин, 6 попыток.
+- Через gateway для папки 13 нужны токены `customerToken`, `customer2Token`, `staffToken` (`--env-var`); push-токены регистрирует только зарегистрированный пользователь.
+
 ## Сценарии персонала (S6): касса, факс, выдача, отмена и возврат
 ```bash
 make up SLICE="restaurant menu orders payment mock-externals"

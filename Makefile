@@ -54,7 +54,7 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- сервисы ----------
-.PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check loyalty-e2e
+.PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check loyalty-e2e notification-e2e
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084
 	tools/new-service/new-service.sh "$(NAME)" "$(PORT)"
 keys: ## Dev RSA-ключи JWT: make keys SERVICE=auth (в git не попадают)
@@ -99,6 +99,8 @@ perimeter-check: ## Периметр без Docker: auth+restaurant+menu+orders+
 	tools/perimeter/ci.sh
 loyalty-e2e: ## S8 без Docker: loyalty → Kafka (in-memory kfake) → orders, скидка в корзине/заказе, newman папка 12 (нужны Go, psql, newman/npx)
 	tools/loyalty-e2e/ci.sh
+notification-e2e: ## S9 без Docker: заказ → Kafka (kfake) → notification → mock APNs/FCM/HMS, newman notification и папка 13 (нужны Go, psql, newman/npx)
+	tools/notification-e2e/ci.sh
 
 ## ---------- Kubernetes / Helm ----------
 .PHONY: validate-values helm-lint k8s-dev-secrets k8s-smoke-auth k8s-smoke-perimeter k8s-smoke-perimeter-checks k8s-clean
@@ -110,7 +112,7 @@ helm-lint: validate-values ## helm lint + template для каждого values-
 k8s-dev-secrets: ## Secret'ы dev-стенда в NS (БД сервисов + JWT-ключи auth); в git не попадают
 	kubectl create namespace $(NS) --dry-run=client -o yaml | kubectl apply -f -
 	$(MAKE) keys SERVICE=auth
-	@for svc in auth restaurant menu orders payment delivery loyalty; do \
+	@for svc in auth restaurant menu orders payment delivery loyalty notification; do \
 	  kubectl -n $(NS) create secret generic $$svc-secrets \
 	    --from-literal=DATABASE_URL="postgres://$$svc:$$svc@postgres:5432/$$svc?sslmode=disable" --dry-run=client -o yaml | kubectl apply -f - || exit 1; done
 	kubectl -n $(NS) create secret generic auth-jwt \

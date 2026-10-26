@@ -68,7 +68,7 @@ paths:
     post:
       tags: [notification-service]
       operationId: registerDeviceToken
-      x-status: planned
+      x-status: implemented
       summary: Зарегистрировать разрешения и push-токен
       description: >-
         Регистрирует push-токен устройства и разрешения на уведомления. Операция естественно
@@ -108,7 +108,7 @@ paths:
     get:
       tags: [notification-service]
       operationId: listDeviceTokens
-      x-status: planned
+      x-status: implemented
       summary: Токены устройств текущего пользователя
       description: >-
         Токены текущего пользователя, от новых к старым. Чужие токены не возвращаются.
@@ -126,7 +126,7 @@ paths:
     delete:
       tags: [notification-service]
       operationId: deleteDeviceToken
-      x-status: planned
+      x-status: implemented
       summary: Отозвать push-токен
       description: >-
         Удаляет токен текущего пользователя (например, при выходе из аккаунта). Уведомления, которые

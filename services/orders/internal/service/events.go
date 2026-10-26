@@ -72,6 +72,7 @@ type OrderStatusEvent struct {
 	Status      string     `json:"status"`
 	Reason      string     `json:"reason,omitempty"`
 	EtaReadyAt  *time.Time `json:"etaReadyAt,omitempty"` // для accepted/cooking (S4)
+	UserID      string     `json:"userId,omitempty"`     // владелец заказа; пусто — гость или заказ по факсу (S9: получатель push)
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
@@ -120,7 +121,7 @@ func enqueueState(ctx context.Context, tx kafka.Execer, o domain.Order) error {
 // enqueueStatus кладёт orders.status в outbox.
 func enqueueStatus(ctx context.Context, tx kafka.Execer, o domain.Order, status domain.Status, reason string, eta *time.Time, at time.Time) error {
 	ev, err := kafka.NewEvent(ctx, TopicStatus, TypeStatus, o.ID, OrderStatusEvent{
-		OrderID: o.ID, OrderNumber: o.Number, Status: string(status), Reason: reason, EtaReadyAt: eta, UpdatedAt: at.UTC()})
+		OrderID: o.ID, OrderNumber: o.Number, Status: string(status), Reason: reason, EtaReadyAt: eta, UserID: o.OwnerUserID, UpdatedAt: at.UTC()})
 	if err != nil {
 		return err
 	}
