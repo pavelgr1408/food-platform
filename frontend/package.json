@@ -1,0 +1,15 @@
+{
+  "name": "food-platform-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "gen:api": "npm run gen --workspace @fp/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspace web-app",
+    "dev": "npm run dev --workspace web-app"
+  },
+  "engines": { "node": ">=20" }
+}
