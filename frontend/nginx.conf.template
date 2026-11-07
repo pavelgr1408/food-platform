@@ -1,13 +1,15 @@
-# Шаблон: образ nginx подставляет ${GATEWAY_UPSTREAM} и ${NGINX_RESOLVER} при старте (docker-entrypoint → envsubst).
+# Шаблон: образ nginx подставляет ${GATEWAY_UPSTREAM}, ${NGINX_RESOLVER} и ${IMG_SRC_HOSTS} при старте (docker-entrypoint → envsubst).
 server {
   listen 3000;
   server_name _;
   root /usr/share/nginx/html;
 
   # Заголовки безопасности. Шрифты и тайлы карты — внешние хосты (self-host шрифтов — S11).
+  # Фото блюд и ресторанов (imageUrl, долг №79) грузятся с хостов из IMG_SRC_HOSTS (список через пробел);
+  # CSP проверяет и цели редиректов, поэтому для picsum.photos указан и fastly.picsum.photos.
   add_header X-Content-Type-Options nosniff always;
   add_header Referrer-Policy strict-origin-when-cross-origin always;
-  add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'" always;
+  add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://tile.openstreetmap.org ${IMG_SRC_HOSTS}; connect-src 'self'; frame-ancestors 'none'" always;
 
   # Адрес резолвится при запросе (не при старте): nginx поднимается, даже если gateway ещё не готов.
   # Docker: 127.0.0.11; Kubernetes: kube-dns (NGINX_RESOLVER=kube-dns.kube-system.svc.cluster.local).
