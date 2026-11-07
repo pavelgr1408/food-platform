@@ -224,3 +224,30 @@ func TestImageURLInDTO(t *testing.T) {
 		t.Errorf("imageUrl must be omitted when empty (field is optional): %v", items[1])
 	}
 }
+
+func TestValidateReturnsModifierSnapshot(t *testing.T) {
+	ghost := "c1000000-0000-4000-8000-0000000000aa"
+	body := `{"items":[` +
+		`{"menuItemId":"` + item + `","quantity":2,"modifierIds":["` + mod + `"]},` +
+		`{"menuItemId":"` + item + `","quantity":1},` +
+		`{"menuItemId":"` + ghost + `","quantity":1}]}`
+	r := do(newHandler(), "POST", "/restaurants/"+rid+"/menu/validation", body, nil)
+	if r.Code != 200 {
+		t.Fatalf("%d %s", r.Code, r.Body)
+	}
+	var out struct {
+		Lines []map[string]json.RawMessage `json:"lines"`
+	}
+	if err := json.Unmarshal(r.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(out.Lines[0]["modifiers"]); got != `[{"id":"`+mod+`","name":"Бекон","price":{"amount":8900,"currency":"RUB"}}]` {
+		t.Errorf("selected modifier snapshot: %s", got)
+	}
+	if got := string(out.Lines[1]["modifiers"]); got != `[]` {
+		t.Errorf("no modifiers selected must be [], got %s", got)
+	}
+	if _, has := out.Lines[2]["modifiers"]; has {
+		t.Error("ITEM_NOT_FOUND line must not have modifiers")
+	}
+}

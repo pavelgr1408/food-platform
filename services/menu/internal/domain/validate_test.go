@@ -83,3 +83,32 @@ func TestValidateReturnsItemNameSnapshot(t *testing.T) {
 		t.Errorf("unknown item must have no name: %q", r.Lines[1].Name)
 	}
 }
+
+func TestValidateReturnsModifierSnapshotInRequestOrder(t *testing.T) {
+	c := catalog()
+	burger := c["burger"]
+	burger.Modifiers = []Modifier{
+		{ID: "bacon", Name: "Бекон", Price: 8900, Available: true},
+		{ID: "cheese", Name: "Сыр", Price: 5000, Available: true},
+	}
+	c["burger"] = burger
+	r := Validate(c, []Line{
+		{MenuItemID: "burger", Quantity: 1, ModifierIDs: []string{"cheese", "bacon"}},
+		{MenuItemID: "cola", Quantity: 1},
+		{MenuItemID: "ghost", Quantity: 1},
+		{MenuItemID: "burger", Quantity: 1, ModifierIDs: []string{"zzz", "bacon"}},
+	})
+	got := r.Lines[0].Modifiers
+	if len(got) != 2 || got[0] != (ModifierSnap{"cheese", "Сыр", 5000}) || got[1] != (ModifierSnap{"bacon", "Бекон", 8900}) {
+		t.Fatalf("snapshot must follow request order: %+v", got)
+	}
+	if r.Lines[1].Modifiers == nil || len(r.Lines[1].Modifiers) != 0 {
+		t.Errorf("no modifiers selected -> empty non-nil slice, got %#v", r.Lines[1].Modifiers)
+	}
+	if r.Lines[2].Modifiers != nil {
+		t.Errorf("unknown item -> nil, got %#v", r.Lines[2].Modifiers)
+	}
+	if m := r.Lines[3].Modifiers; len(m) != 1 || m[0].ID != "bacon" {
+		t.Errorf("foreign modifier must be skipped: %+v", m)
+	}
+}

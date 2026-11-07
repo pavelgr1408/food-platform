@@ -22,6 +22,13 @@ type Line struct {
 	ModifierIDs []string
 }
 
+// ModifierSnap — выбранный модификатор, найденный у позиции (снимок для orders, долг №81).
+type ModifierSnap struct {
+	ID    string
+	Name  string
+	Price int64
+}
+
 // LineResult — результат проверки строки.
 type LineResult struct {
 	MenuItemID string
@@ -29,8 +36,11 @@ type LineResult struct {
 	Quantity   int
 	Available  bool
 	// UnitPrice — цена за единицу с найденными модификаторами; nil, если позиции нет в меню.
-	UnitPrice  *int64
-	LineTotal  *int64
+	UnitPrice *int64
+	LineTotal *int64
+	// Modifiers — выбранные модификаторы, найденные у позиции, в порядке запроса (не nil, если позиция
+	// найдена; модификатор не из этой позиции пропускается); nil для ITEM_NOT_FOUND.
+	Modifiers  []ModifierSnap
 	ReasonCode string
 	Reason     string
 }
@@ -54,6 +64,7 @@ func Validate(items map[string]Item, lines []Line) Result {
 			lr.Available, lr.ReasonCode = false, ReasonItemNotFound
 		} else {
 			lr.Name = it.Name
+			lr.Modifiers = make([]ModifierSnap, 0, len(l.ModifierIDs))
 			unit := it.Price
 			if !it.Available {
 				lr.Available, lr.ReasonCode = false, ReasonItemUnavailable
@@ -67,6 +78,7 @@ func Validate(items map[string]Item, lines []Line) Result {
 					}
 				default:
 					unit += m.Price
+					lr.Modifiers = append(lr.Modifiers, ModifierSnap{ID: m.ID, Name: m.Name, Price: m.Price})
 					if !m.Available && lr.ReasonCode == "" {
 						lr.Available, lr.ReasonCode = false, ReasonModifierUnavailable
 					}

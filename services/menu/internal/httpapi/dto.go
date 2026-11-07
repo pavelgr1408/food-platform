@@ -101,6 +101,12 @@ func (v validationRequest) lines() ([]domain.Line, string) {
 	return out, ""
 }
 
+type validationModifierDTO struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Price money  `json:"price"`
+}
+
 type lineDTO struct {
 	MenuItemID   string `json:"menuItemId"`
 	Quantity     int    `json:"quantity"`
@@ -108,8 +114,11 @@ type lineDTO struct {
 	Name         string `json:"name,omitempty"`
 	CurrentPrice *money `json:"currentPrice,omitempty"`
 	LineTotal    *money `json:"lineTotal,omitempty"`
-	ReasonCode   string `json:"reasonCode,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	// Modifiers — указатель на срез, чтобы пустой массив уходил как [] (модификаторы не выбраны),
+	// а для ITEM_NOT_FOUND поле отсутствовало.
+	Modifiers  *[]validationModifierDTO `json:"modifiers,omitempty"`
+	ReasonCode string                   `json:"reasonCode,omitempty"`
+	Reason     string                   `json:"reason,omitempty"`
 }
 
 type validationDTO struct {
@@ -127,6 +136,13 @@ func toValidation(v service.Validation) validationDTO {
 		if l.UnitPrice != nil {
 			d.CurrentPrice = &money{*l.UnitPrice, v.Currency}
 			d.LineTotal = &money{*l.LineTotal, v.Currency}
+		}
+		if l.Modifiers != nil {
+			mods := make([]validationModifierDTO, len(l.Modifiers))
+			for i, m := range l.Modifiers {
+				mods[i] = validationModifierDTO{ID: m.ID, Name: m.Name, Price: money{m.Price, v.Currency}}
+			}
+			d.Modifiers = &mods
 		}
 		out.Lines = append(out.Lines, d)
 	}
