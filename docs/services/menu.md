@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/menu`, порт `8083`, БД `menu` (Postgres) |
-| Контракт | `contracts/openapi/menu.yaml` v1.3.0 |
+| Контракт | `contracts/openapi/menu.yaml` v1.5.1 |
 | Kafka / идемпотентность | не используются (read-only каталог) |
 | Доступ | публичный, гость допускается |
 | Деньги | `bigint` копейки (ADR-13), в JSON `integer` |
@@ -113,9 +113,11 @@ flowchart LR
   "lines": [
     { "menuItemId": "…", "quantity": 2, "available": true, "name": "BLT Классик",
       "currentPrice": { "amount": 43800, "currency": "RUB" },
-      "lineTotal":    { "amount": 87600, "currency": "RUB" } },
+      "lineTotal":    { "amount": 87600, "currency": "RUB" },
+      "modifiers": [ { "id": "…", "name": "Двойной бекон", "price": { "amount": 8900, "currency": "RUB" } } ] },
     { "menuItemId": "…", "quantity": 1, "available": false, "name": "Брауни",
       "currentPrice": { "amount": 17900, "currency": "RUB" }, "lineTotal": { "amount": 17900, "currency": "RUB" },
+      "modifiers": [],
       "reasonCode": "ITEM_UNAVAILABLE", "reason": "Позиция недоступна" }
   ],
   "total": { "amount": 87600, "currency": "RUB" }
@@ -124,7 +126,8 @@ flowchart LR
 
 - `currentPrice` — цена **за единицу** с учётом всех найденных модификаторов (включая недоступные); `lineTotal = currentPrice × quantity`.
 - `total` — сумма `lineTotal` **только по доступным строкам**.
-- Для `ITEM_NOT_FOUND` цен и `name` нет.
+- Для `ITEM_NOT_FOUND` цен, `name` и `modifiers` нет.
+- `modifiers` (1.5.0, долг №81) — выбранные модификаторы, найденные у позиции, **в порядке запроса**: `id`, `name`, `price` (добавка к цене позиции, копейки). Модификатор не из этой позиции (`MODIFIER_NOT_FOUND`) в список не попадает; без выбора — `[]`. Из этого `orders` строит снимок состава в корзине и заказе; на `ETag` меню поле не влияет.
 - Строки возвращаются в порядке запроса; повтор одной позиции в двух строках допустим.
 
 Коды причин (`reasonCode`) и их приоритет, от старшего к младшему:

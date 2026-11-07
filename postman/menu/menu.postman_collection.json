@@ -291,6 +291,10 @@
                   "  pm.expect(r.lines[0].currentPrice.amount).to.eql(burger + bacon); pm.expect(r.lines[0].lineTotal.amount).to.eql(2 * (burger + bacon));",
                   "  pm.expect(r.lines[1].currentPrice.amount).to.eql(cola); pm.expect(r.lines[1].lineTotal.amount).to.eql(3 * cola);",
                   "  r.lines.forEach(l => { pm.expect(l.available).to.be.true; pm.expect(l).to.not.have.property('reasonCode'); });",
+                  "});",
+                  "pm.test('modifiers: снимок выбранных (id, название, цена в копейках), без выбора — []', () => {",
+                  "  pm.expect(r.lines[0].modifiers).to.eql([{id: pm.collectionVariables.get('baconId'), name: 'Двойной бекон', price: {amount: bacon, currency: 'RUB'}}]);",
+                  "  pm.expect(r.lines[1].modifiers).to.eql([]);",
                   "});"
                 ]
               }
@@ -356,7 +360,8 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "const l = pm.response.json().lines[0];",
-                  "pm.test('ITEM_NOT_FOUND, нет currentPrice/lineTotal', () => { pm.expect(l.reasonCode).to.eql('ITEM_NOT_FOUND'); pm.expect(l).to.not.have.property('currentPrice'); pm.expect(l).to.not.have.property('lineTotal'); });"
+                  "pm.test('ITEM_NOT_FOUND, нет currentPrice/lineTotal', () => { pm.expect(l.reasonCode).to.eql('ITEM_NOT_FOUND'); pm.expect(l).to.not.have.property('currentPrice'); pm.expect(l).to.not.have.property('lineTotal'); });",
+                  "pm.test('ITEM_NOT_FOUND: поля modifiers нет', () => pm.expect(pm.response.json().lines[0]).to.not.have.property('modifiers'));"
                 ]
               }
             }
@@ -386,7 +391,8 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "const l = pm.response.json().lines[0];",
-                  "pm.test('MODIFIER_NOT_FOUND (бекон от бургера не подходит к коле)', () => { pm.expect(l.available).to.be.false; pm.expect(l.reasonCode).to.eql('MODIFIER_NOT_FOUND'); });"
+                  "pm.test('MODIFIER_NOT_FOUND (бекон от бургера не подходит к коле)', () => { pm.expect(l.available).to.be.false; pm.expect(l.reasonCode).to.eql('MODIFIER_NOT_FOUND'); });",
+                  "pm.test('чужой модификатор в modifiers не попадает', () => pm.expect(pm.response.json().lines[0].modifiers).to.eql([]));"
                 ]
               }
             }
