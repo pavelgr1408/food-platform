@@ -252,3 +252,19 @@ func toOrder(o domain.Order) orderDTO {
 	}
 	return d
 }
+
+// orderPageDTO — OrderPage из orders.yaml.
+type orderPageDTO struct {
+	Items  []orderDTO `json:"items"`
+	Total  int        `json:"total"`
+	Limit  int        `json:"limit"`
+	Offset int        `json:"offset"`
+}
+
+func toOrderPage(p service.OrderPage) orderPageDTO {
+	out := orderPageDTO{Items: make([]orderDTO, 0, len(p.Items)), Total: p.Total, Limit: p.Limit, Offset: p.Offset}
+	for _, o := range p.Items {
+		out.Items = append(out.Items, toOrder(o))
+	}
+	return out
+}
