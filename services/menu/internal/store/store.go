@@ -30,7 +30,7 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID string) (domain.Menu, 
 	rows, err := s.pool.Query(ctx, `
 SELECT mn.version, mn.currency,
        c.id::text, c.name,
-       i.id::text, i.name, i.description, i.price, i.available,
+       i.id::text, i.name, i.description, i.image_url, i.price, i.available,
        md.id::text, md.name, md.price, md.available
 FROM menus mn
 LEFT JOIN categories c ON c.restaurant_id = mn.restaurant_id
@@ -47,11 +47,11 @@ ORDER BY c.position, c.id, i.position, i.id, md.position, md.id`, restaurantID)
 	found := false
 	for rows.Next() {
 		var (
-			cID, cName, iID, iName, iDesc, mID, mName *string
-			iPrice, mPrice                            *int64
-			iAvail, mAvail                            *bool
+			cID, cName, iID, iName, iDesc, iImg, mID, mName *string
+			iPrice, mPrice                                  *int64
+			iAvail, mAvail                                  *bool
 		)
-		if err := rows.Scan(&m.Version, &m.Currency, &cID, &cName, &iID, &iName, &iDesc, &iPrice, &iAvail,
+		if err := rows.Scan(&m.Version, &m.Currency, &cID, &cName, &iID, &iName, &iDesc, &iImg, &iPrice, &iAvail,
 			&mID, &mName, &mPrice, &mAvail); err != nil {
 			return domain.Menu{}, err
 		}
@@ -67,7 +67,7 @@ ORDER BY c.position, c.id, i.position, i.id, md.position, md.id`, restaurantID)
 			continue
 		}
 		if n := len(cat.Items); n == 0 || cat.Items[n-1].ID != *iID {
-			cat.Items = append(cat.Items, domain.Item{ID: *iID, Name: *iName, Description: *iDesc, Price: *iPrice, Available: *iAvail})
+			cat.Items = append(cat.Items, domain.Item{ID: *iID, Name: *iName, Description: *iDesc, ImageURL: deref(iImg), Price: *iPrice, Available: *iAvail})
 		}
 		it := &cat.Items[len(cat.Items)-1]
 		if mID != nil {
@@ -81,6 +81,13 @@ ORDER BY c.position, c.id, i.position, i.id, md.position, md.id`, restaurantID)
 		return domain.Menu{}, ErrNotFound
 	}
 	return m, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // LoadItems — горячий путь validateMenuItems: одна выборка позиций ресторана по списку id
@@ -184,9 +191,9 @@ func (s *Store) Upsert(ctx context.Context, menus []domain.Menu) error {
 					return fmt.Errorf("category %q: %w", c.Name, err)
 				}
 				for ii, it := range c.Items {
-					if _, err := tx.Exec(ctx, `INSERT INTO items (id, restaurant_id, category_id, name, description, price, available, position)
-						VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-						it.ID, m.RestaurantID, c.ID, it.Name, it.Description, it.Price, it.Available, ii); err != nil {
+					if _, err := tx.Exec(ctx, `INSERT INTO items (id, restaurant_id, category_id, name, description, image_url, price, available, position)
+						VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9)`,
+						it.ID, m.RestaurantID, c.ID, it.Name, it.Description, it.ImageURL, it.Price, it.Available, ii); err != nil {
 						return fmt.Errorf("item %q: %w", it.Name, err)
 					}
 					for mi, md := range it.Modifiers {

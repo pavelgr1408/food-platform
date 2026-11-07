@@ -175,3 +175,70 @@ func TestMoneyConstraints(t *testing.T) {
 		t.Fatal("negative price must be rejected by CHECK")
 	}
 }
+
+func TestImageURLRoundTripETagAndConstraint(t *testing.T) {
+	s, ms := newStore(t)
+	m, err := s.GetMenu(ctx, r1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage := 0
+	for ci, c := range ms[0].Categories {
+		for ii, it := range c.Items {
+			if got := m.Categories[ci].Items[ii].ImageURL; got != it.ImageURL {
+				t.Fatalf("item %q: imageUrl %q, want %q", it.Name, got, it.ImageURL)
+			}
+			if it.ImageURL != "" {
+				withImage++
+			}
+		}
+	}
+	if withImage == 0 {
+		t.Fatal("seed must contain items with imageUrl")
+	}
+
+	// смена картинки меняет version (на нём построен ETag) — иначе 304 отдаст старое фото
+	changed := ms[0]
+	changed.Categories = append([]domain.Category(nil), changed.Categories...)
+	changed.Categories[0].Items = append([]domain.Item(nil), changed.Categories[0].Items...)
+	changed.Categories[0].Items[0].ImageURL = "https://cdn.example.com/new.jpg"
+	if err := s.Upsert(ctx, []domain.Menu{changed}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = s.GetMenu(ctx, r1)
+	if m.Version != 2 || m.Categories[0].Items[0].ImageURL != "https://cdn.example.com/new.jpg" {
+		t.Fatalf("after image change: v=%d url=%q", m.Version, m.Categories[0].Items[0].ImageURL)
+	}
+	// удаление картинки (пустая строка → NULL) — тоже новая версия
+	changed.Categories[0].Items[0].ImageURL = ""
+	if err := s.Upsert(ctx, []domain.Menu{changed}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ = s.GetMenu(ctx, r1); m.Version != 3 || m.Categories[0].Items[0].ImageURL != "" {
+		t.Fatalf("after image removal: v=%d url=%q", m.Version, m.Categories[0].Items[0].ImageURL)
+	}
+}
+
+func TestImageURLConstraint(t *testing.T) {
+	pool := pgtest.New(t)
+	if err := pgxutil.Migrate(ctx, pool, nil, pgxutil.Source{Module: "menu", FS: migrations.FS}); err != nil {
+		t.Fatal(err)
+	}
+	s := New(pool)
+	for _, bad := range []string{"http://cdn.example.com/a.jpg", "javascript:alert(1)", "https://cdn.example.com/a b.jpg",
+		"https://cdn.example.com/" + repeat("a", 2100)} {
+		m := domain.Menu{RestaurantID: r1, Currency: "RUB", Categories: []domain.Category{{ID: "c1000000-0000-4000-8000-000000000001", Name: "c",
+			Items: []domain.Item{{ID: "d1000000-0000-4000-8000-000000000001", Name: "i", Price: 1, Available: true, ImageURL: bad}}}}}
+		if err := s.Upsert(ctx, []domain.Menu{m}); err == nil {
+			t.Errorf("imageUrl %.40q must be rejected by CHECK", bad)
+		}
+	}
+}
+
+func repeat(s string, n int) string {
+	b := make([]byte, 0, len(s)*n)
+	for i := 0; i < n; i++ {
+		b = append(b, s...)
+	}
+	return string(b)
+}

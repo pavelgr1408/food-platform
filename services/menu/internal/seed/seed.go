@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pavelgr1408/food-platform/pkg/imageurl"
 	"github.com/pavelgr1408/food-platform/services/menu/internal/domain"
 )
 
@@ -26,6 +27,7 @@ type file struct {
 			Key         string `json:"key"`
 			Name        string `json:"name"`
 			Description string `json:"description"`
+			ImageURL    string `json:"imageUrl"`
 			Price       int64  `json:"price"`
 			Modifiers   []struct {
 				Key   string `json:"key"`
@@ -76,8 +78,11 @@ func Parse(data []byte) ([]domain.Menu, error) {
 				if it.Price < 0 {
 					return nil, fmt.Errorf("seed %s: item %q has negative price", r.RestaurantID, it.Key)
 				}
+				if err := imageurl.Validate(it.ImageURL); err != nil {
+					return nil, fmt.Errorf("seed %s: item %q: %w", r.RestaurantID, it.Key, err)
+				}
 				used[it.Key] = true
-				item := domain.Item{ID: ID(r.RestaurantID, "item", it.Key), Name: it.Name, Description: it.Description,
+				item := domain.Item{ID: ID(r.RestaurantID, "item", it.Key), Name: it.Name, Description: it.Description, ImageURL: it.ImageURL,
 					Price: it.Price, Available: !off[it.Key]}
 				for _, md := range it.Modifiers {
 					if md.Price < 0 {
