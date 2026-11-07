@@ -273,7 +273,7 @@ function PickupSlot({ o, tz }: { o: OrderT; tz?: string }) {
       {o.pickupSlot ? <p className="mt-1 font-semibold">Заберёте с {fmtTime(o.pickupSlot.from, tz)} до {fmtTime(o.pickupSlot.to, tz)}</p> : <p className="mt-1 text-muted">По умолчанию — как только будет готово. Можно выбрать удобный интервал.</p>}
       <form className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto_auto]" onSubmit={(e) => { e.preventDefault(); if (from) save.mutate(); }}>
         <div>
-          <label htmlFor="slot-from" className="mb-1 block text-sm font-semibold">С какого времени{tz ? ` (${tz})` : ""}</label>
+          <label htmlFor="slot-from" className="mb-1 block text-sm font-semibold">С какого времени (по вашим часам)</label>
           <input id="slot-from" type="datetime-local" required value={from} onChange={(e) => setFrom(e.target.value)} className="min-h-[var(--lt-tap)] w-full rounded-input border-2 border-ink bg-white px-3" />
         </div>
         <div>
@@ -284,6 +284,7 @@ function PickupSlot({ o, tz }: { o: OrderT; tz?: string }) {
         </div>
         <Button type="submit" variant="primary" className="self-end" disabled={save.isPending || !from}>Сохранить</Button>
       </form>
+      {tz && tz !== Intl.DateTimeFormat().resolvedOptions().timeZone ? <p className="mt-2 text-sm text-muted">Ресторан работает по времени {tz}: после сохранения покажем интервал в его часах.</p> : null}
       {save.error ? <Notice className="mt-3">{errorText(save.error)}</Notice> : null}
     </Surface>
   );
