@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/payment`, порт `8085`, БД `payment` (Postgres) |
-| Контракт | `contracts/openapi/payment.yaml` v1.4.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракт | `contracts/openapi/payment.yaml` v1.4.2; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | потребляет `orders.state`, `orders.status`; публикует `orders.payments.status`, `orders.payments.link` |
 | Внешние системы | платёжный шлюз (эквайринг), кассовая система (POS); в dev обе — `tools/mock-externals` |
 | Идемпотентность | `Idempotency-Key` на `POST /orders/{id}/payments` и `/payments/pos` (`pkg/idempotency`); вебхуки — по `eventId` |
@@ -103,7 +103,7 @@ flowchart LR
 
 ## 3. Контракты
 
-**OpenAPI** `payment.yaml` v1.4.1: все 6 операций помечены `x-status: implemented`. Схема `PaymentConflictProblem` расширяет problem+json полем `paymentId`.
+**OpenAPI** `payment.yaml` v1.4.2: все 6 операций помечены `x-status: implemented`. Схема `PaymentConflictProblem` расширяет problem+json полем `paymentId`.
 
 **Подпись вебхуков** (`pkg/webhook`): заголовок `X-Signature`, HMAC-SHA256 от тела с меткой времени; окно допустимого расхождения/replay — 5 минут (`DefaultTolerance`). Секреты раздельные: `GATEWAY_WEBHOOK_SECRET`, `POS_WEBHOOK_SECRET`. Пустой секрет отключает приём (`503 WEBHOOK_DISABLED`).
 

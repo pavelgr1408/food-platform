@@ -37,6 +37,8 @@ export interface paths {
          *
          *     Одновременно у заказа не более одной «живой» попытки и не более одного успешного платежа (гарантируется уникальными индексами БД): пока есть `pending` — `409 PAYMENT_IN_PROGRESS`, пока есть `unknown` — `409 PAYMENT_STATUS_UNKNOWN` (E2), после `paid` — `409 ALREADY_PAID`. После `declined` можно создать новую попытку (новый ключ). Шлюз не ответил в срок — `202` с `status=unknown`: платёж мог быть создан, ждите итога (`getPayment`).
          *
+         *     **Заказ, созданный только что (ТД-QA-2).** Реплика заказа приходит в payment событием `orders.state` (≈100–200 мс после `createOrder`). Поэтому, если заказа ещё нет, операция не отвечает `404` сразу, а до `ORDER_REPLICA_WAIT` (по умолчанию 3 с) опрашивает собственную БД и продолжает, как только реплика появилась. Клиенту не нужно вставлять паузу или опрашивать `getPaymentMethods` перед оплатой. Ожидание одинаково для несуществующего и чужого заказа (по времени ответа существование заказа не раскрывается). Не дождались — `404 ORDER_NOT_FOUND` с `Retry-After: 1`; такой `404` **не запоминается** по `Idempotency-Key`: повтор с тем же ключом выполняется заново.
+         *
          *     `courier_card` (UC-PAY-03) создаётся системой по событию заказа (S7, см. описание контракта), `pos` — отдельная операция `initiatePosPayment` (S6); для них здесь `422 PAYMENT_METHOD_NOT_SUPPORTED`.
          */
         post: operations["initiatePayment"];
@@ -304,7 +306,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description Заказ не найден или чужой (`ORDER_NOT_FOUND`); также — событие `orders.state` ещё не обработано (в ответе `Retry-After: 1`). */
+        /** @description Заказ не найден или чужой (`ORDER_NOT_FOUND`); также — событие `orders.state` ещё не обработано (в ответе `Retry-After: 1`). `initiatePayment` перед таким ответом ждёт реплику до `ORDER_REPLICA_WAIT`; `getPaymentMethods` отвечает сразу — клиенту следует повторить запрос через `Retry-After`. */
         OrderNotFound: {
             headers: {
                 /** @description Секунды до повтора. */
