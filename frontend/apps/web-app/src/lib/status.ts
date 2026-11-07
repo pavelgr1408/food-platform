@@ -23,6 +23,9 @@ export const REASON_LABEL: Record<string, string> = {
   undelivered: "Не удалось доставить",
 };
 
+/** Словарь причин; неизвестный (внутренний) код не показываем — например «production», «courier_picked_up». */
+export const reasonText = (code?: string | null): string | null => (code ? REASON_LABEL[code] ?? null : null);
+
 export const TERMINAL: OrderStatus[] = ["closed", "cancelled", "not_received", "delivered", "handed_over"];
 export const isTerminal = (s: OrderStatus) => TERMINAL.includes(s);
 

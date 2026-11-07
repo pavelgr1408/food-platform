@@ -7,6 +7,7 @@ import { Badge, Button, Empty, Field, Notice, Skeleton, Surface } from "../compo
 import { Cover, imageOf } from "../components/art";
 import { MapPicker, type LatLon } from "../components/LazyMap";
 import { errorText } from "../lib/errors";
+import { fullAddress } from "../lib/format";
 
 const PAGE = 20;
 const CITIES = ["Москва", "Санкт-Петербург", "Казань", "Екатеринбург"];
@@ -177,7 +178,7 @@ function RestaurantCard({ r }: { r: RestaurantSummary }) {
         </div>
         <div className="p-4">
           <h3 className="text-[length:var(--lt-fs-price)]">{r.name}</h3>
-          <p className="mt-0.5 text-muted">{r.city}, {r.address}</p>
+          <p className="mt-0.5 text-muted">{fullAddress(r)}</p>
           <p className="mt-3 flex flex-wrap gap-2 text-sm">
             <Badge tone={r.deliveryAvailable ? "warn" : "neutral"}>{r.deliveryAvailable ? "Есть доставка" : "Только самовывоз"}</Badge>
           </p>

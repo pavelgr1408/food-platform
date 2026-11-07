@@ -133,7 +133,7 @@ export function Cart() {
           </Modal>
         ) : null}
 
-        <FulfillmentSection cart={cart} onSaved={(next) => c.refetch().then(() => next)} />
+        <FulfillmentSection cart={cart} deliveryEnabled={rest.data?.deliveryEnabled} onSaved={(next) => c.refetch().then(() => next)} />
         <Checkout cart={cart} isAuthed={auth.status === "user"} defaultPhone={auth.principal?.phone} onUnavailable={(items) => lines.mutate((cur) => cur.filter((l) => !items.some((u) => u.menuItemId === l.menuItemId)))}
           onDone={(order) => {
             localOrders.add({ id: order.id, number: order.number, restaurantId: order.restaurantId, createdAt: order.createdAt, totalAmount: order.total.amount, currency: order.total.currency });
@@ -163,7 +163,7 @@ export function Cart() {
 const Row = ({ k, v }: { k: string; v: string }) => <div className="flex justify-between gap-3"><dt>{k}</dt><dd className="font-medium">{v}</dd></div>;
 
 /* ---------------- Получение: самовывоз / доставка ---------------- */
-function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT) => void }) {
+function FulfillmentSection({ cart, onSaved, deliveryEnabled }: { cart: CartT; onSaved: (c: CartT) => void; deliveryEnabled?: boolean }) {
   const api = useApi();
   const cur = cart.fulfillment;
   // ничего не выбрано, пока сервер не знает способ получения: иначе повторный клик по «Самовывоз» не вызовет onChange
@@ -195,8 +195,9 @@ function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT
     <Surface>
       <StepTitle n={1}>Получение</StepTitle>
       <div role="radiogroup" aria-label="Способ получения" className="mb-3 flex flex-col gap-2 sm:flex-row">
-        <Radio checked={type === "pickup"} onChange={choosePickup} label="Самовывоз" desc="Заберёте сами в ресторане" />
-        <Radio checked={type === "delivery"} onChange={() => setType("delivery")} label="Доставка" desc="Привезёт курьер" />
+        <Radio name="fulfillment" value="pickup" checked={type === "pickup"} onChange={choosePickup} label="Самовывоз" desc="Заберёте сами в ресторане" />
+        <Radio name="fulfillment" value="delivery" checked={type === "delivery"} onChange={() => setType("delivery")} label="Доставка"
+          desc={deliveryEnabled === false ? "Этот ресторан не доставляет — только самовывоз" : "Привезёт курьер"} disabled={deliveryEnabled === false} />
       </div>
       {type === "delivery" ? (
         <div className="grid gap-3">
@@ -246,11 +247,11 @@ function StepTitle({ n, children }: { n: number; children: React.ReactNode }) {
   );
 }
 
-function Radio({ checked, onChange, label, desc }: { checked: boolean; onChange: () => void; label: string; desc?: string }) {
+function Radio({ checked, onChange, label, desc, name, value, disabled }: { checked: boolean; onChange: () => void; label: string; desc?: string; name: string; value: string; disabled?: boolean }) {
   const id = useId();
   return (
-    <label className={`flex min-h-[var(--lt-tap)] flex-1 cursor-pointer items-center gap-3 rounded-input border-2 px-4 py-2 has-[:focus-visible]:outline has-[:focus-visible]:outline-[3px] has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ink ${checked ? "border-ink bg-lemon/30" : "border-ink/25 hover:border-ink"}`}>
-      <input type="radio" className="sr-only" checked={checked} onChange={onChange} aria-labelledby={`${id}-t`} aria-describedby={desc ? `${id}-d` : undefined} />
+    <label className={`flex min-h-[var(--lt-tap)] flex-1 ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"} items-center gap-3 rounded-input border-2 px-4 py-2 has-[:focus-visible]:outline has-[:focus-visible]:outline-[3px] has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ink ${checked ? "border-ink bg-lemon/30" : "border-ink/25 hover:border-ink"}`}>
+      <input type="radio" className="sr-only" name={name} value={value} disabled={disabled} checked={checked} onChange={onChange} aria-labelledby={`${id}-t`} aria-describedby={desc ? `${id}-d` : undefined} />
       <span aria-hidden className={`grid size-6 shrink-0 place-items-center rounded-full border-2 border-ink ${checked ? "bg-ink" : "bg-white"}`}>{checked ? <span className="size-2 rounded-full bg-lemon" /> : null}</span>
       <span>
         <span id={`${id}-t`} className="block font-semibold">{label}</span>
@@ -293,7 +294,9 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
   const sig = JSON.stringify(body);
   const [dialog, setDialog] = useState<null | { kind: "price" | "total" | "items"; was?: number; items?: UnavailableItem[] }>(null);
 
+  const placeBusy = useRef(false); // серия быстрых кликов: isPending обновляется на следующем тике
   const place = useMutation({
+    onSettled: () => { placeBusy.current = false; },
     mutationFn: async () => {
       if (!keyRef.current || keyRef.current.sig !== sig) keyRef.current = { key: api.newIdempotencyKey(), sig };
       return api.orders.create(body, keyRef.current.key);
@@ -323,7 +326,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
       <Surface>
         <StepTitle n={2}>Контакты</StepTitle>
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label={isAuthed ? "Телефон" : "Телефон (обязательно)"} type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+          <Field label={isAuthed ? "Телефон" : "Телефон (обязательно)"} type="tel" inputMode="tel" autoComplete="tel" aria-required={!isAuthed || undefined} value={phone} onChange={(e) => setPhone(e.target.value)}
             onBlur={() => setPhone(normalizePhone(phone))} error={phoneErr ?? (error?.code === "CONTACT_REQUIRED" ? errorText(error) : null)} placeholder="+7 999 123-45-67" />
           <Field label="Имя" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} hint="Необязательно" />
           <Field label="Почта" type="email" autoComplete="email" maxLength={254} value={email} onChange={(e) => setEmail(e.target.value)} error={emailErr} hint="Необязательно. Письма пока не отправляем." className="md:col-span-2" />
@@ -334,7 +337,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
         <StepTitle n={3}>Оплата</StepTitle>
         {!fType ? <p className="text-muted">Сначала выберите способ получения.</p> : (
           <div role="radiogroup" aria-label="Способ оплаты" className="flex flex-col gap-2 sm:flex-row">
-            {allowed.map((m) => <Radio key={m} checked={method === m} onChange={() => setMethod(m)} label={PAY_LABEL[m]} desc={PAY_DESC[m]} />)}
+            {allowed.map((m) => <Radio key={m} name="payment" value={m} checked={method === m} onChange={() => setMethod(m)} label={PAY_LABEL[m]} desc={PAY_DESC[m]} />)}
           </div>
         )}
         <p className="mt-2 text-xs text-muted">Способ оплаты нельзя изменить после оформления. Наличных курьеру нет.</p>
@@ -343,7 +346,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
       {error && !dialog ? <Notice>{errorText(error)}{error.code === "IDEMPOTENCY_IN_PROGRESS" ? " Нажмите ещё раз через пару секунд." : ""}</Notice> : null}
       <div className="sticky bottom-[68px] z-20 -mx-4 grid gap-1 bg-paper/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
         {missing ? <p className="text-center text-sm text-muted" role="status">{missing}</p> : null}
-        <Button variant="accent" cta className="w-full" disabled={!ready || place.isPending} onClick={() => place.mutate()}>
+        <Button variant="accent" cta className="w-full" disabled={!ready || place.isPending} onClick={() => { if (placeBusy.current) return; placeBusy.current = true; place.mutate(); }}>
           {place.isPending ? "Оформляем…" : `Оформить заказ · ${formatMoney(cart.total.amount, cart.total.currency)}`}
         </Button>
       </div>
@@ -355,7 +358,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
             Новая сумма заказа — <strong>{formatMoney(cart.total.amount, cart.total.currency)}</strong>. Заказ ещё не создан.
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Button variant="accent" onClick={() => { setDialog(null); place.mutate(); }}>Подтвердить</Button>
+            <Button variant="accent" onClick={() => { setDialog(null); if (placeBusy.current) return; placeBusy.current = true; place.mutate(); }}>Подтвердить</Button>
             <Button variant="outline" onClick={() => setDialog(null)}>Вернуться</Button>
           </div>
         </Modal>

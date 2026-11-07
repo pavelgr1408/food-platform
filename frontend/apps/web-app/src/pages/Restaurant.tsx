@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { isApiError, type MenuItem, type PromotionPublic, type RestaurantDetails } from "@fp/api";
 import { formatBasisPoints, formatMoney } from "@fp/shared";
+import { fullAddress } from "../lib/format";
 import { useApi } from "../app/api-context";
 import { Badge, Button, Empty, Notice, Price, QtyStepper, Skeleton, Surface } from "../components/ui";
 import { Cover, Thumb, imageOf } from "../components/art";
@@ -105,7 +106,7 @@ export function Restaurant() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-[length:var(--lt-fs-h2)] leading-tight md:text-[length:var(--lt-fs-h1)]">{r.name}</h1>
-            <p className="mt-1 text-muted">{r.city}, {r.address}</p>
+            <p className="mt-1 text-muted">{fullAddress(r)}</p>
           </div>
           <Badge tone={r.openNow ? "ok" : "neutral"} className={r.openNow ? "" : "border-2 border-ink"}>{r.openNow ? "Открыто" : "Закрыто"}</Badge>
         </div>

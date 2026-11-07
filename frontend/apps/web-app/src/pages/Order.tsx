@@ -11,7 +11,7 @@ import { errorText } from "../lib/errors";
 import { agoSeconds, fmtDateTime, fmtTime } from "../lib/format";
 import { PAYMENT_MODE } from "../lib/env";
 import { localPayments } from "../lib/local";
-import { isTerminal, REASON_LABEL, stepsFor, STATUS_LABEL } from "../lib/status";
+import { isTerminal, reasonText, stepsFor, STATUS_LABEL } from "../lib/status";
 
 /** Опрос: статус 3–5 с пока не терминальный, курьер 15–30 с (активных обновлений в API нет — пробел №8). */
 const POLL_ORDER = 4000;
@@ -145,7 +145,7 @@ function StatusHero({ o, dead }: { o: OrderT; dead: boolean }) {
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <StatusPill status={o.status} />
-        {o.statusReason ? <span className="font-medium">{REASON_LABEL[o.statusReason] ?? o.statusReason}</span> : null}
+        {reasonText(o.statusReason) ? <span className="font-medium">{reasonText(o.statusReason)}</span> : null}
       </div>
       {h.text ? <p className="mt-2 font-medium">{h.text}</p> : null}
     </header>
@@ -156,7 +156,7 @@ function DeadNotice({ o }: { o: OrderT }) {
   return (
     <Surface className="bg-coral/30">
       <h2 className="text-[length:var(--lt-fs-price)]">{o.status === "cancelled" ? "Заказ отменён" : "Заказ не получен"}</h2>
-      <p className="mt-1">{o.statusReason ? REASON_LABEL[o.statusReason] ?? o.statusReason : null}</p>
+      {reasonText(o.statusReason) ? <p className="mt-1">{reasonText(o.statusReason)}</p> : null}
       {o.refundStatus === "pending" ? <p className="mt-2 font-medium">Возврат денег выполняется.</p> : null}
       {o.refundStatus === "refunded" ? <p className="mt-2 font-medium">Деньги возвращены.</p> : null}
       {o.refundStatus === "failed" ? <p className="mt-2 font-semibold">Возврат не прошёл автоматически. Обратитесь в поддержку ресторана.</p> : null}
@@ -173,11 +173,14 @@ function EtaBlock({ o, tz }: { o: OrderT; tz?: string }) {
   const e = eta.data;
   if (!e || o.status === "pending_payment") return null;
   const mins = e.estimateMinutes;
-  const at = o.fulfillment.type === "delivery" ? e.deliveryAt ?? e.readyAt : e.readyAt;
+  const delivery = o.fulfillment.type === "delivery";
+  const at = delivery ? e.deliveryAt ?? e.readyAt : e.readyAt;
+  const enRoute = delivery && (o.status === "on_delivery" || o.status === "delivered");
+  const title = o.status === "ready" && !delivery ? "Готов — можно забирать" : enRoute ? "Прибудет" : delivery ? "Когда привезём" : "Когда будет готово";
   return (
     <Surface>
-      <h2 className="text-[length:var(--lt-fs-price)]">{o.status === "ready" ? "Готов — можно забирать" : "Когда будет готово"}</h2>
-      {o.status !== "ready" && mins !== undefined ? <p className="mt-1 text-lg font-semibold">{e.approximate ? "около " : ""}{mins} мин{at ? ` · к ${fmtTime(at, tz)}` : ""}</p> : null}
+      <h2 className="text-[length:var(--lt-fs-price)]">{title}</h2>
+      {!(o.status === "ready" && !delivery) && mins !== undefined ? <p className="mt-1 text-lg font-semibold">{e.approximate ? "около " : ""}{mins} мин{at ? ` · к ${fmtTime(at, tz)}` : ""}</p> : null}
       {o.fulfillment.type === "delivery" && !e.deliveryAt && o.delivery?.status === "failed" ? <p className="mt-1 text-muted">Курьер не найден — заберите заказ в ресторане.</p> : null}
     </Surface>
   );
@@ -199,8 +202,11 @@ function OnlinePayment({ o }: { o: OrderT }) {
   const pay = useQuery({ queryKey: ["payment", o.id, paymentId], enabled: !!paymentId && o.paymentStatus === "declined", queryFn: () => api.payments.get(o.id, paymentId!), retry: false });
 
   const keyRef = useRef<string | null>(null);
+  /* Защита от серии быстрых кликов: isPending у мутации обновляется на следующем тике. */
+  const payBusy = useRef(false);
   const start = useMutation({
     mutationFn: () => { keyRef.current ??= api.newIdempotencyKey(); return api.payments.initiate(o.id, `${window.location.origin}/orders/${o.id}`, keyRef.current); },
+    onSettled: () => { payBusy.current = false; },
     onSuccess: ({ payment }) => {
       keyRef.current = null;
       localPayments.set(o.id, payment.id);
@@ -238,7 +244,7 @@ function OnlinePayment({ o }: { o: OrderT }) {
       {methods.isError ? <Notice className="mt-3">{errorText(methods.error)}</Notice> : null}
       {err ? <Notice className="mt-3">{err.code === "PAYMENT_IN_PROGRESS" ? "Платёж уже обрабатывается. Подождите результата." : errorText(err)}</Notice> : null}
       <div className="mt-4">
-        <Button variant="accent" cta className="w-full sm:w-auto" disabled={!online?.enabled || start.isPending || o.paymentStatus === "unknown" || (o.paymentStatus === "pending" && !!paymentId)} onClick={() => start.mutate()}>
+        <Button variant="accent" cta className="w-full sm:w-auto" disabled={!online?.enabled || start.isPending || o.paymentStatus === "unknown" || (o.paymentStatus === "pending" && !!paymentId)} onClick={() => { if (payBusy.current) return; payBusy.current = true; start.mutate(); }}>
           {start.isPending ? "Переходим к оплате…" : `Оплатить ${formatMoney(o.total.amount, o.total.currency)}`}
         </Button>
         {online && !online.enabled ? <p className="mt-2 text-sm text-muted">Сейчас оплата недоступна.</p> : null}

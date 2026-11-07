@@ -29,7 +29,7 @@ function AuthForm({ mode }: { mode: "login" | "register" }) {
   const phoneN = normalizePhone(phone);
   const phoneErr = touched && !isE164(phoneN) ? "Формат: +79991234567 (8–15 цифр)" : null;
   const pw = passwordProblem(password);
-  const pwErr = touched && mode === "register" && pw ? (pw === "short" ? "Минимум 6 символов" : "Слишком длинный пароль (до 72 байт)") : touched && !password ? "Введите пароль" : touched && pw === "long" ? "Слишком длинный пароль" : null;
+  const pwErr = touched && mode === "register" && pw ? (pw === "short" ? "Минимум 6 символов" : pw === "blank" ? "Пароль не может состоять из одних пробелов" : "Слишком длинный пароль: не более 72 байт (кириллица — около 36 букв)") : touched && !password ? "Введите пароль" : touched && pw === "long" ? "Слишком длинный пароль" : null;
 
   const run = useMutation({
     mutationFn: async () => {
@@ -54,7 +54,7 @@ function AuthForm({ mode }: { mode: "login" | "register" }) {
         <form noValidate className="grid gap-4" onSubmit={(e) => { e.preventDefault(); setTouched(true); if (isE164(phoneN) && !passwordProblem(password)) run.mutate(); else if (mode === "login" && isE164(phoneN) && password && passwordProblem(password) !== "long") run.mutate(); }}>
           <Field label="Телефон" type="tel" inputMode="tel" autoComplete="tel" placeholder="+7 999 123-45-67" value={phone} onChange={(e) => setPhone(e.target.value)} onBlur={() => setPhone(normalizePhone(phone))} error={phoneErr} />
           <div>
-            <Field label="Пароль" type={show ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} error={pwErr} hint={mode === "register" ? "От 6 до 72 символов" : undefined} />
+            <Field label="Пароль" type={show ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} error={pwErr} hint={mode === "register" ? "Не короче 6 символов; не длиннее 72 байт (латиница — 72 знака, кириллица — около 36)" : undefined} />
             <label className="mt-2 inline-flex min-h-[var(--lt-tap)] cursor-pointer items-center gap-2 text-sm font-medium">
               <input type="checkbox" className="size-5 accent-[var(--lt-tomato)]" checked={show} onChange={(e) => setShow(e.target.checked)} /> Показать пароль
             </label>

@@ -39,6 +39,13 @@ export const localOrders = {
   },
 };
 
+/** Выход: на общем устройстве не оставляем чужие заказы, платежи, контакты и корзину. */
+export function clearDeviceData() {
+  for (const k of ["orders", "payments", "contact", "cart"]) {
+    try { window.localStorage.removeItem(K(k)); } catch { /* noop */ }
+  }
+}
+
 /** UC-PAY-08: paymentId есть только в ответе initiatePayment — запоминаем. */
 export const localPayments = {
   get: (orderId: string) => read<Record<string, string>>(K("payments"), {})[orderId] ?? null,

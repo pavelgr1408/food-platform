@@ -168,3 +168,83 @@ describe("смена ресторана и состояния заказа", () 
     expect((await screen.findAllByText(status === "cancelled" ? "Не оплачен вовремя" : "Заказ не забрали за 2 часа")).length).toBeGreaterThan(0);
   });
 });
+
+describe("баг-репорт 2026-11-07: UI", () => {
+  it("B-03: внутренний statusReason не показывается пользователю", async () => {
+    const u = userEvent.setup();
+    const { router } = renderApp(`/r/${R1}`);
+    await u.click(await screen.findByRole("button", { name: "Выбрать «Картофель фри»" }));
+    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await waitFor(() => expect(db.carts.size).toBe(1));
+    await router.navigate("/cart");
+    await u.click(await screen.findByRole("radio", { name: "Самовывоз" }));
+    await screen.findByText(/Выбрано: самовывоз/);
+    await u.click(screen.getByRole("radio", { name: "Картой онлайн" }));
+    await u.type(screen.getByLabelText(/Телефон \(обязательно\)/), "89991234567");
+    const place = screen.getByRole("button", { name: /Оформить заказ/ });
+    await waitFor(() => expect(place).toBeEnabled());
+    await u.click(place);
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/orders\/.+/));
+    const m = [...db.orders.values()][0]!;
+    m.order = { ...m.order, status: "ready", paymentStatus: "paid", statusReason: "production" } as typeof m.order;
+    await screen.findAllByText("Готов");
+    await waitFor(() => expect(screen.queryByText("production")).toBeNull());
+  });
+
+  it("B-05: выход очищает историю заказов, платежи и контакты", async () => {
+    const { localOrders, localContact, localPayments, clearDeviceData } = await import("../lib/local");
+    localOrders.add({ id: "x1", number: "R1-1", restaurantId: R1, createdAt: new Date().toISOString(), totalAmount: 100, currency: "RUB" });
+    localContact.set({ phone: "+79990000001" });
+    localPayments.set("x1", "p1");
+    clearDeviceData();
+    expect(localOrders.list()).toEqual([]);
+    expect(localContact.get()).toEqual({});
+    expect(localPayments.get("x1")).toBeNull();
+  });
+
+  it("B-12: пароль из пробелов отклоняется с понятным сообщением", async () => {
+    const u = userEvent.setup();
+    renderApp("/register");
+    await u.type(await screen.findByLabelText("Телефон"), "+79990000009");
+    await u.type(screen.getByLabelText("Пароль"), "      ");
+    await u.click(screen.getByRole("button", { name: "Зарегистрироваться" }));
+    expect(await screen.findByText(/одних пробелов/)).toBeInTheDocument();
+    expect(db.users.has("+79990000009")).toBe(false);
+  });
+
+  it("B-16: город не дублируется, если адрес уже начинается с него", async () => {
+    const { fullAddress } = await import("../lib/format");
+    expect(fullAddress({ city: "Москва", address: "Москва, Тверская ул., 12" })).toBe("Москва, Тверская ул., 12");
+    expect(fullAddress({ city: "Москва", address: "ул. Тверская, 7" })).toBe("Москва, ул. Тверская, 7");
+  });
+
+  it("B-09: серия быстрых кликов по «Оплатить» создаёт один платёж", async () => {
+    const u = userEvent.setup();
+    const { router } = renderApp(`/r/${R1}`);
+    await u.click(await screen.findByRole("button", { name: "Выбрать «Картофель фри»" }));
+    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await waitFor(() => expect(db.carts.size).toBe(1));
+    await router.navigate("/cart");
+    await u.click(await screen.findByRole("radio", { name: "Самовывоз" }));
+    await screen.findByText(/Выбрано: самовывоз/);
+    await u.click(screen.getByRole("radio", { name: "Картой онлайн" }));
+    await u.type(screen.getByLabelText(/Телефон \(обязательно\)/), "89991234567");
+    const place = screen.getByRole("button", { name: /Оформить заказ/ });
+    await waitFor(() => expect(place).toBeEnabled());
+    let orderPosts = 0;
+    const onOrder = ({ request }: { request: Request }) => { if (request.method === "POST" && new URL(request.url).pathname.endsWith("/orders")) orderPosts++; };
+    server.events.on("request:start", onOrder);
+    fireEvent.click(place); fireEvent.click(place); fireEvent.click(place);
+    const pay = await screen.findByRole("button", { name: /Оплатить \d/ });
+    server.events.removeListener("request:start", onOrder);
+    expect(orderPosts).toBe(1);
+    await waitFor(() => expect(pay).toBeEnabled());
+    let posts = 0;
+    const on = ({ request }: { request: Request }) => { if (request.method === "POST" && /\/payments$/.test(new URL(request.url).pathname)) posts++; };
+    server.events.on("request:start", on);
+    fireEvent.click(pay); fireEvent.click(pay); fireEvent.click(pay);
+    await waitFor(() => expect([...db.orders.values()][0]!.attempt).toBeGreaterThan(0));
+    server.events.removeListener("request:start", on);
+    expect(posts).toBe(1);
+  });
+});
