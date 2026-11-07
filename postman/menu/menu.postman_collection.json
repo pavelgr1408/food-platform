@@ -139,7 +139,19 @@
                   "pm.collectionVariables.set('burgerId', by('BLT Классик').id);",
                   "pm.collectionVariables.set('baconId', by('BLT Классик').modifiers.find(x => x.name === 'Двойной бекон').id);",
                   "pm.collectionVariables.set('colaId', by('Кола 0,5').id);",
-                  "pm.collectionVariables.set('brownieId', by('Брауни').id);"
+                  "pm.collectionVariables.set('brownieId', by('Брауни').id);",
+                  "",
+                  "pm.test('imageUrl (S10, №79): необязательное поле, если есть — https и ≤ 2048; у seed-ресторана есть фото', function () {",
+                  "    var items = [];",
+                  "    pm.response.json().categories.forEach(function (c) { items = items.concat(c.items); });",
+                  "    items.forEach(function (it) {",
+                  "        if (it.imageUrl !== undefined) {",
+                  "            pm.expect(it.imageUrl).to.match(/^https:\\/\\/[^\\s]+$/);",
+                  "            pm.expect(it.imageUrl.length).to.be.at.most(2048);",
+                  "        }",
+                  "    });",
+                  "    pm.expect(items.some(function (it) { return !!it.imageUrl; })).to.equal(true);",
+                  "});"
                 ]
               }
             }

@@ -157,6 +157,13 @@
                   "  pm.expect(b.total).to.eql(5); pm.expect(b).to.not.have.property('center');",
                   "  b.items.forEach(r => pm.expect(r).to.not.have.property('distanceMeters'));",
                   "  const n = b.items.map(r => r.name); pm.expect(n).to.eql([...n].sort());",
+                  "});",
+                  "",
+                  "pm.test('imageUrl (S10, №79): у каждого ресторана seed https-ссылка ≤ 2048', function () {",
+                  "    pm.response.json().items.forEach(function (r) {",
+                  "        pm.expect(r.imageUrl, r.name).to.match(/^https:\\/\\/[^\\s]+$/);",
+                  "        pm.expect(r.imageUrl.length).to.be.at.most(2048);",
+                  "    });",
                   "});"
                 ]
               }
@@ -493,7 +500,11 @@
                   "  pm.expect(r.workingHours).to.have.lengthOf(7);",
                   "  r.workingHours.forEach(h => { pm.expect(h.opensAt).to.match(/^\\d\\d:\\d\\d$/); pm.expect(h.closesAt).to.match(/^(\\d\\d:\\d\\d)$/); });",
                   "});",
-                  "pm.test('исключения — массив', () => r.scheduleExceptions.forEach(e => { pm.expect(e.date).to.match(/^\\d{4}-\\d\\d-\\d\\d$/); pm.expect(e.closed).to.be.a('boolean'); }));"
+                  "pm.test('исключения — массив', () => r.scheduleExceptions.forEach(e => { pm.expect(e.date).to.match(/^\\d{4}-\\d\\d-\\d\\d$/); pm.expect(e.closed).to.be.a('boolean'); }));",
+                  "",
+                  "pm.test('imageUrl (S10, №79): карточка отдаёт https-ссылку', function () {",
+                  "    pm.expect(pm.response.json().imageUrl).to.match(/^https:\\/\\/[^\\s]+$/);",
+                  "});"
                 ]
               }
             }
