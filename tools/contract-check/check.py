@@ -197,6 +197,12 @@ def orders(r, m, o):
     check(S, "GET", o, f"/carts/{ac['id']}", 404, label="getCart: чужая корзина → 404")
     ao = check(S, "POST", o, "/orders", 201, {"cartId": ac["id"], "paymentMethod": "pos"}, headers={**alice, "Idempotency-Key": "ac-" + run}, label="createOrder: пользователь, pos → accepted")
     check(S, "GET", o, f"/orders/{ao['id']}", 404, label="getOrder: чужой заказ → 404")
+    # история заказов (долг №80): страница OrderPage валидируется по схеме, ошибки — Problem
+    check(S, "GET", o, "/orders", 401, label="listOrders: гость → 401")
+    check(S, "GET", o, "/orders", 200, headers=alice, label="listOrders: свои заказы")
+    check(S, "GET", o, "/orders?status=accepted&status=pending_payment&limit=1&offset=0", 200, headers=alice, label="listOrders: фильтр, страница")
+    check(S, "GET", o, "/orders?status=shipped", 400, headers=alice, label="listOrders: неизвестный status → 400")
+    check(S, "GET", o, "/orders?limit=51", 400, headers=alice, label="listOrders: limit > 50 → 400")
 
 
 def payment(r, m, o, p):
