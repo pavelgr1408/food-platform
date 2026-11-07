@@ -66,6 +66,11 @@ export interface components {
             description?: string;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: uri
+             * @description Фото блюда (HTTPS, необязательно). Поле запланировано: пока сервис его не отдаёт, клиент рисует иллюстрацию по названию. Загрузка и хранение фото — отдельная задача.
+             */
+            imageUrl?: string;
             modifiers: components["schemas"]["Modifier"][];
             name: string;
             price: components["schemas"]["Money"];
