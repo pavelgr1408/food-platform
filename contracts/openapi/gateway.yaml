@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: api-gateway — единая точка входа
-  version: 1.4.1
+  version: 1.5.0
   description: |-
     Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
     это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`, `delivery`, `loyalty`, `notification`), проксируемые
@@ -109,6 +109,7 @@ x-routes:
   - { pattern: 'PUT /carts/{cartId}/items',                            upstream: orders,     access: optional }
   - { pattern: 'PUT /carts/{cartId}/fulfillment',                      upstream: orders,     access: optional }
   - { pattern: 'POST /orders',                                         upstream: orders,     access: optional, sensitive: true }
+  - { pattern: 'GET /orders',                                          upstream: orders,     access: required, note: 'listOrders (долг №80): свои заказы, гость — 401' }
   - { pattern: 'GET /orders/search',                                   upstream: orders,     access: required, roles: [STAFF, FRANCHISE_OWNER, HQ_STAFF], note: 'searchOrder (S6)' }
   - { pattern: 'GET /orders/{orderId}',                                upstream: orders,     access: optional }
   - { pattern: 'GET /orders/{orderId}/eta',                            upstream: orders,     access: optional }

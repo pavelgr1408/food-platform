@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.8.1
+  version: 1.9.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -105,6 +105,14 @@ info:
     `hint=pickup`. Проверка выполняется при `setCartFulfillment` (раннее сообщение клиенту) и
     повторно при `createOrder` (ресторан мог изменить радиус); недоступность restaurant-service
     — `503 RESTAURANT_UNAVAILABLE` (fail-closed).
+
+
+    **История заказов (долг №80).** `listOrders` (`GET /orders`) возвращает заказы аутентифицированного
+    пользователя — только его собственные (`owner_user_id` = `userId` токена), от новых к старым, с
+    пагинацией и фильтром по статусу. Каждый элемент — тот же `Order`, что отдаёт `getOrder`, поэтому
+    клиент не делает по запросу на заказ. Гостевые заказы (оформленные без токена) и заказы по
+    факсу владельца не имеют и в список не попадают: гость по-прежнему помнит `orderId` сам.
+    Очередь заказов ресторана для персонала — отдельная задача (долг №89), в этой операции её нет.
 
 
     **Деньги** — целые копейки (ADR-13); скидки пока `0` (расчёт — S8, интерфейс
@@ -285,6 +293,48 @@ paths:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
 
   /orders:
+    get:
+      tags: [orders-service]
+      operationId: listOrders
+      x-status: planned
+      security:
+        - bearerAuth: []
+      summary: Мои заказы
+      description: >-
+        Список заказов текущего пользователя (долг №80): только свои, от новых к старым
+        (`createdAt` по убыванию, при равенстве — по `id`). Требуется токен: гость получает
+        `401 UNAUTHORIZED`. Чужие заказы, гостевые заказы и заказы по факсу в выдачу не попадают.
+        Неизвестный `status`, `limit` вне 1…50 и отрицательный `offset` — `400 INVALID_PARAMETER`,
+        а не пустой список.
+
+
+        Элементы — полный `Order` (состав со снимком модификаторов, суммы, доставка), без ETA:
+        время получения читается отдельно через `getOrderEta`. `total` — число заказов пользователя
+        с учётом фильтра `status`, независимо от `limit` и `offset`. Список не заменяет
+        `getOrder`: на экране конкретного заказа клиент по-прежнему опрашивает именно его.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Фильтр по статусу; параметр можно повторять (`status=accepted&status=cooking`) —
+            подходит любой из перечисленных. Без параметра — все статусы.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 10
+            items: { $ref: '#/components/schemas/OrderStatus' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Страница заказов пользователя (может быть пустой)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
     post:
       tags: [orders-service]
       operationId: createOrder
@@ -586,6 +636,16 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    Limit:
+      name: limit
+      in: query
+      description: Размер страницы.
+      schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      description: Смещение от начала списка.
+      schema: { type: integer, minimum: 0, default: 0 }
     IdempotencyKeyRequired:
       name: Idempotency-Key
       in: header
@@ -807,6 +867,19 @@ components:
         delivery:
           $ref: '#/components/schemas/OrderDelivery'
         createdAt: { type: string, format: date-time }
+    OrderPage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Order' }
+        total:
+          type: integer
+          minimum: 0
+          description: Всего заказов пользователя с учётом фильтра `status`.
+        limit: { type: integer }
+        offset: { type: integer }
     OrderDelivery:
       type: object
       required: [status]
