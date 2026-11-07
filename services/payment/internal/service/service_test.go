@@ -204,6 +204,15 @@ func TestInitiateRules(t *testing.T) {
 	_, err = e.svc.Initiate(ctx, "u1", mine, service.InitiateInput{Method: domain.MethodOnlineCard, ReturnURL: "javascript:alert(1)"})
 	wantCode(t, err, "INVALID_PARAMETER")
 
+	// ТД-QA-1: возврат только на разрешённые origin'ы; по умолчанию — origin DEFAULT_RETURN_URL.
+	for _, u := range []string{"https://evil.example/back", "https://localhost:3000.evil.example/", "http://localhost:3000@evil.example/"} {
+		_, err = e.svc.Initiate(ctx, "u1", mine, service.InitiateInput{Method: domain.MethodOnlineCard, ReturnURL: u})
+		wantCode(t, err, "INVALID_PARAMETER")
+	}
+	if e.gw.Calls.Create != 0 {
+		t.Fatalf("rejected returnUrl must not reach the gateway, calls=%d", e.gw.Calls.Create)
+	}
+
 	e.status(t, mine, "cancelled", e.clock.Now())
 	_, err = e.svc.Initiate(ctx, "u1", mine, service.InitiateInput{Method: domain.MethodOnlineCard})
 	wantCode(t, err, "ORDER_NOT_PAYABLE")

@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -104,8 +103,8 @@ func (s *Service) Initiate(ctx context.Context, userID, orderID string, in Initi
 	if ret == "" {
 		ret = s.cfg.DefaultReturnURL
 	}
-	if u, err := url.Parse(ret); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return domain.Payment{}, errBadParam("returnUrl must be an absolute http(s) URL")
+	if err := s.ret.Check(ret); err != nil {
+		return domain.Payment{}, errBadParam(err.Error())
 	}
 
 	p, err := s.startAttempt(ctx, orderID, payable, "", ret)

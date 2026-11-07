@@ -13,7 +13,7 @@
 | restaurant-service | 8082 | [restaurant.md](restaurant.md) | 1.2.0 | рестораны, поиск по области карты, расписание, «открыто сейчас» |
 | menu-service | 8083 | [menu.md](menu.md) | 1.3.0 | меню, цены, стоп-лист, валидация корзины |
 | orders-service | 8084 | [orders.md](orders.md) | 1.7.0 | заказы, автомат статусов, скидки, оркестрация по событиям |
-| payment-service | 8085 | [payment.md](payment.md) | 1.4.0 | оплата (онлайн, курьеру, касса), вебхуки, сверка, возвраты |
+| payment-service | 8085 | [payment.md](payment.md) | 1.4.1 | оплата (онлайн, курьеру, касса), вебхуки, сверка, возвраты |
 | loyalty-service | 8086 | [loyalty.md](loyalty.md) | 1.2.0 | акции и их жизненный цикл, публикация `promotions.discount` |
 | delivery-service | 8087 | [delivery.md](delivery.md) | 1.3.0 | заявки курьерской системе, статус и координаты доставки |
 | notification-service | 8088 | [notification.md](notification.md) | 1.2.0 | push-токены и уведомления о статусах заказа |

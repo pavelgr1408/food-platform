@@ -42,7 +42,8 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	pool := testkit.Pool(t)
 	gw := testkit.NewGateway()
-	svc := service.New(service.Deps{Pool: pool, Gateway: gw, Log: testkit.Log()})
+	svc := service.New(service.Deps{Pool: pool, Gateway: gw, Log: testkit.Log(),
+		Config: service.Config{AllowedReturnOrigins: []string{"https://shop.test"}}})
 	h := httpapi.New(httpapi.Deps{Log: testkit.Log(), Metrics: metrics.New("payment"), Auth: authclient.DevAuthenticator{},
 		Idempotency: idempotency.NewStore(pool), Payments: svc, GatewayWebhookSecret: gwSecret, POSWebhookSecret: posSecret})
 	srv := httptest.NewServer(h)
@@ -212,6 +213,13 @@ func TestInitiateErrorsOverHTTP(t *testing.T) {
 	}
 	if r := f.do(t, "POST", "/orders/"+o+"/payments", `{"method":"online_card","returnUrl":"ftp://x"}`, own("e")); r.Status != 400 {
 		t.Fatalf("%d %s", r.Status, r.Body)
+	}
+	// ТД-QA-1: чужой домен, userinfo-обход и похожий хост отклоняются, ничего не доходит до шлюза.
+	for i, u := range []string{"https://evil.example/back", "https://shop.test@evil.example/", "https://shop.test.evil.example/", "http://shop.test/back"} {
+		body := map[string]any{"method": "online_card", "returnUrl": u}
+		if r := f.do(t, "POST", "/orders/"+o+"/payments", body, own("evil"+string(rune('a'+i)))); r.Status != 400 || r.json(t)["code"] != "INVALID_PARAMETER" {
+			t.Fatalf("%s: %d %s", u, r.Status, r.Body)
+		}
 	}
 }
 
