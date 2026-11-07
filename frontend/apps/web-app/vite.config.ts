@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => {
       setupFiles: ["./src/test-setup.ts"],
       globals: false,
       exclude: ["e2e/**", "node_modules/**"],
+      // сквозные UI-тесты долгие (userEvent + MSW); на медленном CI дефолтных 5 с на тест не хватает
+      testTimeout: 20_000,
     },
   };
 });
