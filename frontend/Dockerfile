@@ -17,6 +17,8 @@ RUN npm run build --workspace web-app
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 ENV GATEWAY_UPSTREAM=http://gateway:8080 NGINX_RESOLVER=127.0.0.11
+# Хосты фото каталога для CSP img-src (dev/demo seed — picsum.photos; в облаке заменить на хост CDN)
+ENV IMG_SRC_HOSTS="https://picsum.photos https://fastly.picsum.photos"
 COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /src/frontend/apps/web-app/dist /usr/share/nginx/html
 EXPOSE 3000

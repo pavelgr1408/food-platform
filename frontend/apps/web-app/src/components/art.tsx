@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from "react";
 
 /**
- * Иллюстрации «Лотка». В контракте пока нет полей с фото (FRONTEND-CONTRACT, пробел про imageUrl),
- * поэтому у каждого блюда и ресторана — фирменный рисунок: плоские цвета, контур ink 3 px.
- * Когда бэкенд начнёт отдавать imageUrl, <Thumb> покажет фото, а рисунок останется запасным.
+ * Иллюстрации «Лотка». У каждого блюда и ресторана — фирменный рисунок: плоские цвета, контур ink 3 px.
+ * Если бэкенд отдал imageUrl (menu 1.4.1, restaurant 1.3.1), <Thumb> показывает фото, а рисунок остаётся
+ * запасным (нет поля, не https, фото не загрузилось).
  */
 
 export type DishKind =
@@ -187,7 +187,7 @@ export function Thumb({ name, category, seed, imageUrl, className = "" }: { name
   return <DishArt name={name} category={category} seed={seed} className={className} />;
 }
 
-/** imageUrl появится в контракте отдельным PR (x-status: planned); читаем безопасно. */
+/** imageUrl — необязательное поле каталога (menu 1.4.1, restaurant 1.3.1); принимаем только https. */
 export const imageOf = (x: unknown): string | undefined => {
   const u = (x as { imageUrl?: unknown } | null)?.imageUrl;
   return typeof u === "string" && /^https:\/\//.test(u) ? u : undefined;

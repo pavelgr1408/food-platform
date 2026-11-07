@@ -1,6 +1,9 @@
 package seed
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEmbeddedSeedIsValid(t *testing.T) {
 	rs, err := Restaurants()
@@ -36,6 +39,34 @@ func TestParseRejectsBadData(t *testing.T) {
 	for i, b := range bad {
 		if _, err := Parse([]byte(b)); err == nil {
 			t.Errorf("case %d: expected error", i)
+		}
+	}
+}
+
+func TestSeedImageURLs(t *testing.T) {
+	rs, err := Restaurants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range rs {
+		if r.ImageURL != "" {
+			n++
+			if !strings.HasPrefix(r.ImageURL, "https://") {
+				t.Errorf("%s: imageUrl %q is not https", r.Name, r.ImageURL)
+			}
+		}
+	}
+	if n == 0 {
+		t.Error("seed must contain imageUrl")
+	}
+}
+
+func TestParseRejectsBadImageURL(t *testing.T) {
+	for _, u := range []string{"http://x.example/a.jpg", "javascript:alert(1)", "https://x.example/a b.jpg"} {
+		b := `[{"id":"a1000000-0000-4000-8000-000000000001","name":"n","timezone":"Europe/Moscow","deliveryEnabled":false,"imageUrl":"` + u + `"}]`
+		if _, err := Parse([]byte(b)); err == nil {
+			t.Errorf("imageUrl %q must be rejected", u)
 		}
 	}
 }

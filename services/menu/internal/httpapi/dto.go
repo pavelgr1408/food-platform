@@ -26,6 +26,7 @@ type itemDTO struct {
 	ID          string        `json:"id"`
 	Name        string        `json:"name"`
 	Description string        `json:"description,omitempty"`
+	ImageURL    string        `json:"imageUrl,omitempty"`
 	Price       money         `json:"price"`
 	Available   bool          `json:"available"`
 	Modifiers   []modifierDTO `json:"modifiers"`
@@ -48,7 +49,7 @@ func toMenu(m domain.Menu) menuDTO {
 	for _, c := range m.Categories {
 		cd := categoryDTO{ID: c.ID, Name: c.Name, Items: make([]itemDTO, 0, len(c.Items))}
 		for _, it := range c.Items {
-			id := itemDTO{ID: it.ID, Name: it.Name, Description: it.Description, Price: money{it.Price, m.Currency},
+			id := itemDTO{ID: it.ID, Name: it.Name, Description: it.Description, ImageURL: it.ImageURL, Price: money{it.Price, m.Currency},
 				Available: it.Available, Modifiers: make([]modifierDTO, 0, len(it.Modifiers))}
 			for _, md := range it.Modifiers {
 				id.Modifiers = append(id.Modifiers, modifierDTO{md.ID, md.Name, money{md.Price, m.Currency}, md.Available})

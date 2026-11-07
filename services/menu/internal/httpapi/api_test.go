@@ -198,3 +198,29 @@ func TestValidateRequestLimits(t *testing.T) {
 		t.Errorf("unknown restaurant: %d", r.Code)
 	}
 }
+
+func TestImageURLInDTO(t *testing.T) {
+	m := domain.Menu{RestaurantID: rid, Version: 1, Currency: "RUB", Categories: []domain.Category{{ID: "e1", Name: "c", Items: []domain.Item{
+		{ID: "i1", Name: "с фото", Price: 1, Available: true, ImageURL: "https://cdn.example.com/a.jpg"},
+		{ID: "i2", Name: "без фото", Price: 1, Available: true},
+	}}}}
+	b, err := json.Marshal(toMenu(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Categories []struct {
+			Items []map[string]any `json:"items"`
+		} `json:"categories"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	items := out.Categories[0].Items
+	if items[0]["imageUrl"] != "https://cdn.example.com/a.jpg" {
+		t.Errorf("imageUrl missing: %v", items[0])
+	}
+	if _, ok := items[1]["imageUrl"]; ok {
+		t.Errorf("imageUrl must be omitted when empty (field is optional): %v", items[1])
+	}
+}

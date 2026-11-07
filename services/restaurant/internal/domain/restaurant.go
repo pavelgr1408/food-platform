@@ -6,6 +6,7 @@ type Restaurant struct {
 	Name             string
 	City             string
 	Address          string
+	ImageURL         string // https-ссылка на фото; пусто — фото нет
 	Location         Point
 	Timezone         string
 	DeliveryEnabled  bool

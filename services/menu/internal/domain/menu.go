@@ -21,6 +21,7 @@ type Item struct {
 	ID          string
 	Name        string
 	Description string
+	ImageURL    string // https-ссылка на фото; пусто — фото нет
 	Price       int64
 	Available   bool
 	Modifiers   []Modifier

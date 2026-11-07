@@ -181,3 +181,48 @@ func TestAntimeridianCandidates(t *testing.T) {
 		t.Fatalf("want both sides of antimeridian, got %d", len(got))
 	}
 }
+
+func TestImageURLRoundTripAndConstraint(t *testing.T) {
+	s := newStore(t)
+	rs, _ := seed.Restaurants()
+	if rs[0].ImageURL == "" {
+		t.Fatal("seed must contain imageUrl")
+	}
+	r, err := s.Get(ctx, rs[0].ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ImageURL != rs[0].ImageURL {
+		t.Fatalf("Get: imageUrl %q, want %q", r.ImageURL, rs[0].ImageURL)
+	}
+	list, err := s.Candidates(ctx, nil, 0, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range list {
+		if c.ID == rs[0].ID && c.ImageURL != rs[0].ImageURL {
+			t.Fatalf("Candidates: imageUrl %q", c.ImageURL)
+		}
+	}
+	// повторный seed с другим URL обновляет, с пустым — снимает (NULL)
+	rs[0].ImageURL = "https://cdn.example.com/new.jpg"
+	if err := s.Upsert(ctx, rs); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Get(ctx, rs[0].ID, now); r.ImageURL != "https://cdn.example.com/new.jpg" {
+		t.Fatalf("not updated: %q", r.ImageURL)
+	}
+	rs[0].ImageURL = ""
+	if err := s.Upsert(ctx, rs); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = s.Get(ctx, rs[0].ID, now); r.ImageURL != "" {
+		t.Fatalf("not cleared: %q", r.ImageURL)
+	}
+	for _, bad := range []string{"http://cdn.example.com/a.jpg", "javascript:alert(1)", "https://cdn.example.com/a b.jpg"} {
+		rs[0].ImageURL = bad
+		if err := s.Upsert(ctx, rs); err == nil {
+			t.Errorf("imageUrl %q must be rejected by CHECK", bad)
+		}
+	}
+}

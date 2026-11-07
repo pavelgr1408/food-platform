@@ -1,6 +1,9 @@
 package seed
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEmbeddedSeed(t *testing.T) {
 	ms, err := Menus()
@@ -50,6 +53,41 @@ func TestParseRejectsBad(t *testing.T) {
 	} {
 		if _, err := Parse([]byte(b)); err == nil {
 			t.Errorf("case %d: expected error", i)
+		}
+	}
+}
+
+func TestSeedImageURLs(t *testing.T) {
+	ms, err := Menus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withImage, without := 0, 0
+	for _, m := range ms {
+		for _, c := range m.Categories {
+			for _, it := range c.Items {
+				if it.ImageURL == "" {
+					without++
+					continue
+				}
+				withImage++
+				if !strings.HasPrefix(it.ImageURL, "https://") {
+					t.Errorf("%s: imageUrl %q is not https", it.Name, it.ImageURL)
+				}
+			}
+		}
+	}
+	if withImage == 0 {
+		t.Error("seed must contain imageUrl")
+	}
+	_ = without
+}
+
+func TestParseRejectsBadImageURL(t *testing.T) {
+	for _, u := range []string{"http://x.example/a.jpg", "javascript:alert(1)", "https://x.example/a b.jpg"} {
+		b := `{"templates":{"t":[{"category":"c","items":[{"key":"k","name":"n","imageUrl":"` + u + `","price":1}]}]},"restaurants":[{"restaurantId":"a1000000-0000-4000-8000-000000000001","template":"t"}]}`
+		if _, err := Parse([]byte(b)); err == nil {
+			t.Errorf("imageUrl %q must be rejected", u)
 		}
 	}
 }

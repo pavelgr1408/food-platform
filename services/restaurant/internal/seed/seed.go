@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/pavelgr1408/food-platform/pkg/imageurl"
 	"github.com/pavelgr1408/food-platform/services/restaurant/internal/domain"
 )
 
@@ -21,6 +22,7 @@ type fileRestaurant struct {
 	Name                 string  `json:"name"`
 	City                 string  `json:"city"`
 	Address              string  `json:"address"`
+	ImageURL             string  `json:"imageUrl"`
 	Lat                  float64 `json:"lat"`
 	Lon                  float64 `json:"lon"`
 	Timezone             string  `json:"timezone"`
@@ -59,11 +61,14 @@ func Parse(data []byte) ([]domain.Restaurant, error) {
 		if err != nil {
 			return nil, fmt.Errorf("seed %q: timezone: %w", f.Name, err)
 		}
+		if err := imageurl.Validate(f.ImageURL); err != nil {
+			return nil, fmt.Errorf("seed %q: %w", f.Name, err)
+		}
 		if f.DeliveryEnabled == (f.DeliveryRadiusMeters == 0) {
 			return nil, fmt.Errorf("seed %q: deliveryRadiusMeters must be >0 exactly when deliveryEnabled", f.Name)
 		}
 		r := domain.Restaurant{
-			ID: f.ID, Name: f.Name, City: f.City, Address: f.Address,
+			ID: f.ID, Name: f.Name, City: f.City, Address: f.Address, ImageURL: f.ImageURL,
 			Location: domain.Point{Lat: f.Lat, Lon: f.Lon}, Timezone: f.Timezone,
 			DeliveryEnabled: f.DeliveryEnabled, DeliveryRadiusM: f.DeliveryRadiusMeters, Active: f.Active,
 			Schedule: domain.Schedule{Location: loc},

@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: restaurant-service — REST API
-  version: 1.3.0
+  version: 1.3.1
   description: >-
     Поиск и выбор ресторанов сети с учётом режима работы и признака доставки.
     Хранилище — restaurant-db. (UC-FND-01)
@@ -164,10 +164,10 @@ components:
           format: uri
           maxLength: 2048
           pattern: '^https://'
-          x-status: planned
           description: >-
-            Фото ресторана (HTTPS, необязательно). Поле запланировано: пока сервис его не отдаёт, клиент
-            рисует иллюстрацию по названию. Загрузка и хранение фото — отдельная задача.
+            Фото ресторана (HTTPS, необязательно): ссылка на изображение, сами файлы сервис не хранит.
+            Отсутствует, если фото нет — клиент рисует иллюстрацию по названию. Отдаётся в
+            `listRestaurants` и `getRestaurant`. Загрузка и хранение файлов (S3/CDN) — отдельная задача.
     WorkingHours:
       type: object
       required: [dayOfWeek, opensAt, closesAt]
