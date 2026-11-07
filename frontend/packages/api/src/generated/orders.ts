@@ -84,7 +84,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Мои заказы
+         * @description Список заказов текущего пользователя (долг №80): только свои, от новых к старым (`createdAt` по убыванию, при равенстве — по `id`). Требуется токен: гость получает `401 UNAUTHORIZED`. Чужие заказы, гостевые заказы и заказы по факсу в выдачу не попадают. Неизвестный `status`, `limit` вне 1…50 и отрицательный `offset` — `400 INVALID_PARAMETER`, а не пустой список.
+         *
+         *     Элементы — полный `Order` (состав со снимком модификаторов, суммы, доставка), без ETA: время получения читается отдельно через `getOrderEta`. `total` — число заказов пользователя с учётом фильтра `status`, независимо от `limit` и `offset`. Список не заменяет `getOrder`: на экране конкретного заказа клиент по-прежнему опрашивает именно его.
+         */
+        get: operations["listOrders"];
         put?: never;
         /**
          * Оформить заказ
@@ -415,6 +421,13 @@ export interface components {
             /** Format: date-time */
             updatedAt?: string;
         };
+        OrderPage: {
+            items: components["schemas"]["Order"][];
+            limit: number;
+            offset: number;
+            /** @description Всего заказов пользователя с учётом фильтра `status`. */
+            total: number;
+        };
         /**
          * @description Совпадает с `orders.status` (AsyncAPI) плюс стартовый `pending_payment`. Допустимые переходы: `pending_payment→{accepted,cancelled}`, `accepted→{cooking,cancelled}`, `cooking→ready`, `ready→{handed_over,on_delivery,not_received}`, `on_delivery→{delivered,not_received}`, `{delivered,handed_over,not_received}→closed`.
          * @enum {string}
@@ -544,6 +557,10 @@ export interface components {
         CartId: string;
         /** @description Уникальный ключ (1–128 печатных ASCII-символов), гарантирующий однократное создание заказа при повторной отправке. */
         IdempotencyKeyRequired: string;
+        /** @description Размер страницы. */
+        Limit: number;
+        /** @description Смещение от начала списка. */
+        Offset: number;
         OrderId: string;
     };
     requestBodies: never;
@@ -722,6 +739,35 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+        };
+    };
+    listOrders: {
+        parameters: {
+            query?: {
+                /** @description Размер страницы. */
+                limit?: components["parameters"]["Limit"];
+                /** @description Смещение от начала списка. */
+                offset?: components["parameters"]["Offset"];
+                /** @description Фильтр по статусу; параметр можно повторять (`status=accepted&status=cooking`) — подходит любой из перечисленных. Без параметра — все статусы. */
+                status?: components["schemas"]["OrderStatus"][];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница заказов пользователя (может быть пустой) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
         };
     };
     createOrder: {

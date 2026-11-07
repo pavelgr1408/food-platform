@@ -14,6 +14,7 @@
   {"pattern": "PUT /carts/{cartId}/items",                        "upstream": "orders",     "access": "optional"},
   {"pattern": "PUT /carts/{cartId}/fulfillment",                  "upstream": "orders",     "access": "optional"},
   {"pattern": "POST /orders",                                     "upstream": "orders",     "access": "optional", "sensitive": true},
+  {"pattern": "GET /orders",                                      "upstream": "orders",     "access": "required"},
   {"pattern": "GET /orders/search",                               "upstream": "orders",     "access": "required", "roles": ["STAFF", "FRANCHISE_OWNER", "HQ_STAFF"]},
   {"pattern": "GET /orders/{orderId}",                            "upstream": "orders",     "access": "optional"},
   {"pattern": "GET /orders/{orderId}/eta",                        "upstream": "orders",     "access": "optional"},
