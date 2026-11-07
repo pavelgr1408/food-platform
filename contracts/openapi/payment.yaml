@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: payment-service — REST API
-  version: 1.4.0
+  version: 1.4.1
   description: >-
     Обработка платежей: способы оплаты, инициализация онлайн-оплаты, оплаты на
     кассе/терминале, статус платежа. Интеграция с платёжным шлюзом и кассовой
@@ -437,7 +437,12 @@ components:
           format: uri
           maxLength: 500
           description: >-
-            URL возврата после оплаты в форме провайдера (онлайн); схема `http`/`https`.
+            URL возврата после оплаты в форме провайдера (онлайн). Абсолютный `http(s)` без
+            userinfo; его origin (`схема://хост[:порт]`) должен входить в список разрешённых
+            (`ALLOWED_RETURN_ORIGINS`, плюс origin `DEFAULT_RETURN_URL`); сравнение точное,
+            без подстановок, регистр хоста и порт по умолчанию нормализуются. Иначе —
+            `400 INVALID_PARAMETER` (защита от возврата клиента на чужой сайт). Не передан —
+            используется `DEFAULT_RETURN_URL`.
     PosPaymentInitRequest:
       type: object
       required: [tender]
