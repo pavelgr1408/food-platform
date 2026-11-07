@@ -195,7 +195,7 @@ export interface components {
             method: components["schemas"]["PaymentMethodType"];
             /**
              * Format: uri
-             * @description URL возврата после оплаты в форме провайдера (онлайн); схема `http`/`https`.
+             * @description URL возврата после оплаты в форме провайдера (онлайн). Абсолютный `http(s)` без userinfo; его origin (`схема://хост[:порт]`) должен входить в список разрешённых (`ALLOWED_RETURN_ORIGINS`, плюс origin `DEFAULT_RETURN_URL`); сравнение точное, без подстановок, регистр хоста и порт по умолчанию нормализуются. Иначе — `400 INVALID_PARAMETER` (защита от возврата клиента на чужой сайт). Не передан — используется `DEFAULT_RETURN_URL`.
              */
             returnUrl?: string;
         };
