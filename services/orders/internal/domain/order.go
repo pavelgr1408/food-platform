@@ -120,14 +120,41 @@ type Address struct {
 	Lat, Lon *float64
 }
 
+// LineModifier — снимок выбранного модификатора: название и цена (копейки) на момент расчёта.
+type LineModifier struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Price int64  `json:"price"`
+}
+
 // Line — строка корзины/заказа со снапшотом названия и цен (копейки).
 type Line struct {
 	MenuItemID  string
 	Name        string
 	Quantity    int
 	ModifierIDs []string
-	UnitPrice   int64
-	LineTotal   int64
+	// Modifiers — снимок модификаторов (долг №81): порядок и состав как у ModifierIDs. nil — снимка
+	// нет (строка создана до его появления), пустой срез — модификаторы не выбраны.
+	Modifiers []LineModifier
+	UnitPrice int64
+	LineTotal int64
+}
+
+// SnapshotModifiers собирает снимок по выбранным id и данным menu. Возвращает nil, если данные menu
+// не согласуются с выбором (иной состав или порядок, или menu старой версии без поля): лучше честно
+// «снимка нет», чем снимок другого состава.
+func SnapshotModifiers(ids []string, fromMenu []LineModifier) []LineModifier {
+	if len(ids) != len(fromMenu) {
+		return nil
+	}
+	out := make([]LineModifier, len(ids))
+	for i, id := range ids {
+		if fromMenu[i].ID != id {
+			return nil
+		}
+		out[i] = fromMenu[i]
+	}
+	return out
 }
 
 // DeliveryStatus — статус доставки (orders.delivery.status, S7).

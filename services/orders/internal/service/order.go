@@ -237,7 +237,8 @@ func (s *Service) revalidate(ctx context.Context, cart domain.Cart) ([]domain.Li
 			changed = true
 		}
 		fresh[i] = domain.Line{MenuItemID: l.MenuItemID, Name: l.Name, Quantity: l.Quantity,
-			ModifierIDs: nonNil(old.ModifierIDs), UnitPrice: l.UnitPrice, LineTotal: l.LineTotal}
+			ModifierIDs: nonNil(old.ModifierIDs), Modifiers: domain.SnapshotModifiers(nonNil(old.ModifierIDs), l.Modifiers),
+			UnitPrice: l.UnitPrice, LineTotal: l.LineTotal}
 	}
 	if len(unavailable) > 0 {
 		return nil, &ItemsUnavailableError{Items: unavailable}

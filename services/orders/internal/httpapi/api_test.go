@@ -423,3 +423,35 @@ func TestExpectedTotalHTTP(t *testing.T) {
 		t.Fatalf("order: %s", r.Body)
 	}
 }
+
+// Долг №81: снимок модификаторов в Cart и Order — id, название и цена в копейках; пустой выбор → [].
+func TestModifierSnapshotShapeInCartAndOrder(t *testing.T) {
+	srv, _, _, _ := newServer(t)
+	id := readyCart(t, srv, nil)
+	want := `[{"id":"` + testkit.Bacon + `","name":"Бекон","price":{"amount":8900,"currency":"RUB"}}]`
+	check := func(where string, body []byte) {
+		t.Helper()
+		var o struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(body, &o); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(o.Items[0]["modifiers"]); got != want {
+			t.Errorf("%s burger modifiers: %s", where, got)
+		}
+		if got := string(o.Items[0]["modifierIds"]); got != `["`+testkit.Bacon+`"]` {
+			t.Errorf("%s modifierIds must stay: %s", where, got)
+		}
+		if got := string(o.Items[1]["modifiers"]); got != `[]` {
+			t.Errorf("%s cola modifiers must be []: %s", where, got)
+		}
+	}
+	check("cart", do(t, srv, "GET", "/carts/"+id, nil, nil).Body)
+	r := do(t, srv, "POST", "/orders", orderBody(id), map[string]string{"Idempotency-Key": "snapshot-1"})
+	if r.Status != 201 {
+		t.Fatalf("%d %s", r.Status, r.Body)
+	}
+	check("order", r.Body)
+	check("getOrder", do(t, srv, "GET", "/orders/"+r.json(t)["id"].(string), nil, nil).Body)
+}

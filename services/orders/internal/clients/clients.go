@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/pavelgr1408/food-platform/services/orders/internal/domain"
 )
 
 // Ошибки upstream-вызовов.
@@ -40,6 +42,9 @@ type MenuLine struct {
 	Available  bool
 	UnitPrice  int64 // 0, если позиции нет (ReasonCode=ITEM_NOT_FOUND)
 	LineTotal  int64
+	// Modifiers — выбранные модификаторы с названием и ценой (menu ≥ 1.5.0); nil, если menu поля
+	// не вернул (старая версия) или позиции нет.
+	Modifiers  []domain.LineModifier
 	ReasonCode string
 	Reason     string
 }
@@ -81,8 +86,13 @@ type menuResp struct {
 		Available    bool       `json:"available"`
 		CurrentPrice *moneyJSON `json:"currentPrice"`
 		LineTotal    *moneyJSON `json:"lineTotal"`
-		ReasonCode   string     `json:"reasonCode"`
-		Reason       string     `json:"reason"`
+		Modifiers    *[]struct {
+			ID    string    `json:"id"`
+			Name  string    `json:"name"`
+			Price moneyJSON `json:"price"`
+		} `json:"modifiers"`
+		ReasonCode string `json:"reasonCode"`
+		Reason     string `json:"reason"`
 	} `json:"lines"`
 	Total moneyJSON `json:"total"`
 }
@@ -133,6 +143,12 @@ func (m *Menu) Validate(ctx context.Context, restaurantID string, lines []MenuLi
 		}
 		if l.LineTotal != nil {
 			ml.LineTotal = l.LineTotal.Amount
+		}
+		if l.Modifiers != nil {
+			ml.Modifiers = make([]domain.LineModifier, len(*l.Modifiers))
+			for j, m := range *l.Modifiers {
+				ml.Modifiers[j] = domain.LineModifier{ID: m.ID, Name: m.Name, Price: m.Price.Amount}
+			}
 		}
 		// Строки приходят в порядке запроса; сверяем, чтобы чужой ответ не подменил состав.
 		if ml.MenuItemID != lines[i].MenuItemID || ml.Quantity != lines[i].Quantity {

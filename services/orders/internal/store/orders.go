@@ -132,8 +132,12 @@ func (s *Store) InsertOrder(ctx context.Context, db DBTX, o domain.Order, actor 
 		if mods == nil {
 			mods = []string{}
 		}
-		if _, err := db.Exec(ctx, `INSERT INTO order_items (order_id, position, menu_item_id, name, quantity, modifier_ids, unit_price, line_total)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, o.ID, i, l.MenuItemID, l.Name, l.Quantity, mods, l.UnitPrice, l.LineTotal); err != nil {
+		snap, err := encodeModifiers(l.Modifiers)
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO order_items (order_id, position, menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, o.ID, i, l.MenuItemID, l.Name, l.Quantity, mods, snap, l.UnitPrice, l.LineTotal); err != nil {
 			return err
 		}
 	}
