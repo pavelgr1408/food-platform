@@ -108,7 +108,8 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	svc = service.New(service.Deps{Pool: pool, Gateway: gw, POS: posGW, Waker: waker, Log: log, Metrics: m,
 		Config: service.Config{GatewayTimeout: cfg.GatewayTimeout, WebhookWait: cfg.WebhookWait, PendingExpiry: cfg.PendingExpiry, CourierExpiry: cfg.CourierExpiry,
-			PollMin: cfg.PollMin, PollMax: cfg.PollMax, DefaultReturnURL: cfg.DefaultReturnURL, AllowedReturnOrigins: cfg.AllowedReturnOrigins}})
+			PollMin: cfg.PollMin, PollMax: cfg.PollMax, DefaultReturnURL: cfg.DefaultReturnURL, AllowedReturnOrigins: cfg.AllowedReturnOrigins,
+			OrderReplicaWait: replicaWait(cfg.OrderReplicaWait)}})
 
 	if len(cfg.KafkaBrokers) > 0 {
 		consumer, err = kafka.NewConsumer(kafka.ConsumerConfig{Brokers: cfg.KafkaBrokers, Group: "payment-service",
@@ -181,4 +182,12 @@ func refundCollectors(pool store.DBTX) []prometheus.Collector {
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "payment_refunds_failed",
 			Help: "Возвратов, которые шлюз определённо отклонил (нужна ручная обработка)."}, func() float64 { _, f := q(); return float64(f) }),
 	}
+}
+
+// replicaWait: 0 в конфиге — «не ждать» (в Service.Config 0 означает значение по умолчанию, отрицательное — не ждать).
+func replicaWait(d time.Duration) time.Duration {
+	if d == 0 {
+		return -1
+	}
+	return d
 }

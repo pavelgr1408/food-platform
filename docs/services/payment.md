@@ -134,6 +134,7 @@ flowchart LR
 | `RECONCILE_INTERVAL` | 2s | период циклов reconciler и возвратов |
 | `DEFAULT_RETURN_URL` | dev: `http://localhost:3000/orders`; вне dev обязателен, https | возврат со страницы шлюза |
 | `ALLOWED_RETURN_ORIGINS` | dev: `http://localhost:3000`; вне dev обязателен | список origin'ов (`https://host[:port]`, через запятую) для `returnUrl`; без путей и подстановок, вне dev только https, `DEFAULT_RETURN_URL` обязан входить |
+| `ORDER_REPLICA_WAIT` | 3s (0 — не ждать, максимум 10s) | `initiatePayment`: ожидание реплики заказа (`orders.state` идёт по Kafka ≈100–200 мс) перед `404 ORDER_NOT_FOUND`; 404 с `Retry-After` не запоминается по `Idempotency-Key` |
 | `KAFKA_BROKERS`, `AUTH_MODE`, `AUTH_JWKS_URL`… | — | общие |
 
 Внутренние (не в env): `PollLease` 30 с, `ReconcileBatch` 20.

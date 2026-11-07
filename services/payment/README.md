@@ -28,7 +28,7 @@ make contract-check SCENARIO=payment
 - **Деньги — только int64 копейки** (ADR-13).
 
 ## Конфигурация (env)
-`DATABASE_URL`, `KAFKA_BROKERS`, `GATEWAY_URL`, `GATEWAY_API_KEY`, `GATEWAY_TIMEOUT` (5s), `GATEWAY_WEBHOOK_SECRET`, `POS_URL` (кассовая система, dev: mock :9093), `POS_API_KEY`, `POS_WEBHOOK_SECRET`, `WEBHOOK_WAIT` (10s), `PENDING_EXPIRY` (10m), `RECONCILE_BACKOFF_MIN/MAX` (5s/5m), `RECONCILE_INTERVAL` (2s), `DEFAULT_RETURN_URL`, `ALLOWED_RETURN_ORIGINS` (origin'ы для `returnUrl`; вне dev обязательны, только https).
+`DATABASE_URL`, `KAFKA_BROKERS`, `GATEWAY_URL`, `GATEWAY_API_KEY`, `GATEWAY_TIMEOUT` (5s), `GATEWAY_WEBHOOK_SECRET`, `POS_URL` (кассовая система, dev: mock :9093), `POS_API_KEY`, `POS_WEBHOOK_SECRET`, `WEBHOOK_WAIT` (10s), `PENDING_EXPIRY` (10m), `RECONCILE_BACKOFF_MIN/MAX` (5s/5m), `RECONCILE_INTERVAL` (2s), `DEFAULT_RETURN_URL`, `ORDER_REPLICA_WAIT` (3s; сколько `initiatePayment` ждёт реплику только что созданного заказа, 0 — не ждать), `ALLOWED_RETURN_ORIGINS` (origin'ы для `returnUrl`; вне dev обязательны, только https).
 Секреты вне `APP_ENV=dev` обязательны, не короче 16 символов и не равны dev-значениям; в k8s — из Secret.
 
 ## Mock шлюза (`tools/mock-externals`, модуль `payment`, :9091)

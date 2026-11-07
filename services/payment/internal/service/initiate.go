@@ -26,6 +26,42 @@ func (s *Service) loadOrder(ctx context.Context, userID, id string) (domain.Orde
 	return o, err
 }
 
+// orderPollInterval — период опроса реплики заказа в loadOrderWait.
+const orderPollInterval = 100 * time.Millisecond
+
+// loadOrderWait — loadOrder, который при «заказа нет» ждёт реплику до OrderReplicaWait: заказ мог быть только что
+// создан, а orders.state ещё в пути (ТД-QA-2). Ждут и чужой, и несуществующий заказ — одинаково, чтобы по времени
+// ответа нельзя было узнать, существует ли заказ. Прочие ошибки и отмена контекста прерывают ожидание сразу.
+func (s *Service) loadOrderWait(ctx context.Context, userID, id string) (domain.Order, error) {
+	o, err := s.loadOrder(ctx, userID, id)
+	if err == nil || !IsOrderNotFound(err) || s.cfg.OrderReplicaWait <= 0 {
+		return o, err
+	}
+	if _, perr := uuid.Parse(id); perr != nil {
+		return o, err // не UUID — реплика не появится
+	}
+	deadline := time.NewTimer(s.cfg.OrderReplicaWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(orderPollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return domain.Order{}, err
+		case <-deadline.C:
+			return domain.Order{}, err
+		case <-tick.C:
+			o2, err2 := s.loadOrder(ctx, userID, id)
+			if err2 == nil || !IsOrderNotFound(err2) {
+				if err2 != nil && ctx.Err() != nil {
+					return domain.Order{}, err // запрос отменён: ошибка БД — следствие отмены
+				}
+				return o2, err2
+			}
+		}
+	}
+}
+
 // payable — можно ли сейчас оплатить заказ онлайн (статус "" — orders.status ещё не дошёл: заказ только создан).
 func payable(o domain.Order, orderStatus string) bool {
 	return o.Method == domain.MethodOnlineCard && (orderStatus == "" || orderStatus == domain.OrderPendingPayment)
@@ -89,7 +125,7 @@ type InitiateInput struct {
 // Возвращённый платёж имеет статус pending (201) или unknown (202: шлюз не ответил в срок).
 // Синхронный отказ шлюза — ошибка 402 PAYMENT_DECLINED.
 func (s *Service) Initiate(ctx context.Context, userID, orderID string, in InitiateInput) (domain.Payment, error) {
-	ord, err := s.loadOrder(ctx, userID, orderID)
+	ord, err := s.loadOrderWait(ctx, userID, orderID)
 	if err != nil {
 		return domain.Payment{}, err
 	}

@@ -40,6 +40,9 @@ type Config struct {
 	// AllowedReturnOrigins — origin'ы, на которые можно вернуть клиента после оплаты (scheme://host[:port]).
 	// Origin DefaultReturnURL разрешён всегда. Всё остальное → 400 INVALID_PARAMETER (ТД-QA-1, долг №91).
 	AllowedReturnOrigins []string
+	// OrderReplicaWait — сколько initiatePayment ждёт появления реплики заказа (orders.state идёт по Kafka),
+	// прежде чем ответить 404 (ТД-QA-2, долг №92). 0 → 3 с; отрицательное — не ждать.
+	OrderReplicaWait time.Duration
 }
 
 func (c *Config) defaults() {
@@ -55,6 +58,9 @@ func (c *Config) defaults() {
 	def(&c.PollMin, 5*time.Second)
 	def(&c.PollMax, 5*time.Minute)
 	def(&c.PollLease, 30*time.Second)
+	if c.OrderReplicaWait == 0 {
+		c.OrderReplicaWait = 3 * time.Second
+	}
 	if c.ReconcileBatch <= 0 {
 		c.ReconcileBatch = 20
 	}

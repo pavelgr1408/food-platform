@@ -217,3 +217,30 @@ func TestCompleteTxAtomicWithBusinessData(t *testing.T) {
 		t.Fatalf("a=%d b=%d body=%s orders=%d", a.Code, b.Code, body, n)
 	}
 }
+
+func TestTransientResponseReleasesKey(t *testing.T) {
+	s, _ := newStore(t)
+	var calls atomic.Int32
+	h := s.Middleware(idempotency.Options{Required: true, Transient: func(status int, h http.Header) bool {
+		return status == 404 && h.Get("Retry-After") != ""
+	}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(404)
+		case 2:
+			w.WriteHeader(404) // окончательный 404 запоминается как обычно
+		default:
+			w.WriteHeader(201)
+		}
+	}))
+	if r := post(h, `{}`, "k"); r.Code != 404 {
+		t.Fatal(r.Code)
+	}
+	if r := post(h, `{}`, "k"); r.Code != 404 || calls.Load() != 2 {
+		t.Fatalf("transient 404 must release the key: %d calls=%d", r.Code, calls.Load())
+	}
+	if r := post(h, `{}`, "k"); r.Code != 404 || r.Header().Get("Idempotent-Replay") != "true" || calls.Load() != 2 {
+		t.Fatalf("final 404 must be replayed: %d replay=%q calls=%d", r.Code, r.Header().Get("Idempotent-Replay"), calls.Load())
+	}
+}

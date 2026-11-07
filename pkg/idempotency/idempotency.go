@@ -184,6 +184,9 @@ type Options struct {
 	Required bool                         // 400, если заголовка нет (createOrder: true)
 	Scope    func(r *http.Request) string // дополнительная область, например владелец заказа; по умолчанию пусто
 	Log      *slog.Logger
+	// Transient — по ответу решает, что исход временный и ключ освобождать, как при 5xx (например, 404 с Retry-After:
+	// «подождите, данные ещё в пути»). nil — запоминаются все ответы < 500.
+	Transient func(status int, h http.Header) bool
 }
 
 // Claim — захваченный ключ; доступен обработчику через ClaimFrom.
@@ -283,7 +286,7 @@ func (s *Store) Middleware(opt Options) func(http.Handler) http.Handler {
 			ok = true
 			ctx := context.WithoutCancel(r.Context())
 			switch {
-			case cap.status >= 500:
+			case cap.status >= 500 || (opt.Transient != nil && opt.Transient(cap.status, cap.header)):
 				_ = s.Abandon(ctx, scope, key)
 			case !claim.done.Load():
 				record := Record{Status: cap.status, Body: cap.body.Bytes(), Headers: map[string]string{}}
