@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: menu-service — REST API
-  version: 1.4.1
+  version: 1.5.0
   description: >-
     Меню и актуальные цены ресторана, проверка доступности позиций. Хранилище —
     menu-db. (UC-ORD-01/02/03)
@@ -183,6 +183,13 @@ components:
       description: >-
         `ITEM_NOT_FOUND` — позиции нет в меню ресторана; `MODIFIER_NOT_FOUND` — модификатор
         не принадлежит позиции; `*_UNAVAILABLE` — в стоп-листе.
+    MenuValidationModifier:
+      type: object
+      required: [id, name, price]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        price: { $ref: '_common.yaml#/components/schemas/Money' }
     MenuValidationLine:
       type: object
       required: [menuItemId, quantity, available]
@@ -203,6 +210,16 @@ components:
           allOf:
             - $ref: '_common.yaml#/components/schemas/Money'
           description: '`currentPrice` × `quantity`. Отсутствует, если `currentPrice` нет.'
+        modifiers:
+          type: array
+          x-status: planned
+          description: >-
+            Выбранные модификаторы, найденные у позиции, в порядке запроса: `id`, название и цена
+            (добавка к цене позиции) на момент проверки. Нужны orders-service для снимка состава
+            в корзине и заказе (долг №81). Модификатор, не принадлежащий позиции
+            (`MODIFIER_NOT_FOUND`), в список не попадает; для `ITEM_NOT_FOUND` поля нет. Пустой
+            массив, если модификаторы не выбраны. Добавление поля не меняет `ETag` меню.
+          items: { $ref: '#/components/schemas/MenuValidationModifier' }
         reasonCode: { $ref: '#/components/schemas/ValidationReasonCode' }
         reason: { type: string, description: 'Причина недоступности, человекочитаемо; если есть' }
     MenuValidationResult:
