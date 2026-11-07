@@ -105,3 +105,66 @@ describe("иллюстрации: подбор по названию", () => {
     ["Суп-лапша", "soup"], ["Сэндвич", "sandwich"], ["Пепперони", "pizza"], ["Что-то новое", "plate"],
   ])("%s → %s", (name, kind) => { expect(dishKind(name)).toBe(kind); });
 });
+
+describe("диалоги и история заказов (регрессии ручного теста)", () => {
+  it("диалог блюда рисуется порталом в body, а не внутри анимируемой страницы", async () => {
+    const u = userEvent.setup();
+    renderApp(`/r/${R1}`);
+    await u.click(await screen.findByRole("button", { name: "Выбрать «Бургер «Классика»»" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+  });
+
+  it("заказ, которого нет на сервере (404), убирается из локальной истории", async () => {
+    const { localOrders } = await import("../lib/local");
+    localOrders.add({ id: "00000000-0000-4000-8000-0000000000aa", number: "R1-261107-0001", restaurantId: R1, createdAt: new Date().toISOString(), totalAmount: 29900, currency: "RUB" });
+    renderApp("/orders");
+    expect(await screen.findByText(/Убрано из истории/)).toBeInTheDocument();
+    await waitFor(() => expect(localOrders.list()).toHaveLength(0));
+    expect(screen.getByText("Заказов пока нет")).toBeInTheDocument();
+  });
+});
+
+describe("смена ресторана и состояния заказа", () => {
+  it("позиция из другого ресторана → диалог; «Начать новую» оставляет корзину только с новой позицией", async () => {
+    const u = userEvent.setup();
+    const { router } = renderApp(`/r/${R2}`);
+    await u.click(await screen.findByRole("button", { name: "Добавить «Сэндвич»" }));
+    await waitFor(() => expect(db.carts.size).toBe(1));
+    await router.navigate(`/r/${R1}`);
+    await u.click(await screen.findByRole("button", { name: "Выбрать «Бургер «Классика»»" }));
+    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    const sw = await screen.findByRole("dialog", { name: "Начать новую корзину?" });
+    await u.click(within(sw).getByRole("button", { name: "Начать новую" }));
+    await waitFor(() => expect(db.carts.size).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const open = [...db.carts.values()].filter((c) => c.cart.status !== "ordered" && c.cart.items.length > 0);
+    expect(open.map((c) => c.cart.restaurantId).sort()).toEqual([R1, R2].sort());
+  });
+
+  it.each([
+    ["cancelled", "payment_timeout"], ["not_received", "pickup_timeout"],
+  ] as const)("статус %s с причиной показывается на странице заказа", async (status, reason) => {
+    const u = userEvent.setup();
+    const { router } = renderApp(`/r/${R1}`);
+    await u.click(await screen.findByRole("button", { name: "Выбрать «Картофель фри»" }));
+    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await waitFor(() => expect(db.carts.size).toBe(1));
+    await router.navigate("/cart");
+    await u.click(await screen.findByRole("radio", { name: "Самовывоз" }));
+    await screen.findByText(/Выбрано: самовывоз/);
+    await u.click(screen.getByRole("radio", { name: "Картой онлайн" }));
+    await u.type(screen.getByLabelText(/Телефон \(обязательно\)/), "89991234567");
+    const place = screen.getByRole("button", { name: /Оформить заказ/ });
+    await waitFor(() => expect(place).toBeEnabled());
+    await u.click(place);
+    await waitFor(() => expect(router.state.location.pathname, document.body.textContent ?? "").toMatch(/^\/orders\/.+/));
+    const m = [...db.orders.values()][0]!;
+    m.order = { ...m.order, status, statusReason: reason } as typeof m.order;
+    await router.navigate("/orders");
+    expect(await screen.findByText(/R\d-\d{6}-\d{4}/)).toBeInTheDocument();
+    await router.navigate(`/orders/${m.order.id}`);
+    expect((await screen.findAllByText(status === "cancelled" ? "Отменён" : "Не получен")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(status === "cancelled" ? "Не оплачен вовремя" : "Заказ не забрали за 2 часа")).length).toBeGreaterThan(0);
+  });
+});

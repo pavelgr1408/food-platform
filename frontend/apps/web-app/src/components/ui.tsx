@@ -116,10 +116,12 @@ export function PageTitle({ children, sub }: { children: ReactNode; sub?: ReactN
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+/** page — пустое состояние занимает всю страницу: заголовок h1 (иначе у экрана нет главного заголовка). */
+export function Empty({ title, children, page }: { title: string; children?: ReactNode; page?: boolean }) {
+  const T = page ? "h1" : "p";
   return (
     <div className="rounded-card border-2 border-dashed border-ink/30 p-8 text-center">
-      <p className="font-display text-lg font-semibold">{title}</p>
+      <T className="font-display text-lg font-semibold">{title}</T>
       {children ? <div className="mt-3 text-muted">{children}</div> : null}
     </div>
   );

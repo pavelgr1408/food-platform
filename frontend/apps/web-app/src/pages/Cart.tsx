@@ -46,7 +46,7 @@ export function Cart() {
   if (c.isLoading) return <div role="status" aria-label="Загружаем корзину" className="grid gap-4"><Skeleton className="h-40 rounded-card" /><Skeleton className="h-48 rounded-card" /></div>;
   if (!c.cartId || !cart) {
     return (
-      <Empty title="Корзина пуста">
+      <Empty page title="Корзина пуста">
         <p>Выберите ресторан и добавьте блюда.</p>
         <Link to="/" className="mt-3 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">К ресторанам</Link>
       </Empty>
@@ -55,7 +55,7 @@ export function Cart() {
   // UC-CRT-09: корзина уже оформлена — ведём к заказу
   if (cart.status === "ordered") {
     return (
-      <Empty title="Эта корзина уже оформлена">
+      <Empty page title="Эта корзина уже оформлена">
         {cart.orderId ? <Link to={`/orders/${cart.orderId}`} className="mt-1 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">Открыть заказ</Link> : null}
         <div className="mt-3"><Button variant="outline" onClick={() => c.startNew()}>Начать новую корзину</Button></div>
       </Empty>
@@ -63,7 +63,7 @@ export function Cart() {
   }
   if (cart.items.length === 0) {
     return (
-      <Empty title="Корзина пуста">
+      <Empty page title="Корзина пуста">
         <Link to={`/r/${cart.restaurantId}`} className="mt-1 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">Вернуться в меню</Link>
       </Empty>
     );

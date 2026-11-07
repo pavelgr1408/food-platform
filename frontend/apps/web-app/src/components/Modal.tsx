@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
@@ -6,7 +7,7 @@ const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:n
  * Доступный диалог: role=dialog, Escape, ловушка фокуса, блокировка прокрутки страницы, возврат фокуса.
  * onClose держим в ref: иначе эффект перезапускался на каждый рендер родителя и крал фокус у полей.
  */
-export function Modal({ title, onClose, children, hero }: { title: string; onClose: () => void; children: ReactNode; hero?: ReactNode }) {
+export function Modal({ title, onClose, children, hero, footer }: { title: string; onClose: () => void; children: ReactNode; hero?: ReactNode; footer?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -30,7 +31,8 @@ export function Modal({ title, onClose, children, hero }: { title: string; onClo
     return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = overflow; prev?.focus?.(); };
   }, []);
 
-  return (
+  /* Портал в body: внутри страницы с анимацией transform «fixed» считается от неё, и окно липло к верху прокрученной страницы. */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/60 backdrop-blur-[2px] md:items-center md:p-6" onClick={() => close.current()}>
       <div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}
         className="lt-rise relative flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-card bg-white outline-none md:rounded-card">
@@ -43,7 +45,9 @@ export function Modal({ title, onClose, children, hero }: { title: string; onClo
             {children}
           </div>
         </div>
+        {footer ? <div className="border-t border-ink/10 bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">{footer}</div> : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

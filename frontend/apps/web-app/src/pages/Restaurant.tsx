@@ -85,7 +85,7 @@ export function Restaurant() {
   if (rest.isLoading) return <RestaurantSkeleton />;
   if (rest.isError) {
     return (
-      <Empty title={isApiError(rest.error) && rest.error.status === 404 ? "Ресторан недоступен" : "Не удалось загрузить ресторан"}>
+      <Empty page title={isApiError(rest.error) && rest.error.status === 404 ? "Ресторан недоступен" : "Не удалось загрузить ресторан"}>
         <p>{errorText(rest.error)}</p>
         <Link to="/" className="mt-3 inline-block font-semibold underline">К списку ресторанов</Link>
       </Empty>
@@ -220,7 +220,19 @@ function ItemDialog({ item, category, onClose, onAdd, busy, error }: { item: Men
   const toggle = (id: string) => setMods((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else if (n.size < 20) n.add(id); return n; });
   return (
     <Modal title={item.name} onClose={onClose}
-      hero={<Thumb name={item.name} category={category} seed={item.id} imageUrl={imageOf(item)} className={`h-44 w-full ${item.available ? "" : "grayscale"}`} />}>
+      hero={<Thumb name={item.name} category={category} seed={item.id} imageUrl={imageOf(item)} className={`h-44 w-full [@media(max-height:700px)]:h-28 ${item.available ? "" : "grayscale"}`} />}
+      footer={item.available ? (
+        <>
+          <div className="mb-3 flex items-center justify-between">
+            <span className="font-semibold">Количество</span>
+            <QtyStepper label={item.name} value={qty} onDec={() => setQty((q) => Math.max(1, q - 1))} onInc={() => setQty((q) => Math.min(99, q + 1))} />
+          </div>
+          {error ? <Notice className="mb-3">{errorText(error)}</Notice> : null}
+          <Button variant="accent" cta className="w-full" disabled={busy} onClick={() => onAdd([...mods], qty)}>
+            {busy ? "Добавляем…" : `В корзину · ${formatMoney(unit * qty, item.price.currency)}`}
+          </Button>
+        </>
+      ) : <Button variant="outline" className="w-full" onClick={onClose}>Закрыть</Button>}>
       {item.description ? <p className="mb-3 text-muted">{item.description}</p> : null}
       {!item.available ? <Notice className="mb-3" tone="info">Сейчас этого блюда нет в наличии.</Notice> : null}
       {item.available && item.modifiers.length > 0 ? (
@@ -239,18 +251,6 @@ function ItemDialog({ item, category, onClose, onAdd, busy, error }: { item: Men
           </ul>
         </fieldset>
       ) : null}
-      {item.available ? (
-        <>
-          <div className="mb-4 flex items-center justify-between">
-            <span className="font-semibold">Количество</span>
-            <QtyStepper label={item.name} value={qty} onDec={() => setQty((q) => Math.max(1, q - 1))} onInc={() => setQty((q) => Math.min(99, q + 1))} />
-          </div>
-          {error ? <Notice className="mb-3">{errorText(error)}</Notice> : null}
-          <Button variant="accent" cta className="w-full" disabled={busy} onClick={() => onAdd([...mods], qty)}>
-            {busy ? "Добавляем…" : `В корзину · ${formatMoney(unit * qty, item.price.currency)}`}
-          </Button>
-        </>
-      ) : <Button variant="outline" className="w-full" onClick={onClose}>Закрыть</Button>}
     </Modal>
   );
 }

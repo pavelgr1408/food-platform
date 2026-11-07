@@ -37,7 +37,7 @@ export function Order() {
   if (q.isLoading) return <div role="status" aria-label="Загружаем заказ" className="grid gap-4"><Skeleton className="h-32 rounded-card" /><Skeleton className="h-24 rounded-card" /><Skeleton className="h-40 rounded-card" /></div>;
   if (q.isError) {
     return (
-      <Empty title={isApiError(q.error) && q.error.status === 404 ? "Заказ не найден" : "Не удалось загрузить заказ"}>
+      <Empty page title={isApiError(q.error) && q.error.status === 404 ? "Заказ не найден" : "Не удалось загрузить заказ"}>
         <p>{errorText(q.error)}</p>
         <Link to="/orders" className="mt-3 inline-block font-semibold underline">Мои заказы</Link>
       </Empty>

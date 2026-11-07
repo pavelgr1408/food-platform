@@ -1,3 +1,8 @@
+import { API_MODE } from "./env";
+
+/** Ключи разделены по режиму API: заказы из MSW-моков не должны попадать в историю реального стенда. */
+const K = (name: string) => `fp.${API_MODE}.${name}`;
+
 /** Локальное состояние устройства: cartId гостя, история заказов (API списка нет — пробел №2), paymentId. Всё в try/catch. */
 function read<T>(key: string, fallback: T): T {
   try {
@@ -17,30 +22,33 @@ function write(key: string, v: unknown) {
 
 export interface LocalCart { cartId: string; restaurantId: string }
 export const localCart = {
-  get: () => read<LocalCart | null>("fp.cart", null),
-  set: (c: LocalCart) => write("fp.cart", c),
-  clear: () => { try { window.localStorage.removeItem("fp.cart"); } catch { /* noop */ } },
+  get: () => read<LocalCart | null>(K("cart"), null),
+  set: (c: LocalCart) => write(K("cart"), c),
+  clear: () => { try { window.localStorage.removeItem(K("cart")); } catch { /* noop */ } },
 };
 
 export interface LocalOrder { id: string; number: string; restaurantId: string; createdAt: string; totalAmount: number; currency: string }
 export const localOrders = {
-  list: () => read<LocalOrder[]>("fp.orders", []),
+  list: () => read<LocalOrder[]>(K("orders"), []),
   add(o: LocalOrder) {
     const rest = this.list().filter((x) => x.id !== o.id);
-    write("fp.orders", [o, ...rest].slice(0, 30));
+    write(K("orders"), [o, ...rest].slice(0, 30));
+  },
+  remove(ids: string[]) {
+    if (ids.length) write(K("orders"), this.list().filter((x) => !ids.includes(x.id)));
   },
 };
 
 /** UC-PAY-08: paymentId есть только в ответе initiatePayment — запоминаем. */
 export const localPayments = {
-  get: (orderId: string) => read<Record<string, string>>("fp.payments", {})[orderId] ?? null,
+  get: (orderId: string) => read<Record<string, string>>(K("payments"), {})[orderId] ?? null,
   set(orderId: string, paymentId: string) {
-    write("fp.payments", { ...read<Record<string, string>>("fp.payments", {}), [orderId]: paymentId });
+    write(K("payments"), { ...read<Record<string, string>>(K("payments"), {}), [orderId]: paymentId });
   },
 };
 
 /** Последний контакт — подставляем в форму оформления. */
 export const localContact = {
-  get: () => read<{ name?: string; phone?: string; email?: string }>("fp.contact", {}),
-  set: (c: { name?: string; phone?: string; email?: string }) => write("fp.contact", c),
+  get: () => read<{ name?: string; phone?: string; email?: string }>(K("contact"), {}),
+  set: (c: { name?: string; phone?: string; email?: string }) => write(K("contact"), c),
 };

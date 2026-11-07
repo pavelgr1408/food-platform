@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { useQueries } from "@tanstack/react-query";
 import { isApiError } from "@fp/api";
@@ -10,18 +11,30 @@ import { localOrders } from "../lib/local";
 /** UC-TRK-09: API списка заказов нет (пробел №2) — показываем историю этого устройства. */
 export function Orders() {
   const api = useApi();
-  const list = localOrders.list();
+  const [list, setList] = useState(() => localOrders.list());
+  const [pruned, setPruned] = useState(0);
   const results = useQueries({
     queries: list.map((o) => ({ queryKey: ["order", o.id], queryFn: () => api.orders.get(o.id), retry: false, staleTime: 30_000 })),
   });
   const rests = useQueries({
     queries: [...new Set(list.map((o) => o.restaurantId))].map((id) => ({ queryKey: ["restaurant", id], queryFn: () => api.restaurants.get(id), retry: false, staleTime: 5 * 60_000 })),
   });
+  /* Сервер сказал 404 — заказа нет (БД пересоздана или запись из другого стенда): убираем из истории устройства. */
+  const goneIds = list.filter((_, i) => { const e = results[i]?.error; return !!e && isApiError(e) && e.status === 404; }).map((o) => o.id);
+  const goneKey = goneIds.join(",");
+  useEffect(() => {
+    if (!goneKey) return;
+    const ids = goneKey.split(",");
+    localOrders.remove(ids);
+    setList(localOrders.list());
+    setPruned((n) => n + ids.length);
+  }, [goneKey]);
   const restName = (id: string) => rests.find((r) => r.data?.id === id)?.data?.name;
 
   return (
     <div className="lt-rise">
       <PageTitle sub="Список хранится на этом устройстве: на другом браузере заказы не появятся.">Мои заказы</PageTitle>
+      {pruned > 0 ? <p role="status" className="mb-3 rounded-card bg-lemon/40 px-4 py-2 text-sm">Убрано из истории заказов, которых нет на сервере: {pruned}.</p> : null}
       {list.length === 0 ? (
         <Empty title="Заказов пока нет"><Link to="/" className="font-semibold underline">Выбрать ресторан</Link></Empty>
       ) : (
