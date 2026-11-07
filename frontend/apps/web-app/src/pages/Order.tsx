@@ -5,7 +5,7 @@ import { isApiError, type ApiError, type Order as OrderT } from "@fp/api";
 import { formatMoney } from "@fp/shared";
 import { useApi } from "../app/api-context";
 import { Button, Empty, Notice, Price, Skeleton, Spinner, StatusPill, Surface } from "../components/ui";
-import { Thumb } from "../components/art";
+import { Thumb, imageOf } from "../components/art";
 import { MapPicker } from "../components/LazyMap";
 import { errorText } from "../lib/errors";
 import { agoSeconds, fmtDateTime, fmtTime } from "../lib/format";
@@ -29,9 +29,9 @@ export function Order() {
   const tz = rest.data?.timezone;
   const menu = useQuery({ queryKey: ["menu", q.data?.restaurantId], queryFn: () => api.restaurants.menu(q.data!.restaurantId), enabled: !!q.data, retry: false, staleTime: 5 * 60_000 });
   const names = useMemo(() => {
-    const mods = new Map<string, string>(), cats = new Map<string, string>();
-    for (const c of menu.data?.categories ?? []) for (const it of c.items) { cats.set(it.id, c.name); for (const m of it.modifiers) mods.set(m.id, m.name); }
-    return { mods, cats };
+    const mods = new Map<string, string>(), cats = new Map<string, string>(), imgs = new Map<string, string>();
+    for (const c of menu.data?.categories ?? []) for (const it of c.items) { cats.set(it.id, c.name); const u = imageOf(it); if (u) imgs.set(it.id, u); for (const m of it.modifiers) mods.set(m.id, m.name); }
+    return { mods, cats, imgs };
   }, [menu.data]);
 
   if (q.isLoading) return <div role="status" aria-label="Загружаем заказ" className="grid gap-4"><Skeleton className="h-32 rounded-card" /><Skeleton className="h-24 rounded-card" /><Skeleton className="h-40 rounded-card" /></div>;
@@ -78,7 +78,7 @@ export function Order() {
           <ul className="grid gap-3">
             {o.items.map((i) => (
               <li key={`${i.menuItemId}|${i.modifierIds.join(",")}`} className="flex items-center gap-3">
-                <Thumb name={i.name} category={names.cats.get(i.menuItemId)} seed={i.menuItemId} className="size-14 shrink-0 rounded-input" />
+                <Thumb name={i.name} category={names.cats.get(i.menuItemId)} seed={i.menuItemId} imageUrl={names.imgs.get(i.menuItemId)} className="size-14 shrink-0 rounded-input" />
                 <div className="min-w-0 flex-1">
                   <p className="leading-snug">{i.name} × {i.quantity}</p>
                   {i.modifierIds.length ? <p className="text-sm text-muted">{i.modifierIds.map((id) => names.mods.get(id)).filter(Boolean).join(", ") || `Добавок: ${i.modifierIds.length}`}</p> : null}

@@ -6,7 +6,7 @@ import { formatMoney, isE164, normalizePhone } from "@fp/shared";
 import { useApi } from "../app/api-context";
 import { useAuth } from "../app/auth";
 import { Button, Empty, Field, Notice, Price, QtyStepper, Skeleton, Surface } from "../components/ui";
-import { Thumb } from "../components/art";
+import { Thumb, imageOf } from "../components/art";
 import { Modal } from "../components/Modal";
 import { MapPicker, type LatLon } from "../components/LazyMap";
 import { lineKey, toInputs, useCart } from "../lib/cart";
@@ -32,9 +32,9 @@ export function Cart() {
   const menu = useQuery({ queryKey: ["menu", c.restaurantId], queryFn: () => api.restaurants.menu(c.restaurantId!), enabled: !!c.restaurantId, retry: false, staleTime: 5 * 60_000 });
   const rest = useQuery({ queryKey: ["restaurant", c.restaurantId], queryFn: () => api.restaurants.get(c.restaurantId!), enabled: !!c.restaurantId, retry: false, staleTime: 5 * 60_000 });
   const lookup = useMemo(() => {
-    const mods = new Map<string, string>(), cats = new Map<string, string>();
-    for (const cat of menu.data?.categories ?? []) for (const it of cat.items) { cats.set(it.id, cat.name); for (const m of it.modifiers) mods.set(m.id, m.name); }
-    return { mods, cats };
+    const mods = new Map<string, string>(), cats = new Map<string, string>(), imgs = new Map<string, string>();
+    for (const cat of menu.data?.categories ?? []) for (const it of cat.items) { cats.set(it.id, cat.name); const u = imageOf(it); if (u) imgs.set(it.id, u); for (const m of it.modifiers) mods.set(m.id, m.name); }
+    return { mods, cats, imgs };
   }, [menu.data]);
 
   const lines = useMutation({
@@ -94,7 +94,7 @@ export function Cart() {
           <ul className="divide-y divide-dashed divide-ink/20">
             {cart.items.map((it) => (
               <li key={lineKey(it)} className={`flex gap-3 py-3 first:pt-0 last:pb-0 ${it.available ? "" : "opacity-60"}`}>
-                <Thumb name={it.name} category={lookup.cats.get(it.menuItemId)} seed={it.menuItemId} className="size-20 shrink-0 rounded-tile" />
+                <Thumb name={it.name} category={lookup.cats.get(it.menuItemId)} seed={it.menuItemId} imageUrl={lookup.imgs.get(it.menuItemId)} className="size-20 shrink-0 rounded-tile" />
                 <div className="flex min-w-0 flex-1 flex-col gap-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
