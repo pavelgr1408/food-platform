@@ -455,3 +455,92 @@ func TestModifierSnapshotShapeInCartAndOrder(t *testing.T) {
 	check("order", r.Body)
 	check("getOrder", do(t, srv, "GET", "/orders/"+r.json(t)["id"].(string), nil, nil).Body)
 }
+
+// Долг №80: GET /orders над HTTP — гость 401, только свои заказы, форма OrderPage, параметры.
+func TestListOrdersOverHTTP(t *testing.T) {
+	srv, _, _, _ := newServer(t)
+	alice := map[string]string{"X-User-Id": "alice", "X-User-Roles": "CUSTOMER"}
+	bob := map[string]string{"X-User-Id": "bob", "X-User-Roles": "CUSTOMER"}
+	noRoles := map[string]string{"X-User-Id": "carol"} // роль не важна: контракт — «любая»
+	mk := func(who map[string]string, key, pm string) string {
+		t.Helper()
+		id := readyCart(t, srv, who)
+		h := map[string]string{"Idempotency-Key": key, "X-User-Id": who["X-User-Id"], "X-User-Roles": who["X-User-Roles"]}
+		r := do(t, srv, "POST", "/orders", map[string]any{"cartId": id, "paymentMethod": pm}, h)
+		if r.Status != 201 {
+			t.Fatalf("%d %s", r.Status, r.Body)
+		}
+		return r.json(t)["id"].(string)
+	}
+	a1 := mk(alice, "a-1", "online_card") // pending_payment
+	a2 := mk(alice, "a-2", "pos")         // accepted
+	mk(bob, "b-1", "pos")
+
+	// гость и запрос без токена — 401, а не «чужие/гостевые заказы»
+	wantProblem(t, do(t, srv, "GET", "/orders", nil, nil), 401, "UNAUTHORIZED")
+
+	r := do(t, srv, "GET", "/orders", nil, alice)
+	if r.Status != 200 || r.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("%d %s", r.Status, r.Header.Get("Content-Type"))
+	}
+	var page struct {
+		Items  []map[string]any `json:"items"`
+		Total  int              `json:"total"`
+		Limit  int              `json:"limit"`
+		Offset int              `json:"offset"`
+	}
+	if err := json.Unmarshal(r.Body, &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || page.Limit != 20 || page.Offset != 0 || len(page.Items) != 2 {
+		t.Fatalf("page: %s", r.Body)
+	}
+	if page.Items[0]["id"] == page.Items[1]["id"] {
+		t.Fatal("two different orders expected")
+	}
+	for _, it := range page.Items {
+		if it["id"] != a1 && it["id"] != a2 {
+			t.Fatalf("foreign order in the list: %v", it["id"])
+		}
+		for _, k := range []string{"number", "status", "paymentStatus", "items", "total", "createdAt", "fulfillment", "appliedPromotions"} {
+			if _, ok := it[k]; !ok {
+				t.Errorf("item has no %q: %v", k, it)
+			}
+		}
+		if mods := it["items"].([]any)[0].(map[string]any)["modifiers"]; mods == nil {
+			t.Errorf("list item must carry the modifier snapshot: %v", it["items"])
+		}
+	}
+
+	// повторяемый status, пагинация, total с учётом фильтра
+	r = do(t, srv, "GET", "/orders?status=accepted&status=pending_payment&limit=1&offset=1", nil, alice)
+	if err := json.Unmarshal(r.Body, &page); err != nil || r.Status != 200 || page.Total != 2 || len(page.Items) != 1 || page.Limit != 1 || page.Offset != 1 {
+		t.Fatalf("%d %s", r.Status, r.Body)
+	}
+	r = do(t, srv, "GET", "/orders?status=accepted", nil, alice)
+	if json.Unmarshal(r.Body, &page); page.Total != 1 || page.Items[0]["id"] != a2 {
+		t.Fatalf("filter: %s", r.Body)
+	}
+	// пустая выдача — [] (не null) и 200
+	r = do(t, srv, "GET", "/orders", nil, noRoles)
+	if r.Status != 200 || !strings.Contains(string(r.Body), `"items":[]`) || !strings.Contains(string(r.Body), `"total":0`) {
+		t.Fatalf("empty page: %d %s", r.Status, r.Body)
+	}
+
+	for name, q := range map[string]string{
+		"unknown status": "?status=shipped", "empty status": "?status=", "limit 0": "?limit=0", "limit 51": "?limit=51",
+		"limit text": "?limit=abc", "limit empty": "?limit=", "offset negative": "?offset=-1", "offset text": "?offset=1.5",
+	} {
+		if r := do(t, srv, "GET", "/orders"+q, nil, alice); r.Status != 400 {
+			t.Errorf("%s: want 400 got %d %s", name, r.Status, r.Body)
+		} else {
+			wantProblem(t, r, 400, "INVALID_PARAMETER")
+		}
+	}
+
+	// соседние маршруты не затронуты: поиск по номеру остаётся для персонала, getOrder — по id
+	wantProblem(t, do(t, srv, "GET", "/orders/search?number=R1-260101-0001", nil, alice), 403, "FORBIDDEN")
+	if r := do(t, srv, "GET", "/orders/"+a1, nil, alice); r.Status != 200 {
+		t.Fatalf("getOrder: %d", r.Status)
+	}
+}

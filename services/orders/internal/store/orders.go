@@ -334,3 +334,79 @@ func (s *Store) ReadyFallbackBefore(ctx context.Context, db DBTX, before time.Ti
 	}
 	return ids, rows.Err()
 }
+
+// ListOwnerOrders возвращает страницу заказов пользователя (только owner_user_id = ownerID), от новых к
+// старым, и общее число заказов с тем же фильтром. statuses пуст — любые статусы. Позиции всей
+// страницы читаются одним запросом, а не по запросу на заказ.
+func (s *Store) ListOwnerOrders(ctx context.Context, db DBTX, ownerID string, statuses []domain.Status, limit, offset int) ([]domain.Order, int, error) {
+	var st []string // nil → без фильтра (в SQL: $2 IS NULL)
+	for _, x := range statuses {
+		st = append(st, string(x))
+	}
+	var total int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM orders WHERE owner_user_id = $1 AND ($2::text[] IS NULL OR status = ANY($2))`,
+		ownerID, st).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := db.Query(ctx, `SELECT `+orderCols+` FROM orders WHERE owner_user_id = $1 AND ($2::text[] IS NULL OR status = ANY($2))
+		ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`, ownerID, st, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.Order{}
+	ids := []string{}
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, o)
+		ids = append(ids, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rows.Close()
+	if len(out) == 0 {
+		return out, total, nil
+	}
+	lines, err := s.itemsByOrder(ctx, db, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range out {
+		out[i].Items = lines[out[i].ID]
+		if out[i].Items == nil {
+			out[i].Items = []domain.Line{}
+		}
+	}
+	return out, total, nil
+}
+
+// itemsByOrder читает позиции нескольких заказов одним запросом (порядок строк — по position).
+func (s *Store) itemsByOrder(ctx context.Context, db DBTX, orderIDs []string) (map[string][]domain.Line, error) {
+	rows, err := db.Query(ctx, `SELECT order_id, menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total
+		FROM order_items WHERE order_id = ANY($1) ORDER BY order_id, position`, orderIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]domain.Line, len(orderIDs))
+	for rows.Next() {
+		var oid string
+		var l domain.Line
+		var rawMods []byte
+		if err := rows.Scan(&oid, &l.MenuItemID, &l.Name, &l.Quantity, &l.ModifierIDs, &rawMods, &l.UnitPrice, &l.LineTotal); err != nil {
+			return nil, err
+		}
+		if l.Modifiers, err = decodeModifiers(rawMods); err != nil {
+			return nil, err
+		}
+		if l.ModifierIDs == nil {
+			l.ModifierIDs = []string{}
+		}
+		out[oid] = append(out[oid], l)
+	}
+	return out, rows.Err()
+}

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/orders`, порт `8084`, БД `orders` (Postgres) |
-| Контракты | `contracts/openapi/orders.yaml` v1.8.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракты | `contracts/openapi/orders.yaml` v1.9.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | публикует `orders.state`, `orders.status` (transactional outbox); потребляет 5 топиков в 4 группах |
 | Идемпотентность | `POST /orders` — обязательный `Idempotency-Key` |
 | Зависимости (синхронно) | `menu` (validateMenuItems), `restaurant` (getRestaurant) |
@@ -70,7 +70,8 @@ flowchart LR
 | 9 | `GET /orders/search?number=` | searchOrder | STAFF, FRANCHISE_OWNER, HQ_STAFF | 200 | Найти заказ по номеру (контакты клиента видны) |
 | 10 | `POST /orders/{orderId}/issuance` | markOrderIssued | персонал | 200 | Выдать заказ |
 | 11 | `POST /orders/{orderId}/cancellation` | cancelOrder | персонал | 200 | Отменить заказ |
-| 12 | `GET /health/`, `GET /actuator/health` (db, kafka), `GET /metrics` | — | служебные | | |
+| 12 | `GET /orders?status=&limit=&offset=` | listOrders | любой вошедший пользователь (гость → 401) | 200 | Мои заказы: от новых к старым, фильтр `status`, страница |
+| 13 | `GET /health/`, `GET /actuator/health` (db, kafka), `GET /metrics` | — | служебные | | |
 
 Режим `--migrate-only` — применить миграции (сервиса, `kafka`, `idempotency`) и выйти.
 
@@ -147,6 +148,17 @@ flowchart LR
 Суммы корзины пересчитываются **при каждом чтении** (скидки зависят от реплики акций и времени). `Money = { amount: int64 копейки, currency }`.
 
 **Снимок модификаторов (долг №81).** `items[].modifiers[{id,name,price}]` — название и цена модификатора на момент расчёта, порядок и состав как у `modifierIds` (оно остаётся). Источник — `menu.validateMenuItems` (menu ≥ 1.5.0). В корзине снимок обновляется при `updateCartItems` и при пересчёте цен в `createOrder` (`PRICE_CHANGED`); в заказ попадает снимок **по свежему меню на момент `createOrder`** (не из корзины) и дальше не меняется — переименование или удаление модификатора в меню старые заказы не затрагивает. Поле необязательное: у строк, созданных до миграции `007`, а также при ответе menu без поля (старая версия), снимка нет (`modifiers` отсутствует, колонка `NULL`) — клиент берёт названия из меню; пустой выбор даёт `[]`. Восстановить названия задним числом невозможно.
+
+### 3.1а. Список моих заказов (`listOrders`, долг №80)
+
+`GET /orders?status=…&limit=…&offset=…` — страница заказов **текущего пользователя** (`owner_user_id` = `userId` токена). Нужен вошедший пользователь: гость и запрос без токена → `401 UNAUTHORIZED` (роль не проверяется, поэтому доступно и персоналу — его личные заказы, а не очередь ресторана). Чужие заказы, гостевые (без владельца) и оформленные по факсу в выдачу не попадают.
+
+- `status` можно повторять (`status=accepted&status=cooking`) — подходит любой из перечисленных; повторы схлопываются, максимум 10 значений; неизвестный статус → `400 INVALID_PARAMETER`.
+- `limit` 1…50 (по умолчанию 20), `offset` ≥ 0; вне диапазона или не число → `400 INVALID_PARAMETER`.
+- Порядок: `created_at DESC, id DESC` — детерминирован и при равных временах, поэтому страницы не перемешиваются. Служит индекс `orders_owner_idx (owner_user_id, created_at DESC)`.
+- Ответ `OrderPage { items: Order[], total, limit, offset }`. Элемент — **тот же `Order`, что у `getOrder`** (со снимком модификаторов, суммами, доставкой), без ETA; `total` — число заказов пользователя с фильтром, не зависит от страницы. За страницей (`offset` больше `total`) — пустой `items` и настоящий `total`.
+- Позиции всей страницы читаются **одним запросом** (`order_id = ANY`), а не по запросу на заказ; заказ из списка не читает внешних сервисов и Kafka.
+- `total` и страница читаются двумя запросами без общей транзакции: между ними может появиться новый заказ, тогда `total` на единицу больше. Для списка истории это допустимо.
 
 ### 3.2. Оформление заказа
 

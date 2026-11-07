@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,7 @@ type Orders interface {
 	SetFulfillment(ctx context.Context, userID, id string, in service.FulfillmentInput) (service.CartView, error)
 	CreateOrder(ctx context.Context, userID string, in service.CreateOrderInput, commit service.CommitFunc) (domain.Order, error)
 	GetOrder(ctx context.Context, userID, id string) (domain.Order, error)
+	ListOrders(ctx context.Context, userID string, in service.ListOrdersInput) (service.OrderPage, error)
 	GetEta(ctx context.Context, userID, id string) (service.Eta, error)
 	SetPickupSlot(ctx context.Context, userID, id string, from, to time.Time) (domain.Order, error)
 	// Персонал (S6).
@@ -73,6 +75,8 @@ func New(d Deps) http.Handler {
 		})(create)
 	}
 	mux.Handle("POST /orders", create)
+	// История заказов (долг №80): нужен вошедший пользователь (гость → 401); роль не важна, виден только свой список.
+	mux.Handle("GET /orders", requireUser(http.HandlerFunc(h.listOrders)))
 	mux.HandleFunc("GET /orders/{orderId}", h.getOrder)
 	mux.HandleFunc("GET /orders/{orderId}/eta", h.getEta)
 	mux.HandleFunc("PUT /orders/{orderId}/pickup-slot", h.setPickupSlot)
@@ -86,6 +90,17 @@ func New(d Deps) http.Handler {
 	return httpx.Chain(httpx.TrackRoute(mux),
 		httpx.RequestContext(), httpx.Recover(d.Log), httpx.AccessLog(d.Log),
 		d.Metrics.Middleware(), authclient.Middleware(d.Auth))
+}
+
+// requireUser пропускает любого аутентифицированного субъекта (роль не проверяется); гость → 401.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := authclient.FromContext(r.Context()); p.Guest || p.UserID == "" {
+			httpx.WriteProblem(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func userID(r *http.Request) string { return authclient.FromContext(r.Context()).UserID }
@@ -261,6 +276,32 @@ func (h *handlers) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, toOrder(o))
+}
+
+func (h *handlers) listOrders(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	in := service.ListOrdersInput{Statuses: q["status"]}
+	for _, p := range []struct {
+		name string
+		dst  **int
+	}{{"limit", &in.Limit}, {"offset", &in.Offset}} {
+		raw := q.Get(p.name)
+		if raw == "" && !q.Has(p.name) {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			h.fail(w, r, httpx.NewError(http.StatusBadRequest, "INVALID_PARAMETER", p.name+" must be an integer"))
+			return
+		}
+		*p.dst = &n
+	}
+	page, err := h.svc.ListOrders(r.Context(), userID(r), in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toOrderPage(page))
 }
 
 func (h *handlers) getEta(w http.ResponseWriter, r *http.Request) {

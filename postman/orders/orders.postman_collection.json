@@ -108,6 +108,10 @@
     {
       "key": "aliceOrder",
       "value": ""
+    },
+    {
+      "key": "aliceTotal",
+      "value": ""
     }
   ],
   "item": [
@@ -2164,6 +2168,359 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6б. История заказов: GET /orders (долг №80)",
+      "item": [
+        {
+          "name": "listOrders: гость → 401 UNAUTHORIZED (чужие и гостевые заказы не отдаются)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('problem+json с кодом UNAUTHORIZED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('UNAUTHORIZED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: alice видит свои заказы, новые первыми, с полным составом",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('OrderPage: items, total, limit, offset (по умолчанию 20 и 0)', () => { pm.expect(p.items).to.be.an('array'); pm.expect(p.total).to.be.at.least(1); pm.expect(p.items.length).to.be.at.most(20); pm.expect(p.limit).to.eql(20); pm.expect(p.offset).to.eql(0); pm.expect(p.total).to.be.at.least(p.items.length); });",
+                  "pm.test('первым идёт самый новый заказ — только что оформленный aliceOrder', () => pm.expect(p.items[0].id).to.eql(pm.collectionVariables.get('aliceOrder')));",
+                  "pm.test('от новых к старым по createdAt', () => { for (let i = 1; i < p.items.length; i++) pm.expect(Date.parse(p.items[i - 1].createdAt)).to.be.at.least(Date.parse(p.items[i].createdAt)); });",
+                  "pm.test('элемент — полный Order: номер, статусы, состав, деньги в копейках', () => { const o = p.items[0]; pm.expect(o.number).to.match(/^R\\d+-\\d{6}-\\d{4,}$/); pm.expect(o.status).to.be.a('string'); pm.expect(o.paymentStatus).to.be.a('string'); pm.expect(o.items.length).to.be.at.least(1); pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.fulfillment.type).to.be.a('string'); pm.expect(o.items[0].modifiers).to.be.an('array'); });",
+                  "pm.test('в списке только мои заказы: чужого id нет, повторов нет', () => { const ids = p.items.map(o => o.id); pm.expect(new Set(ids).size).to.eql(ids.length); });",
+                  "pm.collectionVariables.set('aliceTotal', p.total);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: фильтр status=accepted (заказ на кассе принят сразу)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?status=accepted",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('все элементы accepted, aliceOrder первый, total учитывает фильтр', () => { pm.expect(p.items.length).to.be.at.least(1); p.items.forEach(o => pm.expect(o.status).to.eql('accepted')); pm.expect(p.items[0].id).to.eql(pm.collectionVariables.get('aliceOrder')); pm.expect(p.total).to.be.at.most(Number(pm.collectionVariables.get('aliceTotal'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: status повторяется — подходит любой из перечисленных",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?status=accepted&status=pending_payment&status=cancelled",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('только перечисленные статусы', () => pm.response.json().items.forEach(o => pm.expect(['accepted', 'pending_payment', 'cancelled']).to.include(o.status)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: страница limit=1 — один элемент, total не зависит от размера страницы",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?limit=1&offset=0",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('один элемент, limit=1, total = полному числу заказов', () => { pm.expect(p.items).to.have.lengthOf(1); pm.expect(p.limit).to.eql(1); pm.expect(p.total).to.eql(Number(pm.collectionVariables.get('aliceTotal'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: offset за концом списка → пустая страница с настоящим total",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?offset=100000",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('items = [], total сохраняется', () => { pm.expect(p.items).to.eql([]); pm.expect(p.total).to.eql(Number(pm.collectionVariables.get('aliceTotal'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: bob не видит заказ alice",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?limit=50",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "bob"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('заказа alice у bob нет', () => pm.response.json().items.forEach(o => pm.expect(o.id).to.not.eql(pm.collectionVariables.get('aliceOrder'))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: неизвестный status → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?status=shipped",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: limit=51 → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?limit=51",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: limit=0 → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?limit=0",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: offset=-1 → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?offset=-1",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listOrders: limit не число → 400",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders?limit=abc",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
                 ]
               }
             }

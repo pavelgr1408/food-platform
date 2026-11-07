@@ -104,20 +104,30 @@ func (s *Store) items(ctx context.Context, db DBTX, table, col, id string) ([]do
 	defer rows.Close()
 	out := []domain.Line{}
 	for rows.Next() {
-		var l domain.Line
-		var rawMods []byte
-		if err := rows.Scan(&l.MenuItemID, &l.Name, &l.Quantity, &l.ModifierIDs, &rawMods, &l.UnitPrice, &l.LineTotal); err != nil {
+		l, err := scanLine(rows)
+		if err != nil {
 			return nil, err
-		}
-		if l.Modifiers, err = decodeModifiers(rawMods); err != nil {
-			return nil, err
-		}
-		if l.ModifierIDs == nil {
-			l.ModifierIDs = []string{}
 		}
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+// scanLine читает строку позиции в порядке колонок menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total.
+func scanLine(row pgx.Row) (domain.Line, error) {
+	var l domain.Line
+	var rawMods []byte
+	if err := row.Scan(&l.MenuItemID, &l.Name, &l.Quantity, &l.ModifierIDs, &rawMods, &l.UnitPrice, &l.LineTotal); err != nil {
+		return l, err
+	}
+	var err error
+	if l.Modifiers, err = decodeModifiers(rawMods); err != nil {
+		return l, err
+	}
+	if l.ModifierIDs == nil {
+		l.ModifierIDs = []string{}
+	}
+	return l, nil
 }
 
 // ReplaceCartItems заменяет состав открытой корзины и повышает revision. Вызывать в tx
