@@ -28,14 +28,18 @@ type Store struct{ pool *pgxpool.Pool }
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 const restCols = `r.id::text, r.name, r.city, r.address, r.lat, r.lon, r.timezone,
-       r.delivery_enabled, r.delivery_radius_m, r.active`
+       r.delivery_enabled, r.delivery_radius_m, r.active, r.image_url`
 
 func scanRestaurant(row pgx.Row, extra ...any) (domain.Restaurant, error) {
 	var r domain.Restaurant
+	var img *string
 	dst := append([]any{&r.ID, &r.Name, &r.City, &r.Address, &r.Location.Lat, &r.Location.Lon,
-		&r.Timezone, &r.DeliveryEnabled, &r.DeliveryRadiusM, &r.Active}, extra...)
+		&r.Timezone, &r.DeliveryEnabled, &r.DeliveryRadiusM, &r.Active, &img}, extra...)
 	if err := row.Scan(dst...); err != nil {
 		return r, err
+	}
+	if img != nil {
+		r.ImageURL = *img
 	}
 	loc, err := time.LoadLocation(r.Timezone)
 	if err != nil {
@@ -206,14 +210,14 @@ func (s *Store) Upsert(ctx context.Context, rs []domain.Restaurant) error {
 	return pgxutil.InTx(ctx, s.pool, func(tx pgx.Tx) error {
 		for _, r := range rs {
 			if _, err := tx.Exec(ctx, `
-INSERT INTO restaurants (id, name, city, address, lat, lon, timezone, delivery_enabled, delivery_radius_m, active)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO restaurants (id, name, city, address, lat, lon, timezone, delivery_enabled, delivery_radius_m, active, image_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''))
 ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, city = EXCLUDED.city, address = EXCLUDED.address,
   lat = EXCLUDED.lat, lon = EXCLUDED.lon, timezone = EXCLUDED.timezone,
   delivery_enabled = EXCLUDED.delivery_enabled, delivery_radius_m = EXCLUDED.delivery_radius_m,
-  active = EXCLUDED.active, updated_at = now()`,
+  active = EXCLUDED.active, image_url = EXCLUDED.image_url, updated_at = now()`,
 				r.ID, r.Name, r.City, r.Address, r.Location.Lat, r.Location.Lon, r.Timezone,
-				r.DeliveryEnabled, r.DeliveryRadiusM, r.Active); err != nil {
+				r.DeliveryEnabled, r.DeliveryRadiusM, r.Active, r.ImageURL); err != nil {
 				return fmt.Errorf("upsert restaurant %s: %w", r.ID, err)
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM working_hours WHERE restaurant_id = $1`, r.ID); err != nil {

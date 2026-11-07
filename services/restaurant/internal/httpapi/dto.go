@@ -19,6 +19,7 @@ type restaurantSummary struct {
 	DistanceMeters    *int     `json:"distanceMeters,omitempty"`
 	DeliveryAvailable bool     `json:"deliveryAvailable"`
 	OpenNow           bool     `json:"openNow"`
+	ImageURL          string   `json:"imageUrl,omitempty"`
 }
 
 type workingHours struct {
@@ -57,7 +58,7 @@ func summary(it service.Item) restaurantSummary {
 	return restaurantSummary{
 		ID: it.ID, Name: it.Name, Address: it.Address, City: it.City,
 		Location:       geoPoint{Lat: it.Location.Lat, Lon: it.Location.Lon},
-		DistanceMeters: it.DistanceM, DeliveryAvailable: it.DeliveryAvailable, OpenNow: it.OpenNow,
+		DistanceMeters: it.DistanceM, DeliveryAvailable: it.DeliveryAvailable, OpenNow: it.OpenNow, ImageURL: it.ImageURL,
 	}
 }
 

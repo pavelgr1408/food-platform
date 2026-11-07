@@ -131,3 +131,20 @@ func TestGetRestaurant(t *testing.T) {
 		t.Fatalf("404: %d %s", nf.Code, nf.Body)
 	}
 }
+
+func TestImageURLInDTO(t *testing.T) {
+	with := service.Item{Restaurant: domain.Restaurant{ID: "i1", Name: "N", Timezone: "Europe/Moscow", ImageURL: "https://cdn.example.com/r.jpg"}}
+	without := service.Item{Restaurant: domain.Restaurant{ID: "i2", Name: "N", Timezone: "Europe/Moscow"}}
+	for name, v := range map[string]any{"summary": summary(with), "detail": detail(with)} {
+		b, _ := json.Marshal(v)
+		if !strings.Contains(string(b), `"imageUrl":"https://cdn.example.com/r.jpg"`) {
+			t.Errorf("%s: imageUrl missing: %s", name, b)
+		}
+	}
+	for name, v := range map[string]any{"summary": summary(without), "detail": detail(without)} {
+		b, _ := json.Marshal(v)
+		if strings.Contains(string(b), "imageUrl") {
+			t.Errorf("%s: imageUrl must be omitted when empty: %s", name, b)
+		}
+	}
+}

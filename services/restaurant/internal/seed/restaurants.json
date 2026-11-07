@@ -1,6 +1,7 @@
 [
   {
     "id": "a1000000-0000-4000-8000-000000000001",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-001/960/540",
     "name": "BLT Тверская",
     "city": "Москва",
     "address": "Москва, Тверская ул., 12",
@@ -15,6 +16,7 @@
   },
   {
     "id": "a1000000-0000-4000-8000-000000000002",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-002/960/540",
     "name": "BLT Арбат",
     "city": "Москва",
     "address": "Москва, Арбат, 24",
@@ -28,6 +30,7 @@
   },
   {
     "id": "a1000000-0000-4000-8000-000000000003",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-003/960/540",
     "name": "BLT Парк Горького",
     "city": "Москва",
     "address": "Москва, Крымский Вал, 9",
@@ -38,6 +41,7 @@
   },
   {
     "id": "a1000000-0000-4000-8000-000000000004",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-004/960/540",
     "name": "BLT Невский",
     "city": "Санкт-Петербург",
     "address": "Санкт-Петербург, Невский пр., 28",
@@ -48,6 +52,7 @@
   },
   {
     "id": "a1000000-0000-4000-8000-000000000005",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-005/960/540",
     "name": "BLT Баумана",
     "city": "Казань",
     "address": "Казань, ул. Баумана, 51",
@@ -58,6 +63,7 @@
   },
   {
     "id": "a1000000-0000-4000-8000-000000000006",
+    "imageUrl": "https://picsum.photos/seed/lotok-restaurant-006/960/540",
     "name": "BLT Закрыт навсегда",
     "city": "Москва",
     "address": "Москва, Садовая-Кудринская ул., 1",
