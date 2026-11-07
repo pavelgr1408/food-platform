@@ -28,7 +28,7 @@ func newPOSEnv(t *testing.T) (*env, *testkit.FakeGateway) {
 	e := newEnv(t)
 	pos := testkit.NewGateway()
 	e.svc = service.New(service.Deps{Pool: e.pool, Gateway: e.gw, POS: pos, Log: testkit.Log(), Clock: e.clock.Now, Metrics: e.m,
-		Config: service.Config{WebhookWait: 10 * time.Second, PendingExpiry: 10 * time.Minute, PollMin: 5 * time.Second, PollMax: time.Minute}})
+		Config: service.Config{WebhookWait: 10 * time.Second, PendingExpiry: 10 * time.Minute, PollMin: 5 * time.Second, PollMax: time.Minute, OrderReplicaWait: -1}})
 	return e, pos
 }
 

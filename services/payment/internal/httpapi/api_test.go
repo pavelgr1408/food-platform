@@ -43,7 +43,7 @@ func newFixture(t *testing.T) *fixture {
 	pool := testkit.Pool(t)
 	gw := testkit.NewGateway()
 	svc := service.New(service.Deps{Pool: pool, Gateway: gw, Log: testkit.Log(),
-		Config: service.Config{AllowedReturnOrigins: []string{"https://shop.test"}}})
+		Config: service.Config{AllowedReturnOrigins: []string{"https://shop.test"}, OrderReplicaWait: -1}})
 	h := httpapi.New(httpapi.Deps{Log: testkit.Log(), Metrics: metrics.New("payment"), Auth: authclient.DevAuthenticator{},
 		Idempotency: idempotency.NewStore(pool), Payments: svc, GatewayWebhookSecret: gwSecret, POSWebhookSecret: posSecret})
 	srv := httptest.NewServer(h)
@@ -364,7 +364,8 @@ func TestPOSWebhookOnlyForPOSPayments(t *testing.T) {
 
 func TestWebhookDisabledWithoutSecret(t *testing.T) {
 	pool := testkit.Pool(t)
-	svc := service.New(service.Deps{Pool: pool, Gateway: testkit.NewGateway(), Log: testkit.Log()})
+	svc := service.New(service.Deps{Pool: pool, Gateway: testkit.NewGateway(), Log: testkit.Log(),
+		Config: service.Config{OrderReplicaWait: -1}})
 	h := httpapi.New(httpapi.Deps{Log: testkit.Log(), Metrics: metrics.New("payment"), Auth: authclient.DevAuthenticator{}, Payments: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/webhooks/payments/gateway", strings.NewReader("{}")))

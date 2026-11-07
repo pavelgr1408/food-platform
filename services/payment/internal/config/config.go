@@ -45,6 +45,8 @@ type Config struct {
 	DefaultReturnURL  string
 	// AllowedReturnOrigins — origin'ы фронта, на которые можно вернуть клиента после оплаты (ТД-QA-1).
 	AllowedReturnOrigins []string
+	// OrderReplicaWait — ожидание реплики заказа в initiatePayment (0 — не ждать).
+	OrderReplicaWait time.Duration
 }
 
 // Load читает окружение; возвращает все найденные ошибки разом.
@@ -62,6 +64,7 @@ func Load() (Config, error) {
 		PollMin:           r.Duration("RECONCILE_BACKOFF_MIN", 5*time.Second),
 		PollMax:           r.Duration("RECONCILE_BACKOFF_MAX", 5*time.Minute),
 		ReconcileInterval: r.Duration("RECONCILE_INTERVAL", 2*time.Second),
+		OrderReplicaWait:  r.Duration("ORDER_REPLICA_WAIT", 3*time.Second),
 	}
 	dev := c.Env == "dev"
 	if dev {
@@ -107,6 +110,9 @@ func Load() (Config, error) {
 		if v <= 0 {
 			bad = append(bad, errors.New(k+" must be positive"))
 		}
+	}
+	if c.OrderReplicaWait < 0 || c.OrderReplicaWait > 10*time.Second {
+		bad = append(bad, errors.New("ORDER_REPLICA_WAIT must be between 0 and 10s"))
 	}
 	if c.PollMax < c.PollMin {
 		bad = append(bad, errors.New("RECONCILE_BACKOFF_MAX must be >= RECONCILE_BACKOFF_MIN"))

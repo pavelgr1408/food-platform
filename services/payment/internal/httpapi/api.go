@@ -71,6 +71,10 @@ func New(d Deps) http.Handler {
 			Log:      d.Log,
 			// ключ принадлежит пользователю; путь (orderId) входит в область ключа самим middleware
 			Scope: func(r *http.Request) string { return authclient.FromContext(r.Context()).UserID },
+			// 404 с Retry-After («реплика заказа ещё не дошла») не запоминается: повтор с тем же ключом выполняется заново
+			Transient: func(status int, h http.Header) bool {
+				return status == http.StatusNotFound && h.Get("Retry-After") != ""
+			},
 		})(initiate)
 	}
 	mux.Handle("POST /orders/{orderId}/payments", initiate)

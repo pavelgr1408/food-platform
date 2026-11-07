@@ -43,11 +43,14 @@ type env struct {
 	m     *service.Metrics
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { return newEnvWait(t, -1) }
+
+// newEnvWait — окружение с заданным ожиданием реплики заказа в initiatePayment (<0 — не ждать).
+func newEnvWait(t *testing.T, wait time.Duration) *env {
 	t.Helper()
 	e := &env{pool: testkit.Pool(t), gw: testkit.NewGateway(), clock: testkit.NewClock(), m: service.NewMetrics()}
 	e.svc = service.New(service.Deps{Pool: e.pool, Gateway: e.gw, Log: testkit.Log(), Clock: e.clock.Now, Metrics: e.m,
-		Config: service.Config{WebhookWait: 10 * time.Second, PendingExpiry: 10 * time.Minute, PollMin: 5 * time.Second, PollMax: time.Minute}})
+		Config: service.Config{WebhookWait: 10 * time.Second, PendingExpiry: 10 * time.Minute, PollMin: 5 * time.Second, PollMax: time.Minute, OrderReplicaWait: wait}})
 	return e
 }
 
@@ -789,4 +792,67 @@ func TestCourierCardIsNotInitiatedByClient(t *testing.T) {
 	o := e.courierOrder(t)
 	_, err := e.svc.Initiate(ctx, "", o, service.InitiateInput{Method: domain.MethodCourierCard})
 	wantCode(t, err, "PAYMENT_METHOD_NOT_SUPPORTED")
+}
+
+// ТД-QA-2 (долг №92): заказ, созданный миг назад, ещё не доехал по Kafka — initiatePayment ждёт реплику, а не отвечает 404.
+func TestInitiateWaitsForOrderReplica(t *testing.T) {
+	e := newEnvWait(t, 5*time.Second)
+	id := uuid.NewString()
+	res := make(chan error, 1)
+	go func() {
+		_, err := e.svc.Initiate(ctx, "u1", id, service.InitiateInput{Method: domain.MethodOnlineCard})
+		res <- err
+	}()
+	time.Sleep(350 * time.Millisecond) // реплики ещё нет, запрос ждёт
+	select {
+	case err := <-res:
+		t.Fatalf("must keep waiting for the replica, got %v", err)
+	default:
+	}
+	e.state(t, id, 1, "online", "u1", 1000, "pickup")
+	select {
+	case err := <-res:
+		if err != nil {
+			t.Fatalf("payment must be created once the replica arrives: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("initiatePayment did not notice the replica")
+	}
+	if e.gw.Calls.Create != 1 {
+		t.Fatalf("gateway calls = %d, want 1", e.gw.Calls.Create)
+	}
+}
+
+// Ожидание ограничено, одинаково для несуществующего и чужого заказа (по времени ответа существование не раскрывается)
+// и прерывается отменой запроса.
+func TestInitiateReplicaWaitIsBoundedAndUniform(t *testing.T) {
+	e := newEnvWait(t, 400*time.Millisecond)
+	foreign := e.order(t, "online", "u1", 1000)
+	for name, c := range map[string]struct{ user, id string }{
+		"несуществующий": {"u1", uuid.NewString()},
+		"чужой":          {"u2", foreign},
+	} {
+		start := time.Now()
+		_, err := e.svc.Initiate(ctx, c.user, c.id, service.InitiateInput{Method: domain.MethodOnlineCard})
+		wantCode(t, err, "ORDER_NOT_FOUND")
+		if d := time.Since(start); d < 350*time.Millisecond || d > 2*time.Second {
+			t.Errorf("%s: waited %v, want ≈400ms", name, d)
+		}
+	}
+	// не UUID — ждать нечего
+	start := time.Now()
+	_, err := e.svc.Initiate(ctx, "u1", "not-a-uuid", service.InitiateInput{Method: domain.MethodOnlineCard})
+	wantCode(t, err, "ORDER_NOT_FOUND")
+	if time.Since(start) > 200*time.Millisecond {
+		t.Errorf("non-UUID id must not wait")
+	}
+	// отмена контекста прерывает ожидание
+	cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	_, err = e.svc.Initiate(cctx, "u1", uuid.NewString(), service.InitiateInput{Method: domain.MethodOnlineCard})
+	wantCode(t, err, "ORDER_NOT_FOUND")
+	if time.Since(start) > 300*time.Millisecond {
+		t.Errorf("canceled request must stop waiting")
+	}
 }

@@ -3,11 +3,12 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func load(t *testing.T, env map[string]string) (Config, error) {
 	t.Helper()
-	for _, k := range []string{"APP_ENV", "DATABASE_URL", "GATEWAY_API_KEY", "GATEWAY_WEBHOOK_SECRET", "POS_WEBHOOK_SECRET", "GATEWAY_URL", "DEFAULT_RETURN_URL", "ALLOWED_RETURN_ORIGINS"} {
+	for _, k := range []string{"APP_ENV", "DATABASE_URL", "GATEWAY_API_KEY", "GATEWAY_WEBHOOK_SECRET", "POS_WEBHOOK_SECRET", "GATEWAY_URL", "DEFAULT_RETURN_URL", "ALLOWED_RETURN_ORIGINS", "ORDER_REPLICA_WAIT"} {
 		t.Setenv(k, "")
 	}
 	for k, v := range env {
@@ -95,5 +96,18 @@ func TestBadURL(t *testing.T) {
 	_, err := load(t, map[string]string{"DATABASE_URL": "postgres://x", "GATEWAY_URL": "ftp://nope"})
 	if err == nil || !strings.Contains(err.Error(), "GATEWAY_URL") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestOrderReplicaWait(t *testing.T) {
+	c, err := load(t, map[string]string{"DATABASE_URL": "postgres://x"})
+	if err != nil || c.OrderReplicaWait != 3*time.Second {
+		t.Fatalf("default 3s: %v %v", err, c.OrderReplicaWait)
+	}
+	if c, err = load(t, map[string]string{"DATABASE_URL": "postgres://x", "ORDER_REPLICA_WAIT": "0s"}); err != nil || c.OrderReplicaWait != 0 {
+		t.Fatalf("0 disables waiting: %v %v", err, c.OrderReplicaWait)
+	}
+	if _, err = load(t, map[string]string{"DATABASE_URL": "postgres://x", "ORDER_REPLICA_WAIT": "30s"}); err == nil || !strings.Contains(err.Error(), "ORDER_REPLICA_WAIT") {
+		t.Fatalf("too long wait must be rejected: %v", err)
 	}
 }
