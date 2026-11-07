@@ -76,14 +76,23 @@ type pickupSlotRequest struct {
 	To   *time.Time `json:"to"`
 }
 
+// itemModifierDTO — ItemModifier из orders.yaml: снимок модификатора (долг №81).
+type itemModifierDTO struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Price money  `json:"price"`
+}
+
 type itemDTO struct {
 	MenuItemID  string   `json:"menuItemId"`
 	Quantity    int      `json:"quantity"`
 	ModifierIDs []string `json:"modifierIds"`
-	Name        string   `json:"name"`
-	UnitPrice   money    `json:"unitPrice"`
-	LineTotal   money    `json:"lineTotal"`
-	Available   bool     `json:"available"`
+	// Modifiers — указатель на срез: nil → поля нет (строка без снимка), пустой → [].
+	Modifiers *[]itemModifierDTO `json:"modifiers,omitempty"`
+	Name      string             `json:"name"`
+	UnitPrice money              `json:"unitPrice"`
+	LineTotal money              `json:"lineTotal"`
+	Available bool               `json:"available"`
 }
 
 type fulfillmentDTO struct {
@@ -195,8 +204,16 @@ func toItems(lines []domain.Line, cur string) []itemDTO {
 		if mods == nil {
 			mods = []string{}
 		}
-		out = append(out, itemDTO{MenuItemID: l.MenuItemID, Quantity: l.Quantity, ModifierIDs: mods, Name: l.Name,
-			UnitPrice: money{l.UnitPrice, cur}, LineTotal: money{l.LineTotal, cur}, Available: true})
+		d := itemDTO{MenuItemID: l.MenuItemID, Quantity: l.Quantity, ModifierIDs: mods, Name: l.Name,
+			UnitPrice: money{l.UnitPrice, cur}, LineTotal: money{l.LineTotal, cur}, Available: true}
+		if l.Modifiers != nil {
+			snap := make([]itemModifierDTO, len(l.Modifiers))
+			for i, m := range l.Modifiers {
+				snap[i] = itemModifierDTO{ID: m.ID, Name: m.Name, Price: money{m.Price, cur}}
+			}
+			d.Modifiers = &snap
+		}
+		out = append(out, d)
 	}
 	return out
 }

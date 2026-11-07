@@ -273,7 +273,12 @@
                   "cv.set('expectedTotal', expected);",
                   "pm.test('сумма = 2×(бургер+бекон)+кола, целые копейки', () => { pm.expect(c.subtotal.amount).to.eql(expected); pm.expect(c.total.amount).to.eql(expected); pm.expect(c.discountTotal.amount).to.eql(0); pm.expect(intMoney(c.total)).to.be.true; });",
                   "pm.test('позиции: снапшот названия, цена за единицу и сумма строки', () => { const l = c.items[0]; pm.expect(l.name).to.eql('BLT Классик'); pm.expect(l.unitPrice.amount).to.eql(unit); pm.expect(l.lineTotal.amount).to.eql(2 * unit); pm.expect(l.available).to.be.true; pm.expect(l.modifierIds).to.eql([cv.get('baconId')]); });",
-                  "pm.test('деньги в JSON — без дробной части', () => pm.expect(pm.response.text()).to.match(/\"amount\":\\d+[,}]/));"
+                  "pm.test('деньги в JSON — без дробной части', () => pm.expect(pm.response.text()).to.match(/\"amount\":\\d+[,}]/));",
+                  "pm.test('modifiers: снимок названия и цены модификатора (долг №81), без выбора — []; modifierIds сохраняется', () => {",
+                  "  const cv2 = pm.collectionVariables; const its = pm.response.json().items;",
+                  "  pm.expect(its[0].modifiers).to.eql([{id: cv2.get('baconId'), name: 'Двойной бекон', price: {amount: Number(cv2.get('baconPrice')), currency: 'RUB'}}]);",
+                  "  pm.expect(its[0].modifierIds).to.eql([cv2.get('baconId')]); pm.expect(its[1].modifiers).to.eql([]);",
+                  "});"
                 ]
               }
             }
@@ -549,7 +554,8 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "const o = pm.response.json();",
-                  "pm.test('тот же заказ, 2 позиции, самовывоз', () => { pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId')); pm.expect(o.number).to.eql(pm.collectionVariables.get('orderNumber')); pm.expect(o.items).to.have.lengthOf(2); pm.expect(o.fulfillment.type).to.eql('pickup'); pm.expect(o.createdAt).to.be.a('string'); });"
+                  "pm.test('тот же заказ, 2 позиции, самовывоз', () => { pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId')); pm.expect(o.number).to.eql(pm.collectionVariables.get('orderNumber')); pm.expect(o.items).to.have.lengthOf(2); pm.expect(o.fulfillment.type).to.eql('pickup'); pm.expect(o.createdAt).to.be.a('string'); });",
+                  "pm.test('заказ хранит снимок модификаторов (долг №81): название и цена на момент оформления', () => { const cv = pm.collectionVariables; pm.expect(o.items[0].modifiers).to.eql([{id: cv.get('baconId'), name: 'Двойной бекон', price: {amount: Number(cv.get('baconPrice')), currency: 'RUB'}}]); pm.expect(o.items[1].modifiers).to.eql([]); });"
                 ]
               }
             }

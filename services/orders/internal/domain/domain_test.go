@@ -147,3 +147,28 @@ func TestContactMergeAndAccess(t *testing.T) {
 		t.Error("access rule")
 	}
 }
+
+func TestSnapshotModifiers(t *testing.T) {
+	a := LineModifier{ID: "a", Name: "Бекон", Price: 8900}
+	b := LineModifier{ID: "b", Name: "Сыр", Price: 5000}
+	if got := SnapshotModifiers([]string{"a", "b"}, []LineModifier{a, b}); len(got) != 2 || got[0] != a || got[1] != b {
+		t.Fatalf("matching ids: %+v", got)
+	}
+	if got := SnapshotModifiers([]string{}, []LineModifier{}); got == nil || len(got) != 0 {
+		t.Fatalf("no modifiers -> empty non-nil, got %#v", got)
+	}
+	// menu вернул иной состав/порядок или не вернул поле вовсе — «снимка нет», а не снимок другого выбора
+	for name, c := range map[string]struct {
+		ids  []string
+		menu []LineModifier
+	}{
+		"menu has no field": {[]string{"a"}, nil},
+		"fewer":             {[]string{"a", "b"}, []LineModifier{a}},
+		"other order":       {[]string{"b", "a"}, []LineModifier{a, b}},
+		"other id":          {[]string{"x"}, []LineModifier{a}},
+	} {
+		if got := SnapshotModifiers(c.ids, c.menu); got != nil {
+			t.Errorf("%s: want nil, got %+v", name, got)
+		}
+	}
+}

@@ -219,7 +219,8 @@ func (s *Service) UpdateCartItems(ctx context.Context, userID, id string, items 
 					continue
 				}
 				lines = append(lines, domain.Line{MenuItemID: l.MenuItemID, Name: l.Name, Quantity: l.Quantity,
-					ModifierIDs: nonNil(items[i].ModifierIDs), UnitPrice: l.UnitPrice, LineTotal: l.LineTotal})
+					ModifierIDs: nonNil(items[i].ModifierIDs), Modifiers: domain.SnapshotModifiers(nonNil(items[i].ModifierIDs), l.Modifiers),
+					UnitPrice: l.UnitPrice, LineTotal: l.LineTotal})
 			}
 		}
 	}

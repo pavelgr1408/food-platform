@@ -160,3 +160,28 @@ func TestRestaurantGet(t *testing.T) {
 		t.Fatalf("closed: %v", err)
 	}
 }
+
+func TestMenuValidateParsesModifierSnapshot(t *testing.T) {
+	m, _ := menuServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"valid":true,"menuVersion":7,"total":{"amount":87600,"currency":"RUB"},"lines":[
+		 {"menuItemId":"` + item1 + `","name":"Бургер","quantity":2,"available":true,"currentPrice":{"amount":43800,"currency":"RUB"},"lineTotal":{"amount":87600,"currency":"RUB"},
+		  "modifiers":[{"id":"` + mod1 + `","name":"Бекон","price":{"amount":8900,"currency":"RUB"}}]},
+		 {"menuItemId":"` + item2 + `","name":"Кола","quantity":1,"available":true,"currentPrice":{"amount":12900,"currency":"RUB"},"lineTotal":{"amount":12900,"currency":"RUB"},"modifiers":[]},
+		 {"menuItemId":"` + item2 + `","name":"Кола","quantity":1,"available":true,"currentPrice":{"amount":12900,"currency":"RUB"},"lineTotal":{"amount":12900,"currency":"RUB"}}]}`))
+	})
+	res, err := m.Validate(context.Background(), rest1, []clients.MenuLineInput{
+		{MenuItemID: item1, Quantity: 2, ModifierIDs: []string{mod1}}, {MenuItemID: item2, Quantity: 1}, {MenuItemID: item2, Quantity: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Lines[0].Modifiers; len(got) != 1 || got[0].ID != mod1 || got[0].Name != "Бекон" || got[0].Price != 8900 {
+		t.Fatalf("snapshot: %+v", got)
+	}
+	if got := res.Lines[1].Modifiers; got == nil || len(got) != 0 {
+		t.Fatalf("[] must stay an empty non-nil slice: %#v", got)
+	}
+	if got := res.Lines[2].Modifiers; got != nil {
+		t.Fatalf("menu before 1.5.0 has no field -> nil, got %#v", got)
+	}
+}

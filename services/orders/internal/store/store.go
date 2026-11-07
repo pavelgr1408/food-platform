@@ -4,7 +4,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -94,7 +96,7 @@ func (s *Store) GetCart(ctx context.Context, db DBTX, id string, lock bool) (dom
 }
 
 func (s *Store) items(ctx context.Context, db DBTX, table, col, id string) ([]domain.Line, error) {
-	rows, err := db.Query(ctx, `SELECT menu_item_id, name, quantity, modifier_ids, unit_price, line_total
+	rows, err := db.Query(ctx, `SELECT menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total
 		FROM `+table+` WHERE `+col+` = $1 ORDER BY position`, id)
 	if err != nil {
 		return nil, err
@@ -103,7 +105,11 @@ func (s *Store) items(ctx context.Context, db DBTX, table, col, id string) ([]do
 	out := []domain.Line{}
 	for rows.Next() {
 		var l domain.Line
-		if err := rows.Scan(&l.MenuItemID, &l.Name, &l.Quantity, &l.ModifierIDs, &l.UnitPrice, &l.LineTotal); err != nil {
+		var rawMods []byte
+		if err := rows.Scan(&l.MenuItemID, &l.Name, &l.Quantity, &l.ModifierIDs, &rawMods, &l.UnitPrice, &l.LineTotal); err != nil {
+			return nil, err
+		}
+		if l.Modifiers, err = decodeModifiers(rawMods); err != nil {
 			return nil, err
 		}
 		if l.ModifierIDs == nil {
@@ -125,8 +131,12 @@ func (s *Store) ReplaceCartItems(ctx context.Context, db DBTX, id, currency stri
 		if mods == nil {
 			mods = []string{}
 		}
-		if _, err := db.Exec(ctx, `INSERT INTO cart_items (cart_id, position, menu_item_id, name, quantity, modifier_ids, unit_price, line_total)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, id, i, l.MenuItemID, l.Name, l.Quantity, mods, l.UnitPrice, l.LineTotal); err != nil {
+		snap, err := encodeModifiers(l.Modifiers)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO cart_items (cart_id, position, menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, i, l.MenuItemID, l.Name, l.Quantity, mods, snap, l.UnitPrice, l.LineTotal); err != nil {
 			return 0, err
 		}
 	}
@@ -156,4 +166,24 @@ func (s *Store) CloseCart(ctx context.Context, db DBTX, id, orderID string) erro
 func (s *Store) PurgeStaleCarts(ctx context.Context, db DBTX, before time.Time) (int64, error) {
 	tag, err := db.Exec(ctx, `DELETE FROM carts WHERE status = 'open' AND updated_at < $1`, before)
 	return tag.RowsAffected(), err
+}
+
+// encodeModifiers сериализует снимок модификаторов в jsonb; nil (снимка нет) → SQL NULL.
+func encodeModifiers(m []domain.LineModifier) (any, error) {
+	if m == nil {
+		return nil, nil
+	}
+	return json.Marshal(m)
+}
+
+// decodeModifiers — обратное преобразование: NULL → nil (строка без снимка), '[]' → пустой срез.
+func decodeModifiers(raw []byte) ([]domain.LineModifier, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	out := []domain.LineModifier{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("store: decode modifiers snapshot: %w", err)
+	}
+	return out, nil
 }

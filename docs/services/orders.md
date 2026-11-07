@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/orders`, порт `8084`, БД `orders` (Postgres) |
-| Контракты | `contracts/openapi/orders.yaml` v1.7.0; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракты | `contracts/openapi/orders.yaml` v1.8.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | публикует `orders.state`, `orders.status` (transactional outbox); потребляет 5 топиков в 4 группах |
 | Идемпотентность | `POST /orders` — обязательный `Idempotency-Key` |
 | Зависимости (синхронно) | `menu` (validateMenuItems), `restaurant` (getRestaurant) |
@@ -137,7 +137,7 @@ flowchart LR
 ```json
 {
   "id": "uuid", "restaurantId": "uuid", "status": "open|ordered", "orderId": "uuid?",
-  "items": [ { "menuItemId", "quantity", "modifierIds", "name", "unitPrice": Money, "lineTotal": Money, "available": true } ],
+  "items": [ { "menuItemId", "quantity", "modifierIds", "modifiers": [ { "id", "name", "price": Money } ]?, "name", "unitPrice": Money, "lineTotal": Money, "available": true } ],
   "appliedPromotions": [ { "promotionId", "title", "discount": Money } ],
   "fulfillment": { "type": "delivery", "address": { "raw", "location" } },
   "subtotal": Money, "discountTotal": Money, "total": Money
@@ -145,6 +145,8 @@ flowchart LR
 ```
 
 Суммы корзины пересчитываются **при каждом чтении** (скидки зависят от реплики акций и времени). `Money = { amount: int64 копейки, currency }`.
+
+**Снимок модификаторов (долг №81).** `items[].modifiers[{id,name,price}]` — название и цена модификатора на момент расчёта, порядок и состав как у `modifierIds` (оно остаётся). Источник — `menu.validateMenuItems` (menu ≥ 1.5.0). В корзине снимок обновляется при `updateCartItems` и при пересчёте цен в `createOrder` (`PRICE_CHANGED`); в заказ попадает снимок **по свежему меню на момент `createOrder`** (не из корзины) и дальше не меняется — переименование или удаление модификатора в меню старые заказы не затрагивает. Поле необязательное: у строк, созданных до миграции `007`, а также при ответе menu без поля (старая версия), снимка нет (`modifiers` отсутствует, колонка `NULL`) — клиент берёт названия из меню; пустой выбор даёт `[]`. Восстановить названия задним числом невозможно.
 
 ### 3.2. Оформление заказа
 
@@ -262,7 +264,7 @@ stateDiagram-v2
 2. Загрузка корзины с проверкой доступа; статус `open`; для факса — доступ к ресторану корзины.
 3. Бизнес-правила: корзина не пуста; способ получения выбран; способ оплаты разрешён матрицей; для факса онлайн-оплата запрещена; гостю и факсу нужен `contact.phone` (контакт корзины сливается с контактом запроса, значения запроса приоритетнее).
 4. `restaurant.Get`: недоступен → `503 RESTAURANT_UNAVAILABLE`; `!openNow` → `409 RESTAURANT_CLOSED`; для доставки: доставка включена и **повторная проверка зоны** (`checkZone`, fail-closed).
-5. `revalidate` через `menu.Validate`: недоступное → `409 ITEMS_UNAVAILABLE` (корзина не меняется); цена изменилась → корзина **обновляется** новыми ценами и `409 PRICE_CHANGED`; menu недоступен → `503 MENU_UNAVAILABLE`.
+5. `revalidate` через `menu.Validate` (в ответе — и свежий снимок модификаторов для заказа): недоступное → `409 ITEMS_UNAVAILABLE` (корзина не меняется); цена изменилась → корзина **обновляется** новыми ценами и `409 PRICE_CHANGED`; menu недоступен → `503 MENU_UNAVAILABLE`.
 6. Расчёт скидки (`Discounter.Apply` → `domain.Net`); если задан `expectedTotal` и итог или валюта не совпали → `409 TOTAL_CHANGED`.
 7. Определение статуса: `online_card → pending_payment`, остальные → `accepted`.
 8. Код ресторана (`restaurant_codes`, вне транзакции под advisory-lock) → **транзакция**: блокировка корзины `FOR UPDATE`; проверки `status=open` и `revision` не изменилась (`CART_CHANGED`); номер заказа (`order_counters`); вставка `orders` + `order_items` + первая запись истории; закрытие корзины (`ordered`, `order_id`); `orders.state` (`revision=1`) и `orders.status` в outbox (для `accepted` — с `etaReadyAt`, `accepted_at` проставляется); **сохранение ответа под ключом идемпотентности** (`Claim.CompleteTx`). Коммит.
@@ -375,7 +377,7 @@ sequenceDiagram
 
 ## 6. Работа с БД
 
-БД `orders`. Миграции модуля `orders` (001–006) + `kafka` (outbox/inbox) + `idempotency`.
+БД `orders`. Миграции модуля `orders` (001–007) + `kafka` (outbox/inbox) + `idempotency`.
 
 ### 6.1. ER-диаграмма
 
@@ -412,6 +414,7 @@ erDiagram
     text name
     int quantity
     uuid_arr modifier_ids
+    jsonb modifiers
     bigint unit_price
     bigint line_total
   }
@@ -450,6 +453,7 @@ erDiagram
     text name
     int quantity
     uuid_arr modifier_ids
+    jsonb modifiers
     bigint unit_price
     bigint line_total
   }
@@ -503,9 +507,9 @@ erDiagram
 | Таблица | Ограничение |
 |---|---|
 | `carts` | `status ∈ {open, ordered}`; CHECK `(status='ordered') = (order_id IS NOT NULL)`; `fulfillment_type ∈ {delivery, pickup}` |
-| `cart_items` | PK `(cart_id, position)`; `quantity 1…99`; цены ≥ 0; FK CASCADE |
+| `cart_items` | PK `(cart_id, position)`; `quantity 1…99`; цены ≥ 0; FK CASCADE; `modifiers` — jsonb-массив или `NULL` (нет снимка, 007) |
 | `orders` | `number` UNIQUE; **`cart_id` UNIQUE** (один заказ на корзину — защита на уровне БД); `status` из 10 значений; `payment_method ∈ {online_card, courier_card, pos}`; `payment_status ∈ {pending, authorized, paid, declined, unknown}`; CHECK `total = subtotal − discount_total`; CHECK `(pickup_from IS NULL) = (pickup_to IS NULL)`; `refund_status ∈ {pending, refunded, failed}`; `delivery_status ∈ {searching, assigned, picked_up, en_route, delivered, failed}`; `delivery_fail_reason ∈ {no_courier, undelivered, cancelled}`; `channel ∈ {online, staff_fax}` |
-| `order_items` | PK `(order_id, position)`; FK CASCADE |
+| `order_items` | PK `(order_id, position)`; FK CASCADE; `modifiers` — jsonb-массив `[{id,name,price}]` или `NULL` (нет снимка, 007) |
 | `order_status_history` | PK `(order_id, seq)`; `seq` = max+1 внутри транзакции под блокировкой заказа |
 | `promotions_replica` | `version ≥ 1`; `scope ∈ {national, local}`; CHECK `(scope='local') = (restaurant_id IS NOT NULL)`; процент хранится как сотые доли |
 

@@ -17,6 +17,7 @@ import (
 	"github.com/pavelgr1408/food-platform/pkg/pgxutil"
 	"github.com/pavelgr1408/food-platform/pkg/pgxutil/pgtest"
 	"github.com/pavelgr1408/food-platform/services/orders/internal/clients"
+	"github.com/pavelgr1408/food-platform/services/orders/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/orders/migrations"
 )
 
@@ -55,6 +56,7 @@ type MenuItem struct {
 
 // Mod — модификатор.
 type Mod struct {
+	Name      string
 	Price     int64
 	Available bool
 }
@@ -65,13 +67,14 @@ type FakeMenu struct {
 	items    map[string]MenuItem
 	err      error
 	calls    int
+	legacy   bool
 	Currency string
 }
 
 // NewMenu возвращает меню с бургером (349 ₽, бекон +89 ₽, сыр в стоп-листе), колой (129 ₽) и тортом в стоп-листе.
 func NewMenu() *FakeMenu {
 	return &FakeMenu{Currency: "RUB", items: map[string]MenuItem{
-		Burger: {Name: "Бургер", Price: 34900, Available: true, Mods: map[string]Mod{Bacon: {8900, true}, Cheese: {5000, false}}},
+		Burger: {Name: "Бургер", Price: 34900, Available: true, Mods: map[string]Mod{Bacon: {"Бекон", 8900, true}, Cheese: {"Сыр", 5000, false}}},
 		Cola:   {Name: "Кола", Price: 12900, Available: true},
 		Cake:   {Name: "Торт", Price: 17900, Available: false},
 	}}
@@ -85,6 +88,18 @@ func (m *FakeMenu) SetPrice(id string, price int64) {
 	it.Price = price
 	m.items[id] = it
 }
+
+// SetModName переименовывает модификатор позиции.
+func (m *FakeMenu) SetModName(itemID, modID, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	md := m.items[itemID].Mods[modID]
+	md.Name = name
+	m.items[itemID].Mods[modID] = md
+}
+
+// WithoutModifiersField имитирует menu до 1.5.0: в строках нет поля modifiers.
+func (m *FakeMenu) WithoutModifiersField(v bool) { m.mu.Lock(); m.legacy = v; m.mu.Unlock() }
 
 // SetAvailable включает/выключает позицию (стоп-лист).
 func (m *FakeMenu) SetAvailable(id string, ok bool) {
@@ -117,6 +132,9 @@ func (m *FakeMenu) Validate(_ context.Context, _ string, lines []clients.MenuLin
 			ml.Available, ml.ReasonCode, ml.Reason = false, "ITEM_NOT_FOUND", "Позиции нет в меню ресторана"
 		} else {
 			ml.Name, ml.UnitPrice = it.Name, it.Price
+			if !m.legacy {
+				ml.Modifiers = []domain.LineModifier{}
+			}
 			if !it.Available {
 				ml.Available, ml.ReasonCode, ml.Reason = false, "ITEM_UNAVAILABLE", "Позиция недоступна"
 			}
@@ -127,6 +145,9 @@ func (m *FakeMenu) Validate(_ context.Context, _ string, lines []clients.MenuLin
 					ml.Available, ml.ReasonCode, ml.Reason = false, "MODIFIER_NOT_FOUND", "Модификатор не относится к позиции"
 				default:
 					ml.UnitPrice += md.Price
+					if !m.legacy {
+						ml.Modifiers = append(ml.Modifiers, domain.LineModifier{ID: id, Name: md.Name, Price: md.Price})
+					}
 					if !md.Available && ml.ReasonCode == "" {
 						ml.Available, ml.ReasonCode, ml.Reason = false, "MODIFIER_UNAVAILABLE", "Модификатор недоступен"
 					}
