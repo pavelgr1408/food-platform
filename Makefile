@@ -53,6 +53,21 @@ test-int: ## Все тесты, включая Postgres (нужен `make up`)
 build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
+## ---------- frontend (web-app, S10) ----------
+.PHONY: web-install web-dev web-dev-mock web-check web-e2e web-gen
+web-install: ## npm ci во frontend/
+	cd frontend && npm ci
+web-dev: ## web-app на :3000 против gateway :8080 (dev-proxy /api; бэкенд: см. frontend/README.md)
+	cd frontend && npm run dev
+web-dev-mock: ## web-app на :3000 с MSW-моками, бэкенд не нужен
+	cd frontend/apps/web-app && npm run dev:mock
+web-check: ## Типы из OpenAPI не разошлись + typecheck + lint + unit + build
+	cd frontend && npm run gen:check --workspace @fp/api && npm run typecheck && npm run lint && npm test && npm run build
+web-e2e: ## Playwright против сборки в режиме mock (нужны браузеры: npx playwright install chromium)
+	cd frontend/apps/web-app && npx playwright test
+web-gen: ## Перегенерировать TS-типы из contracts/openapi
+	cd frontend && npm run gen:api
+
 ## ---------- сервисы ----------
 .PHONY: new-service keys docker-build newman newman-e2e-gateway newman-staff-timeout check-template contract-check contract-check-ci check-routes perimeter-check loyalty-e2e notification-e2e
 new-service: ## Новый сервис из шаблона: make new-service NAME=orders PORT=8084

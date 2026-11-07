@@ -1,0 +1,66 @@
+/* Лоток — токены дизайн-системы food-platform (web-app, web-app-staff).
+   Источник правды для цвета, шрифтов, радиусов и отступов. Значения проверены на контраст (WCAG AA).
+   Шрифты Unbounded/Onest подключает приложение (index.html), а не токены: так CSP и самохостинг решаются в одном месте. */
+
+:root {
+  /* Базовая палитра */
+  --lt-tomato: #D62A16;
+  --lt-lemon: #FFD43B;
+  --lt-ink: #12131A;
+  --lt-paper: #F3F4FB;
+  --lt-white: #FFFFFF;
+  --lt-mint: #1FBF84;
+  --lt-coral: #FF5A4D;
+
+  /* Семантика */
+  --lt-bg: var(--lt-paper);
+  --lt-surface: var(--lt-white);
+  --lt-text: var(--lt-ink);
+  --lt-text-muted: #3F4254;
+  --lt-text-disabled: #6A6D80;
+  --lt-border: rgba(18, 19, 26, 0.12);
+  --lt-border-strong: var(--lt-ink);
+  --lt-focus: var(--lt-ink);
+
+  /* Шрифты */
+  --lt-font-display: "Unbounded", "Arial Black", sans-serif;
+  --lt-font-body: "Onest", system-ui, sans-serif;
+
+  /* Шкала текста */
+  --lt-fs-hero: 56px;
+  --lt-fs-h1: 44px;
+  --lt-fs-h2: 26px;
+  --lt-fs-price: 18px;
+  --lt-fs-body: 16px;
+  --lt-fs-small: 13px;
+
+  /* Радиусы */
+  --lt-r-card: 28px;
+  --lt-r-tile: 20px;
+  --lt-r-input: 14px;
+  --lt-r-pill: 999px;
+
+  /* Отступы (шаг 4) */
+  --lt-s-1: 4px;  --lt-s-2: 8px;  --lt-s-3: 12px; --lt-s-4: 16px;
+  --lt-s-5: 24px; --lt-s-6: 32px; --lt-s-7: 48px;
+
+  /* Цели нажатия */
+  --lt-tap: 48px;
+  --lt-tap-cta: 58px;
+
+  /* Движение */
+  --lt-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --lt-dur-fast: 120ms;
+  --lt-dur: 220ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --lt-dur-fast: 0ms; --lt-dur: 0ms; }
+}
+
+/* Кольцо фокуса для всех интерактивных элементов */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--lt-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--lt-white);
+}

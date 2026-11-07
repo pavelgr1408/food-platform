@@ -1,0 +1,17 @@
+# Срез: web-app (SPA «Лоток», ADR-5/12) на :3000, /api/* → gateway. Вместе с бэкендом:
+#   AUTH_MODE=jwks make up SLICE="auth restaurant menu orders payment delivery loyalty notification mock-externals gateway web-app"
+# Оплата в этом срезе — режим poll: страница /pay/{id} у mock-externals отдаёт JSON, итог приходит вебхуком за ~2 с.
+services:
+  web-app:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_MODE: real
+        VITE_PAYMENT_MODE: ${VITE_PAYMENT_MODE:-poll}
+    environment:
+      GATEWAY_UPSTREAM: http://gateway:8080
+      NGINX_RESOLVER: 127.0.0.11
+    ports:
+      - "3000:3000"
+    mem_limit: 32m
