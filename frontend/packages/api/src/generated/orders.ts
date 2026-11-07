@@ -276,6 +276,8 @@ export interface components {
             /** Format: uuid */
             menuItemId: string;
             modifierIds: string[];
+            /** @description Снимок выбранных модификаторов (`id`, `name`, `price`), порядок и состав совпадают с `modifierIds`. В корзине обновляется при каждом пересчёте (`updateCartItems`, `setCartFulfillment`), в заказе фиксируется при `createOrder` и больше не меняется. Поле необязательное только для строк, созданных до его появления (старые корзины и заказы): для них снимка нет, клиент берёт названия из меню, как раньше. В новых корзинах и заказах присутствует всегда (пустой массив, если модификаторов нет). */
+            modifiers?: components["schemas"]["ItemModifier"][];
             /** @description Название позиции на момент расчёта (снапшот). */
             name: string;
             quantity: number;
@@ -322,6 +324,14 @@ export interface components {
             lat: number;
             /** Format: double */
             lon: number;
+        };
+        /** @description Снимок модификатора в строке корзины или заказа (долг №81): название и цена на момент расчёта корзины / оформления заказа. Не зависит от того, остался ли модификатор в меню. */
+        ItemModifier: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @description Добавка к цене позиции за единицу (входит в `unitPrice`). */
+            price: components["schemas"]["Money"];
         };
         /**
          * @description Денежная сумма. `amount` — **целое число минорных единиц валюты** (для RUB — копейки):

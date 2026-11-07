@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.7.0
+  version: 1.8.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -625,6 +625,19 @@ components:
           type: array
           maxItems: 20
           items: { type: string, format: uuid }
+    ItemModifier:
+      type: object
+      required: [id, name, price]
+      description: >-
+        Снимок модификатора в строке корзины или заказа (долг №81): название и цена на момент
+        расчёта корзины / оформления заказа. Не зависит от того, остался ли модификатор в меню.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        price:
+          allOf:
+            - $ref: '_common.yaml#/components/schemas/Money'
+          description: Добавка к цене позиции за единицу (входит в `unitPrice`).
     CartItem:
       type: object
       required: [menuItemId, quantity, modifierIds, name, unitPrice, lineTotal, available]
@@ -634,6 +647,17 @@ components:
         modifierIds:
           type: array
           items: { type: string, format: uuid }
+        modifiers:
+          type: array
+          x-status: planned
+          description: >-
+            Снимок выбранных модификаторов (`id`, `name`, `price`), порядок и состав совпадают с
+            `modifierIds`. В корзине обновляется при каждом пересчёте (`updateCartItems`,
+            `setCartFulfillment`), в заказе фиксируется при `createOrder` и больше не меняется.
+            Поле необязательное только для строк, созданных до его появления (старые корзины и
+            заказы): для них снимка нет, клиент берёт названия из меню, как раньше. В новых
+            корзинах и заказах присутствует всегда (пустой массив, если модификаторов нет).
+          items: { $ref: '#/components/schemas/ItemModifier' }
         name: { type: string, description: Название позиции на момент расчёта (снапшот). }
         unitPrice:
           allOf:

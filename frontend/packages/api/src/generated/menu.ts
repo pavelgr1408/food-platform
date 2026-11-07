@@ -83,12 +83,20 @@ export interface components {
             lineTotal?: components["schemas"]["Money"];
             /** Format: uuid */
             menuItemId: string;
+            /** @description Выбранные модификаторы, найденные у позиции, в порядке запроса: `id`, название и цена (добавка к цене позиции) на момент проверки. Нужны orders-service для снимка состава в корзине и заказе (долг №81). Модификатор, не принадлежащий позиции (`MODIFIER_NOT_FOUND`), в список не попадает; для `ITEM_NOT_FOUND` поля нет. Пустой массив, если модификаторы не выбраны. Добавление поля не меняет `ETag` меню. */
+            modifiers?: components["schemas"]["MenuValidationModifier"][];
             /** @description Название позиции (для снапшота в корзине/заказе). Отсутствует для `ITEM_NOT_FOUND`. */
             name?: string;
             quantity: number;
             /** @description Причина недоступности, человекочитаемо; если есть */
             reason?: string;
             reasonCode?: components["schemas"]["ValidationReasonCode"];
+        };
+        MenuValidationModifier: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            price: components["schemas"]["Money"];
         };
         MenuValidationRequest: {
             items: {
