@@ -19,11 +19,21 @@ export const RESTAURANTS: MockRestaurant[] = [
       { id: "c2", name: "Закуски и напитки", items: [
         { id: "i-fries", name: "Картофель фри", price: 9900, available: true, modifiers: [{ id: "m-sauce", name: "Сырный соус", price: 2500, available: true }] },
         { id: "i-cola", name: "Лимонад", description: "0,5 л", price: 12990, available: true, modifiers: [] },
+        { id: "i-wings", name: "Крылышки BBQ", description: "6 штук, соус барбекю", price: 27900, available: true, modifiers: [] },
+      ] },
+      { id: "c3", name: "Десерты и кофе", items: [
+        { id: "i-cheese", name: "Чизкейк «Нью-Йорк»", description: "Классический, с ягодным соусом", price: 17900, available: true, modifiers: [] },
+        { id: "i-cappu", name: "Капучино", description: "250 мл", price: 15900, available: true, modifiers: [{ id: "m-oat", name: "Овсяное молоко", price: 5000, available: true }, { id: "m-syrup", name: "Ванильный сироп", price: 3000, available: true }] },
+        { id: "i-brownie", name: "Брауни", description: "Шоколадный, с орехами", price: 12900, available: false, modifiers: [] },
       ] },
     ],
   },
   { id: "22222222-2222-4222-8222-222222222222", name: "Лоток у вокзала", address: "Комсомольская пл., 3", city: "Москва", lat: 55.7763, lon: 37.6554, open: false, timezone: "Europe/Moscow", deliveryEnabled: false, deliveryRadius: 0,
-    menu: [{ id: "c1", name: "Основное", items: [{ id: "i-s", name: "Сэндвич", price: 15000, available: true, modifiers: [] }] }] },
+    menu: [{ id: "c1", name: "Основное", items: [
+      { id: "i-s", name: "Сэндвич", price: 15000, available: true, modifiers: [] },
+      { id: "i-salad", name: "Салат «Цезарь»", description: "С курицей и пармезаном", price: 21900, available: true, modifiers: [] },
+      { id: "i-soup", name: "Суп-лапша", description: "Куриный бульон, домашняя лапша", price: 16900, available: true, modifiers: [] },
+    ] }] },
   { id: "33333333-3333-4333-8333-333333333333", name: "Лоток на Невском", address: "Невский пр., 28", city: "Санкт-Петербург", lat: 59.9343, lon: 30.3351, open: true, timezone: "Europe/Moscow", deliveryEnabled: true, deliveryRadius: 3000 },
 ];
 

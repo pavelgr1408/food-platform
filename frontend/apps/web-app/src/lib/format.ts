@@ -15,4 +15,10 @@ export function fmtTime(iso: string | undefined, tz?: string): string {
     return new Date(iso).toLocaleTimeString("ru-RU");
   }
 }
+/** В данных ресторана address уже может начинаться с города — не дублируем его. */
+export function fullAddress(r: { city?: string; address?: string }): string {
+  const a = (r.address ?? "").trim(), c = (r.city ?? "").trim();
+  if (!c || a.toLowerCase().startsWith(c.toLowerCase())) return a || c;
+  return a ? `${c}, ${a}` : c;
+}
 export const agoSeconds = (iso: string, now = Date.now()) => Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));

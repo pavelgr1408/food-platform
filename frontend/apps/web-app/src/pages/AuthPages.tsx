@@ -29,7 +29,7 @@ function AuthForm({ mode }: { mode: "login" | "register" }) {
   const phoneN = normalizePhone(phone);
   const phoneErr = touched && !isE164(phoneN) ? "Формат: +79991234567 (8–15 цифр)" : null;
   const pw = passwordProblem(password);
-  const pwErr = touched && mode === "register" && pw ? (pw === "short" ? "Минимум 6 символов" : "Слишком длинный пароль (до 72 байт)") : touched && !password ? "Введите пароль" : touched && pw === "long" ? "Слишком длинный пароль" : null;
+  const pwErr = touched && mode === "register" && pw ? (pw === "short" ? "Минимум 6 символов" : pw === "blank" ? "Пароль не может состоять из одних пробелов" : "Слишком длинный пароль: не более 72 байт (кириллица — около 36 букв)") : touched && !password ? "Введите пароль" : touched && pw === "long" ? "Слишком длинный пароль" : null;
 
   const run = useMutation({
     mutationFn: async () => {
@@ -45,12 +45,16 @@ function AuthForm({ mode }: { mode: "login" | "register" }) {
 
   return (
     <div className="lt-rise mx-auto max-w-md">
-      <PageTitle>{mode === "login" ? "Вход" : "Регистрация"}</PageTitle>
+      <div role="tablist" aria-label="Вход или регистрация" className="mb-5 grid grid-cols-2 gap-1 rounded-full bg-ink/5 p-1">
+        <Link role="tab" aria-selected={mode === "login"} to={`/login?next=${encodeURIComponent(next)}`} replace className={`grid min-h-11 place-items-center rounded-full font-semibold ${mode === "login" ? "bg-ink text-white" : ""}`}>Вход</Link>
+        <Link role="tab" aria-selected={mode === "register"} to={`/register?next=${encodeURIComponent(next)}`} replace className={`grid min-h-11 place-items-center rounded-full font-semibold ${mode === "register" ? "bg-ink text-white" : ""}`}>Регистрация</Link>
+      </div>
+      <PageTitle sub={mode === "login" ? "Войдите, чтобы заказы и корзина были под рукой." : "Телефон и пароль — больше ничего не нужно."}>{mode === "login" ? "Вход" : "Регистрация"}</PageTitle>
       <Surface>
         <form noValidate className="grid gap-4" onSubmit={(e) => { e.preventDefault(); setTouched(true); if (isE164(phoneN) && !passwordProblem(password)) run.mutate(); else if (mode === "login" && isE164(phoneN) && password && passwordProblem(password) !== "long") run.mutate(); }}>
           <Field label="Телефон" type="tel" inputMode="tel" autoComplete="tel" placeholder="+7 999 123-45-67" value={phone} onChange={(e) => setPhone(e.target.value)} onBlur={() => setPhone(normalizePhone(phone))} error={phoneErr} />
           <div>
-            <Field label="Пароль" type={show ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} error={pwErr} hint={mode === "register" ? "От 6 до 72 символов" : undefined} />
+            <Field label="Пароль" type={show ? "text" : "password"} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} error={pwErr} hint={mode === "register" ? "Не короче 6 символов; не длиннее 72 байт (латиница — 72 знака, кириллица — около 36)" : undefined} />
             <label className="mt-2 inline-flex min-h-[var(--lt-tap)] cursor-pointer items-center gap-2 text-sm font-medium">
               <input type="checkbox" className="size-5 accent-[var(--lt-tomato)]" checked={show} onChange={(e) => setShow(e.target.checked)} /> Показать пароль
             </label>

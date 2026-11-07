@@ -3,7 +3,7 @@ import { formatMoney } from "@fp/shared";
 import type { Money, OrderStatus } from "@fp/api";
 import { STATUS_LABEL } from "../lib/status";
 
-const cx = (...a: (string | false | undefined | null)[]) => a.filter(Boolean).join(" ");
+export const cx = (...a: (string | false | undefined | null)[]) => a.filter(Boolean).join(" ");
 
 /* ---- Кнопки: пилюли, ≥48 px (DESIGN-SYSTEM §4) ---- */
 type Variant = "primary" | "accent" | "outline" | "ghost";
@@ -69,7 +69,7 @@ export function Price({ money, className, big }: { money: Money; className?: str
 }
 
 export function Surface({ children, className, as: As = "section" }: { children: ReactNode; className?: string; as?: "section" | "div" | "article" }) {
-  return <As className={cx("rounded-card bg-white p-5 shadow-[0_1px_0_var(--lt-border)]", className)}>{children}</As>;
+  return <As className={cx("rounded-card bg-white p-5 shadow-[0_1px_0_var(--lt-border),0_10px_28px_-16px_rgba(18,19,26,0.28)]", className)}>{children}</As>;
 }
 
 export function Notice({ tone = "error", children, className }: { tone?: "error" | "info" | "success"; children: ReactNode; className?: string }) {
@@ -116,11 +116,38 @@ export function PageTitle({ children, sub }: { children: ReactNode; sub?: ReactN
   );
 }
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+/** page — пустое состояние занимает всю страницу: заголовок h1 (иначе у экрана нет главного заголовка). */
+export function Empty({ title, children, page }: { title: string; children?: ReactNode; page?: boolean }) {
+  const T = page ? "h1" : "p";
   return (
     <div className="rounded-card border-2 border-dashed border-ink/30 p-8 text-center">
-      <p className="font-display text-lg font-semibold">{title}</p>
+      <T className="font-display text-lg font-semibold">{title}</T>
       {children ? <div className="mt-3 text-muted">{children}</div> : null}
     </div>
   );
+}
+
+/* ---- Скелетон: вместо спиннера на списках, чтобы страница не прыгала ---- */
+export function Skeleton({ className }: { className?: string }) {
+  return <div aria-hidden className={cx("animate-pulse rounded-tile bg-ink/10 motion-reduce:animate-none", className)} />;
+}
+
+/* ---- Счётчик количества: − 2 + ---- */
+export function QtyStepper({ value, onInc, onDec, busy, label, max = 99, size = "md" }: {
+  value: number; onInc: () => void; onDec: () => void; busy?: boolean; label: string; max?: number; size?: "sm" | "md";
+}) {
+  const box = size === "sm" ? "size-11 text-lg" : "size-12 text-xl";
+  const btn = `grid ${box} place-items-center rounded-full font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-40`;
+  return (
+    <div role="group" aria-label={label} className="inline-flex items-center gap-1 rounded-full bg-ink/5 p-1">
+      <button type="button" aria-label={`Меньше: ${label}`} onClick={onDec} disabled={busy} className={`${btn} bg-white hover:bg-white/70`}>−</button>
+      <output aria-live="polite" className="min-w-8 text-center font-display text-base font-semibold">{value}</output>
+      <button type="button" aria-label={`Больше: ${label}`} onClick={onInc} disabled={busy || value >= max} className={`${btn} bg-ink text-white hover:bg-black`}>+</button>
+    </div>
+  );
+}
+
+export function Badge({ tone = "neutral", children, className }: { tone?: "neutral" | "ok" | "warn" | "hot"; children: ReactNode; className?: string }) {
+  const t = { neutral: "bg-ink/8 text-ink", ok: "bg-mint text-ink", warn: "bg-lemon text-ink", hot: "bg-tomato text-white" }[tone];
+  return <span className={cx("inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-semibold", t, className)}>{children}</span>;
 }

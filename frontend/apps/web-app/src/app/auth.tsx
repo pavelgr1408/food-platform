@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApi, useHasSession } from "./api-context";
 import type { Principal } from "@fp/api";
+import { clearDeviceData } from "../lib/local";
+import { resetCartStore } from "../lib/cart";
 
 export interface AuthState {
   /** loading — токен есть, профиль грузится; guest — токена нет. */
@@ -24,6 +26,10 @@ export function useAuth(): AuthState {
     isStaff: !!me.data?.roles.some((r) => STAFF_ROLES.includes(r)),
     async logout() {
       await api.auth.logout();
+      clearDeviceData();
+      resetCartStore();
+      qc.removeQueries({ queryKey: ["order"] });
+      qc.removeQueries({ queryKey: ["cart"] });
       qc.removeQueries({ queryKey: ["me"] });
       qc.removeQueries({ queryKey: ["devices"] });
     },

@@ -1,16 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isApiError, type ApiError, type Order as OrderT } from "@fp/api";
 import { formatMoney } from "@fp/shared";
 import { useApi } from "../app/api-context";
-import { Button, Empty, Notice, Price, Spinner, StatusPill, Surface } from "../components/ui";
+import { Button, Empty, Notice, Price, Skeleton, Spinner, StatusPill, Surface } from "../components/ui";
+import { Thumb } from "../components/art";
 import { MapPicker } from "../components/LazyMap";
 import { errorText } from "../lib/errors";
 import { agoSeconds, fmtDateTime, fmtTime } from "../lib/format";
 import { PAYMENT_MODE } from "../lib/env";
 import { localPayments } from "../lib/local";
-import { isTerminal, REASON_LABEL, stepsFor, STATUS_LABEL } from "../lib/status";
+import { isTerminal, reasonText, stepsFor, STATUS_LABEL } from "../lib/status";
 
 /** Опрос: статус 3–5 с пока не терминальный, курьер 15–30 с (активных обновлений в API нет — пробел №8). */
 const POLL_ORDER = 4000;
@@ -26,11 +27,17 @@ export function Order() {
   });
   const rest = useQuery({ queryKey: ["restaurant", q.data?.restaurantId], queryFn: () => api.restaurants.get(q.data!.restaurantId), enabled: !!q.data, retry: false, staleTime: 5 * 60_000 });
   const tz = rest.data?.timezone;
+  const menu = useQuery({ queryKey: ["menu", q.data?.restaurantId], queryFn: () => api.restaurants.menu(q.data!.restaurantId), enabled: !!q.data, retry: false, staleTime: 5 * 60_000 });
+  const names = useMemo(() => {
+    const mods = new Map<string, string>(), cats = new Map<string, string>();
+    for (const c of menu.data?.categories ?? []) for (const it of c.items) { cats.set(it.id, c.name); for (const m of it.modifiers) mods.set(m.id, m.name); }
+    return { mods, cats };
+  }, [menu.data]);
 
-  if (q.isLoading) return <Spinner label="Загружаем заказ…" />;
+  if (q.isLoading) return <div role="status" aria-label="Загружаем заказ" className="grid gap-4"><Skeleton className="h-32 rounded-card" /><Skeleton className="h-24 rounded-card" /><Skeleton className="h-40 rounded-card" /></div>;
   if (q.isError) {
     return (
-      <Empty title={isApiError(q.error) && q.error.status === 404 ? "Заказ не найден" : "Не удалось загрузить заказ"}>
+      <Empty page title={isApiError(q.error) && q.error.status === 404 ? "Заказ не найден" : "Не удалось загрузить заказ"}>
         <p>{errorText(q.error)}</p>
         <Link to="/orders" className="mt-3 inline-block font-semibold underline">Мои заказы</Link>
       </Empty>
@@ -45,14 +52,7 @@ export function Order() {
   return (
     <div className="lt-rise grid gap-5 lg:grid-cols-[1fr_380px]">
       <div className="grid content-start gap-5">
-        <header>
-          <p className="text-sm font-semibold text-muted">Заказ</p>
-          <h1 className="font-display text-[length:var(--lt-fs-h2)] font-semibold md:text-[length:var(--lt-fs-h1)]" aria-label={`Номер заказа ${o.number}`}>{o.number}</h1>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <StatusPill status={o.status} />
-            {o.statusReason ? <span className="text-muted">{REASON_LABEL[o.statusReason] ?? o.statusReason}</span> : null}
-          </div>
-        </header>
+        <StatusHero o={o} dead={dead} />
 
         {dead ? <DeadNotice o={o} /> : <Stepper steps={steps} current={idx} />}
         {!dead ? <EtaBlock o={o} tz={tz} /> : null}
@@ -72,11 +72,20 @@ export function Order() {
         {delivery && o.status !== "cancelled" ? <DeliveryBlock o={o} /> : null}
       </div>
 
-      <aside className="grid content-start gap-5 lg:sticky lg:top-4 lg:self-start">
+      <aside className="grid content-start gap-5 lg:sticky lg:top-20 lg:self-start">
         <Surface>
           <h2 className="mb-3 text-[length:var(--lt-fs-price)]">Состав</h2>
-          <ul className="grid gap-1">
-            {o.items.map((i) => <li key={`${i.menuItemId}|${i.modifierIds.join(",")}`} className="flex justify-between gap-3"><span>{i.name} × {i.quantity}</span><span className="font-medium">{formatMoney(i.lineTotal.amount, i.lineTotal.currency)}</span></li>)}
+          <ul className="grid gap-3">
+            {o.items.map((i) => (
+              <li key={`${i.menuItemId}|${i.modifierIds.join(",")}`} className="flex items-center gap-3">
+                <Thumb name={i.name} category={names.cats.get(i.menuItemId)} seed={i.menuItemId} className="size-14 shrink-0 rounded-input" />
+                <div className="min-w-0 flex-1">
+                  <p className="leading-snug">{i.name} × {i.quantity}</p>
+                  {i.modifierIds.length ? <p className="text-sm text-muted">{i.modifierIds.map((id) => names.mods.get(id)).filter(Boolean).join(", ") || `Добавок: ${i.modifierIds.length}`}</p> : null}
+                </div>
+                <span className="font-medium">{formatMoney(i.lineTotal.amount, i.lineTotal.currency)}</span>
+              </li>
+            ))}
           </ul>
           <dl className="mt-3 grid gap-1 border-t border-dashed border-ink/30 pt-3 text-sm">
             <div className="flex justify-between"><dt>Подытог</dt><dd>{formatMoney(o.subtotal.amount, o.subtotal.currency)}</dd></div>
@@ -95,13 +104,14 @@ export function Order() {
 
 function Stepper({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <ol aria-label="Этапы заказа" className="grid gap-0 rounded-card bg-white p-5">
+    <ol aria-label="Этапы заказа" className="grid rounded-card bg-white p-4 shadow-[0_1px_0_var(--lt-border)]" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
       {steps.map((s, i) => {
         const done = i < current, now = i === current;
         return (
-          <li key={s} aria-current={now ? "step" : undefined} className="flex items-center gap-3 py-2">
-            <span aria-hidden className={`grid size-7 shrink-0 place-items-center rounded-full border-2 text-sm font-bold ${done ? "border-mint bg-mint" : now ? "border-tomato bg-tomato text-white" : "border-faint text-faint"}`}>{done ? "✓" : i + 1}</span>
-            <span className={now ? "font-semibold" : done ? "" : "text-faint"}>{STATUS_LABEL[s as keyof typeof STATUS_LABEL]}</span>
+          <li key={s} aria-current={now ? "step" : undefined} className="relative flex flex-col items-center gap-1.5 text-center">
+            {i > 0 ? <span aria-hidden className={`absolute right-1/2 top-3.5 h-0.5 w-full -translate-y-1/2 ${i <= current ? "bg-ink" : "bg-ink/15"}`} /> : null}
+            <span aria-hidden className={`relative z-10 grid size-7 place-items-center rounded-full border-2 text-sm font-bold ${done ? "border-ink bg-ink text-white" : now ? "border-tomato bg-tomato text-white" : "border-ink/20 bg-white text-faint"}`}>{done ? "✓" : i + 1}</span>
+            <span className={`text-[11px] leading-tight sm:text-sm ${now ? "font-semibold" : done ? "" : "text-faint"}`}>{STATUS_LABEL[s as keyof typeof STATUS_LABEL]}</span>
           </li>
         );
       })}
@@ -109,11 +119,44 @@ function Stepper({ steps, current }: { steps: string[]; current: number }) {
   );
 }
 
+const HERO: Partial<Record<OrderT["status"], { bg: string; text: string }>> = {
+  pending_payment: { bg: "bg-lemon", text: "Осталось оплатить — иначе заказ отменится через 15 минут." },
+  accepted: { bg: "bg-white", text: "Ресторан получил заказ." },
+  cooking: { bg: "bg-white", text: "Повара уже готовят." },
+  ready: { bg: "bg-mint", text: "Можно забирать." },
+  on_delivery: { bg: "bg-tomato text-white", text: "Курьер уже едет к вам." },
+  delivered: { bg: "bg-ink text-white", text: "Приятного аппетита!" },
+  handed_over: { bg: "bg-ink text-white", text: "Приятного аппетита!" },
+  closed: { bg: "bg-ink text-white", text: "Заказ завершён." },
+};
+
+function StatusHero({ o, dead }: { o: OrderT; dead: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const h = dead ? { bg: "bg-coral/40", text: "" } : HERO[o.status] ?? { bg: "bg-white", text: "" };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(o.number); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* буфер недоступен */ }
+  };
+  return (
+    <header className={`rounded-card p-5 shadow-[0_1px_0_var(--lt-border)] ${h.bg}`}>
+      <p className="text-sm font-semibold opacity-80">Заказ</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="font-display text-[length:var(--lt-fs-h2)] font-semibold md:text-[length:var(--lt-fs-h1)]" aria-label={`Номер заказа ${o.number}`}>{o.number}</h1>
+        <button type="button" onClick={copy} className="min-h-11 rounded-full border-2 border-current px-4 text-sm font-semibold">{copied ? "Скопировано" : "Копировать"}</button>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <StatusPill status={o.status} />
+        {reasonText(o.statusReason) ? <span className="font-medium">{reasonText(o.statusReason)}</span> : null}
+      </div>
+      {h.text ? <p className="mt-2 font-medium">{h.text}</p> : null}
+    </header>
+  );
+}
+
 function DeadNotice({ o }: { o: OrderT }) {
   return (
     <Surface className="bg-coral/30">
       <h2 className="text-[length:var(--lt-fs-price)]">{o.status === "cancelled" ? "Заказ отменён" : "Заказ не получен"}</h2>
-      <p className="mt-1">{o.statusReason ? REASON_LABEL[o.statusReason] ?? o.statusReason : null}</p>
+      {reasonText(o.statusReason) ? <p className="mt-1">{reasonText(o.statusReason)}</p> : null}
       {o.refundStatus === "pending" ? <p className="mt-2 font-medium">Возврат денег выполняется.</p> : null}
       {o.refundStatus === "refunded" ? <p className="mt-2 font-medium">Деньги возвращены.</p> : null}
       {o.refundStatus === "failed" ? <p className="mt-2 font-semibold">Возврат не прошёл автоматически. Обратитесь в поддержку ресторана.</p> : null}
@@ -130,11 +173,14 @@ function EtaBlock({ o, tz }: { o: OrderT; tz?: string }) {
   const e = eta.data;
   if (!e || o.status === "pending_payment") return null;
   const mins = e.estimateMinutes;
-  const at = o.fulfillment.type === "delivery" ? e.deliveryAt ?? e.readyAt : e.readyAt;
+  const delivery = o.fulfillment.type === "delivery";
+  const at = delivery ? e.deliveryAt ?? e.readyAt : e.readyAt;
+  const enRoute = delivery && (o.status === "on_delivery" || o.status === "delivered");
+  const title = o.status === "ready" && !delivery ? "Готов — можно забирать" : enRoute ? "Прибудет" : delivery ? "Когда привезём" : "Когда будет готово";
   return (
     <Surface>
-      <h2 className="text-[length:var(--lt-fs-price)]">{o.status === "ready" ? "Готов — можно забирать" : "Когда будет готово"}</h2>
-      {o.status !== "ready" && mins !== undefined ? <p className="mt-1 text-lg font-semibold">{e.approximate ? "около " : ""}{mins} мин{at ? ` · к ${fmtTime(at, tz)}` : ""}</p> : null}
+      <h2 className="text-[length:var(--lt-fs-price)]">{title}</h2>
+      {!(o.status === "ready" && !delivery) && mins !== undefined ? <p className="mt-1 text-lg font-semibold">{e.approximate ? "около " : ""}{mins} мин{at ? ` · к ${fmtTime(at, tz)}` : ""}</p> : null}
       {o.fulfillment.type === "delivery" && !e.deliveryAt && o.delivery?.status === "failed" ? <p className="mt-1 text-muted">Курьер не найден — заберите заказ в ресторане.</p> : null}
     </Surface>
   );
@@ -156,8 +202,11 @@ function OnlinePayment({ o }: { o: OrderT }) {
   const pay = useQuery({ queryKey: ["payment", o.id, paymentId], enabled: !!paymentId && o.paymentStatus === "declined", queryFn: () => api.payments.get(o.id, paymentId!), retry: false });
 
   const keyRef = useRef<string | null>(null);
+  /* Защита от серии быстрых кликов: isPending у мутации обновляется на следующем тике. */
+  const payBusy = useRef(false);
   const start = useMutation({
     mutationFn: () => { keyRef.current ??= api.newIdempotencyKey(); return api.payments.initiate(o.id, `${window.location.origin}/orders/${o.id}`, keyRef.current); },
+    onSettled: () => { payBusy.current = false; },
     onSuccess: ({ payment }) => {
       keyRef.current = null;
       localPayments.set(o.id, payment.id);
@@ -195,7 +244,7 @@ function OnlinePayment({ o }: { o: OrderT }) {
       {methods.isError ? <Notice className="mt-3">{errorText(methods.error)}</Notice> : null}
       {err ? <Notice className="mt-3">{err.code === "PAYMENT_IN_PROGRESS" ? "Платёж уже обрабатывается. Подождите результата." : errorText(err)}</Notice> : null}
       <div className="mt-4">
-        <Button variant="accent" cta className="w-full sm:w-auto" disabled={!online?.enabled || start.isPending || o.paymentStatus === "unknown" || (o.paymentStatus === "pending" && !!paymentId)} onClick={() => start.mutate()}>
+        <Button variant="accent" cta className="w-full sm:w-auto" disabled={!online?.enabled || start.isPending || o.paymentStatus === "unknown" || (o.paymentStatus === "pending" && !!paymentId)} onClick={() => { if (payBusy.current) return; payBusy.current = true; start.mutate(); }}>
           {start.isPending ? "Переходим к оплате…" : `Оплатить ${formatMoney(o.total.amount, o.total.currency)}`}
         </Button>
         {online && !online.enabled ? <p className="mt-2 text-sm text-muted">Сейчас оплата недоступна.</p> : null}
@@ -209,7 +258,13 @@ function OnlinePayment({ o }: { o: OrderT }) {
 function PickupSlot({ o, tz }: { o: OrderT; tz?: string }) {
   const api = useApi();
   const qc = useQueryClient();
-  const [from, setFrom] = useState("");
+  // по умолчанию — через полчаса, округлено до 5 минут, в локальном формате datetime-local
+  const [from, setFrom] = useState(() => {
+    const d = new Date(Date.now() + 30 * 60_000);
+    d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  });
   const [mins, setMins] = useState(30);
   const save = useMutation({
     mutationFn: () => {
@@ -224,7 +279,7 @@ function PickupSlot({ o, tz }: { o: OrderT; tz?: string }) {
       {o.pickupSlot ? <p className="mt-1 font-semibold">Заберёте с {fmtTime(o.pickupSlot.from, tz)} до {fmtTime(o.pickupSlot.to, tz)}</p> : <p className="mt-1 text-muted">По умолчанию — как только будет готово. Можно выбрать удобный интервал.</p>}
       <form className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto_auto]" onSubmit={(e) => { e.preventDefault(); if (from) save.mutate(); }}>
         <div>
-          <label htmlFor="slot-from" className="mb-1 block text-sm font-semibold">С какого времени{tz ? ` (${tz})` : ""}</label>
+          <label htmlFor="slot-from" className="mb-1 block text-sm font-semibold">С какого времени (по вашим часам)</label>
           <input id="slot-from" type="datetime-local" required value={from} onChange={(e) => setFrom(e.target.value)} className="min-h-[var(--lt-tap)] w-full rounded-input border-2 border-ink bg-white px-3" />
         </div>
         <div>
@@ -235,6 +290,7 @@ function PickupSlot({ o, tz }: { o: OrderT; tz?: string }) {
         </div>
         <Button type="submit" variant="primary" className="self-end" disabled={save.isPending || !from}>Сохранить</Button>
       </form>
+      {tz && tz !== Intl.DateTimeFormat().resolvedOptions().timeZone ? <p className="mt-2 text-sm text-muted">Ресторан работает по времени {tz}: после сохранения покажем интервал в его часах.</p> : null}
       {save.error ? <Notice className="mt-3">{errorText(save.error)}</Notice> : null}
     </Surface>
   );

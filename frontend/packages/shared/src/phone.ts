@@ -13,8 +13,9 @@ export function normalizePhone(raw: string): string {
 export const isE164 = (v: string): boolean => E164.test(v);
 
 /** UC-ACC-02: пароль 6–72 символа, но bcrypt режет по БАЙТАМ (длинный не-ASCII даёт 500). */
-export function passwordProblem(p: string): "short" | "long" | null {
+export function passwordProblem(p: string): "short" | "long" | "blank" | null {
   if (p.length < 6) return "short";
+  if (p.trim() === "") return "blank";
   if (new TextEncoder().encode(p).length > 72) return "long";
   return null;
 }

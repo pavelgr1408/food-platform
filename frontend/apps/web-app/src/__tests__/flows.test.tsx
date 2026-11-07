@@ -126,17 +126,16 @@ describe("оформление: коды ошибок → поведение э�
     expect(await screen.findByText(/Выбрано: самовывоз/)).toBeInTheDocument();
   });
 
-  it("DELIVERY_NOT_AVAILABLE для ресторана без доставки", async () => {
+  it("ресторан без доставки: пункт «Доставка» отключён с пояснением (B-06)", async () => {
     const u = userEvent.setup();
     renderApp(`/r/${R2}`);
-    await u.click(await screen.findByRole("button", { name: "Выбрать «Сэндвич»" }));
-    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await u.click(await screen.findByRole("button", { name: "Добавить «Сэндвич»" }));
     await screen.findByText(/в корзине/);
     await u.click(screen.getByRole("button", { name: "Корзина" }));
-    await u.click(await screen.findByRole("radio", { name: "Доставка" }));
-    await u.type(screen.getByLabelText("Адрес"), "Любой");
-    await u.click(screen.getByRole("button", { name: "Доставить сюда" }));
-    expect(await screen.findByText(/не доставляет/)).toBeInTheDocument();
+    const delivery = await screen.findByRole("radio", { name: "Доставка" });
+    await waitFor(() => expect(delivery).toBeDisabled());
+    expect(screen.getByText(/не доставляет — только самовывоз/)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Самовывоз" })).toBeEnabled();
   });
 
   it("PRICE_CHANGED: диалог «Цены обновились», подтверждение создаёт заказ с новым ключом", async () => {
@@ -158,8 +157,7 @@ describe("оформление: коды ошибок → поведение э�
   it("RESTAURANT_CLOSED (409): заказ не создан, корзина цела", async () => {
     const u = userEvent.setup();
     renderApp(`/r/${R2}`);
-    await u.click(await screen.findByRole("button", { name: "Выбрать «Сэндвич»" }));
-    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await u.click(await screen.findByRole("button", { name: "Добавить «Сэндвич»" }));
     await screen.findByText(/в корзине/);
     await u.click(screen.getByRole("button", { name: "Корзина" }));
     await u.click(await screen.findByRole("radio", { name: "Самовывоз" }));

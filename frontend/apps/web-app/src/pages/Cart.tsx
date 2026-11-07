@@ -1,39 +1,52 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isApiError, type ApiError, type Cart as CartT, type PaymentMethodType, type UnavailableItem } from "@fp/api";
 import { formatMoney, isE164, normalizePhone } from "@fp/shared";
 import { useApi } from "../app/api-context";
 import { useAuth } from "../app/auth";
-import { Button, Empty, Field, Notice, Price, Spinner, Surface } from "../components/ui";
+import { Button, Empty, Field, Notice, Price, QtyStepper, Skeleton, Surface } from "../components/ui";
+import { Thumb } from "../components/art";
 import { Modal } from "../components/Modal";
 import { MapPicker, type LatLon } from "../components/LazyMap";
-import { toInputs, useCart } from "../lib/cart";
+import { lineKey, toInputs, useCart } from "../lib/cart";
 import { errorText } from "../lib/errors";
 import { localContact, localOrders } from "../lib/local";
 
 const PAY_LABEL: Record<PaymentMethodType, string> = { online_card: "Картой онлайн", pos: "На кассе", courier_card: "Картой курьеру" };
+const PAY_DESC: Record<PaymentMethodType, string> = { online_card: "На странице банка", pos: "Оплатите при получении", courier_card: "Курьер возьмёт терминал" };
 const PAY_BY: Record<"pickup" | "delivery", PaymentMethodType[]> = { pickup: ["online_card", "pos"], delivery: ["online_card", "courier_card"] };
 
 /** Корзина, получение, контакты и оформление: UC-CRT-05…09, UC-FUL-01…04, UC-ORD-01…09. */
 export function Cart() {
+  const api = useApi();
   const nav = useNavigate();
   const auth = useAuth();
   const c = useCart();
   const cart = c.cart;
 
   const [note, setNote] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  // названия добавок и категории для картинок: корзина хранит только modifierIds
+  const menu = useQuery({ queryKey: ["menu", c.restaurantId], queryFn: () => api.restaurants.menu(c.restaurantId!), enabled: !!c.restaurantId, retry: false, staleTime: 5 * 60_000 });
+  const rest = useQuery({ queryKey: ["restaurant", c.restaurantId], queryFn: () => api.restaurants.get(c.restaurantId!), enabled: !!c.restaurantId, retry: false, staleTime: 5 * 60_000 });
+  const lookup = useMemo(() => {
+    const mods = new Map<string, string>(), cats = new Map<string, string>();
+    for (const cat of menu.data?.categories ?? []) for (const it of cat.items) { cats.set(it.id, cat.name); for (const m of it.modifiers) mods.set(m.id, m.name); }
+    return { mods, cats };
+  }, [menu.data]);
 
   const lines = useMutation({
-    mutationFn: (next: ReturnType<typeof toInputs>) => c.setLines(c.cartId!, next),
+    mutationFn: (fn: (cur: ReturnType<typeof toInputs>) => ReturnType<typeof toInputs>) => c.update(c.restaurantId!, fn),
     onError: (e) => { if (isApiError(e) && e.code === "ITEMS_UNAVAILABLE") setNote(`Убрали недоступных позиций: ${((e.extra.unavailableItems as unknown[]) ?? []).length}`); },
     onSuccess: () => setNote(null),
   });
 
-  if (c.isLoading) return <Spinner label="Загружаем корзину…" />;
+  if (c.isLoading) return <div role="status" aria-label="Загружаем корзину" className="grid gap-4"><Skeleton className="h-40 rounded-card" /><Skeleton className="h-48 rounded-card" /></div>;
   if (!c.cartId || !cart) {
     return (
-      <Empty title="Корзина пуста">
+      <Empty page title="Корзина пуста">
         <p>Выберите ресторан и добавьте блюда.</p>
         <Link to="/" className="mt-3 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">К ресторанам</Link>
       </Empty>
@@ -42,7 +55,7 @@ export function Cart() {
   // UC-CRT-09: корзина уже оформлена — ведём к заказу
   if (cart.status === "ordered") {
     return (
-      <Empty title="Эта корзина уже оформлена">
+      <Empty page title="Эта корзина уже оформлена">
         {cart.orderId ? <Link to={`/orders/${cart.orderId}`} className="mt-1 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">Открыть заказ</Link> : null}
         <div className="mt-3"><Button variant="outline" onClick={() => c.startNew()}>Начать новую корзину</Button></div>
       </Empty>
@@ -50,57 +63,78 @@ export function Cart() {
   }
   if (cart.items.length === 0) {
     return (
-      <Empty title="Корзина пуста">
+      <Empty page title="Корзина пуста">
         <Link to={`/r/${cart.restaurantId}`} className="mt-1 inline-block rounded-full bg-lemon px-6 py-3 font-semibold text-ink">Вернуться в меню</Link>
       </Empty>
     );
   }
 
-  const change = (idx: number, delta: number) => {
-    const next = toInputs(cart);
-    const cur = next[idx]!;
-    const q = cur.quantity + delta;
-    if (q <= 0) next.splice(idx, 1); else next[idx] = { ...cur, quantity: Math.min(99, q) };
-    lines.mutate(next);
-  };
+  /** Изменения идут по ключу позиции, а не по индексу: пока летит прошлый запрос, индексы уже устарели. */
+  const change = (it: CartT["items"][number], delta: number) => lines.mutate((cur) => {
+    const key = lineKey(it);
+    return cur.flatMap((l) => {
+      if (lineKey(l) !== key) return [l];
+      const q = Math.min(99, l.quantity + delta);
+      return q > 0 ? [{ ...l, quantity: q }] : [];
+    });
+  });
   const unavailable = cart.items.filter((i) => !i.available);
 
   return (
     <div className="lt-rise grid gap-5 lg:grid-cols-[1fr_380px]">
       <div className="grid content-start gap-5">
-        <h1 className="text-[length:var(--lt-fs-h2)] md:text-[length:var(--lt-fs-h1)]">Корзина</h1>
+        <header>
+          <h1 className="text-[length:var(--lt-fs-h2)] md:text-[length:var(--lt-fs-h1)]">Корзина</h1>
+          {rest.data ? <p className="mt-1 text-muted">Заказ из <Link to={`/r/${rest.data.id}`} className="font-semibold underline">{rest.data.name}</Link></p> : null}
+        </header>
         {note ? <Notice tone="info">{note}</Notice> : null}
         {lines.error && !(isApiError(lines.error) && lines.error.code === "ITEMS_UNAVAILABLE") ? <Notice>{errorText(lines.error)}</Notice> : null}
 
         <Surface>
-          <ul className="divide-y divide-dashed divide-ink/30">
-            {cart.items.map((it, idx) => (
-              <li key={`${it.menuItemId}|${it.modifierIds.join(",")}`} className={`flex flex-wrap items-center justify-between gap-3 py-3 ${it.available ? "" : "opacity-60"}`}>
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold">{it.name}</p>
-                  {it.modifierIds.length ? <p className="text-sm text-muted">Добавки: {it.modifierIds.length}</p> : null}
-                  {!it.available ? <p className="text-sm font-semibold text-tomato">Нет в наличии</p> : null}
-                  <p className="text-sm text-muted">{formatMoney(it.unitPrice.amount, it.unitPrice.currency)} × {it.quantity}</p>
+          <ul className="divide-y divide-dashed divide-ink/20">
+            {cart.items.map((it) => (
+              <li key={lineKey(it)} className={`flex gap-3 py-3 first:pt-0 last:pb-0 ${it.available ? "" : "opacity-60"}`}>
+                <Thumb name={it.name} category={lookup.cats.get(it.menuItemId)} seed={it.menuItemId} className="size-20 shrink-0 rounded-tile" />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold leading-snug">{it.name}</p>
+                      {it.modifierIds.length ? (
+                        <p className="text-sm text-muted">{it.modifierIds.map((id) => lookup.mods.get(id)).filter(Boolean).join(", ") || `Добавок: ${it.modifierIds.length}`}</p>
+                      ) : null}
+                      {!it.available ? <p className="text-sm font-semibold text-tomato">Нет в наличии</p> : null}
+                    </div>
+                    <Price money={it.lineTotal} />
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <QtyStepper size="sm" label={it.name} value={it.quantity} onDec={() => change(it, -1)} onInc={() => change(it, 1)} />
+                    <button type="button" onClick={() => change(it, -it.quantity)} aria-label={`Убрать «${it.name}»`} className="min-h-11 rounded-full px-3 text-sm font-semibold text-muted underline hover:text-ink">Убрать</button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" aria-label={`Меньше: ${it.name}`} onClick={() => change(idx, -1)} disabled={lines.isPending} className="!px-0 min-w-[var(--lt-tap)]">−</Button>
-                  <output className="w-7 text-center font-display font-semibold">{it.quantity}</output>
-                  <Button variant="outline" aria-label={`Больше: ${it.name}`} onClick={() => change(idx, 1)} disabled={lines.isPending || it.quantity >= 99} className="!px-0 min-w-[var(--lt-tap)]">+</Button>
-                </div>
-                <Price money={it.lineTotal} />
               </li>
             ))}
           </ul>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-dashed border-ink/20 pt-3">
             {unavailable.length > 0 ? (
-              <Button variant="accent" disabled={lines.isPending} onClick={() => lines.mutate(toInputs({ ...cart, items: cart.items.filter((i) => i.available) }))}>Удалить недоступные</Button>
+              <Button variant="accent" disabled={lines.isPending} onClick={() => lines.mutate((cur) => cur.filter((l) => !unavailable.some((u) => u.menuItemId === l.menuItemId)))}>Удалить недоступные</Button>
             ) : null}
-            <Button variant="ghost" disabled={lines.isPending} onClick={() => lines.mutate([])}>Очистить</Button>
+            <Link to={`/r/${cart.restaurantId}`} className="inline-flex min-h-[var(--lt-tap)] items-center rounded-full border-2 border-ink px-5 font-semibold hover:bg-ink/5">Добавить ещё</Link>
+            <Button variant="ghost" disabled={lines.isPending} onClick={() => setConfirmClear(true)}>Очистить</Button>
           </div>
         </Surface>
 
-        <FulfillmentSection cart={cart} onSaved={(next) => c.refetch().then(() => next)} />
-        <Checkout cart={cart} isAuthed={auth.status === "user"} defaultPhone={auth.principal?.phone} onUnavailable={(items) => lines.mutate(toInputs({ ...cart, items: cart.items.filter((i) => !items.some((u) => u.menuItemId === i.menuItemId)) }))}
+        {confirmClear ? (
+          <Modal title="Очистить корзину?" onClose={() => setConfirmClear(false)}>
+            <p className="text-muted">Все блюда будут удалены из корзины.</p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button variant="primary" onClick={() => { setConfirmClear(false); lines.mutate(() => []); }}>Очистить</Button>
+              <Button variant="outline" onClick={() => setConfirmClear(false)}>Оставить</Button>
+            </div>
+          </Modal>
+        ) : null}
+
+        <FulfillmentSection cart={cart} deliveryEnabled={rest.data?.deliveryEnabled} onSaved={(next) => c.refetch().then(() => next)} />
+        <Checkout cart={cart} isAuthed={auth.status === "user"} defaultPhone={auth.principal?.phone} onUnavailable={(items) => lines.mutate((cur) => cur.filter((l) => !items.some((u) => u.menuItemId === l.menuItemId)))}
           onDone={(order) => {
             localOrders.add({ id: order.id, number: order.number, restaurantId: order.restaurantId, createdAt: order.createdAt, totalAmount: order.total.amount, currency: order.total.currency });
             c.forget();
@@ -108,7 +142,7 @@ export function Cart() {
           }} />
       </div>
 
-      <aside className="lg:sticky lg:top-4 lg:self-start">
+      <aside className="lg:sticky lg:top-20 lg:self-start">
         <Surface>
           <h2 className="mb-3 text-[length:var(--lt-fs-price)]">Итого</h2>
           <dl className="grid gap-1 border-b border-dashed border-ink/30 pb-3">
@@ -116,7 +150,7 @@ export function Cart() {
             {cart.appliedPromotions.map((p) => (
               <Row key={p.promotionId ?? p.title} k={`Акция: ${p.title ?? ""}`} v={p.discount ? `−${formatMoney(p.discount.amount, p.discount.currency)}` : ""} />
             ))}
-            {cart.discountTotal.amount > 0 ? <Row k="Скидка" v={`−${formatMoney(cart.discountTotal.amount, cart.discountTotal.currency)}`} /> : null}
+            {cart.discountTotal.amount > 0 && cart.appliedPromotions.length === 0 ? <Row k="Скидка" v={`−${formatMoney(cart.discountTotal.amount, cart.discountTotal.currency)}`} /> : null}
           </dl>
           <p className="mt-3 flex items-center justify-between"><span className="font-semibold">К оплате</span><Price money={cart.total} big /></p>
           <p className="mt-2 text-xs text-muted">Цены и скидки пересчитывает сервер при каждом открытии корзины.</p>
@@ -129,7 +163,7 @@ export function Cart() {
 const Row = ({ k, v }: { k: string; v: string }) => <div className="flex justify-between gap-3"><dt>{k}</dt><dd className="font-medium">{v}</dd></div>;
 
 /* ---------------- Получение: самовывоз / доставка ---------------- */
-function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT) => void }) {
+function FulfillmentSection({ cart, onSaved, deliveryEnabled }: { cart: CartT; onSaved: (c: CartT) => void; deliveryEnabled?: boolean }) {
   const api = useApi();
   const cur = cart.fulfillment;
   // ничего не выбрано, пока сервер не знает способ получения: иначе повторный клик по «Самовывоз» не вызовет onChange
@@ -139,6 +173,8 @@ function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT
   // координаты вводятся строкой: иначе «56.» превращается в 56 и точку нельзя набрать
   const [latS, setLatS] = useState(pin ? String(pin.lat) : "");
   const [lonS, setLonS] = useState(pin ? String(pin.lon) : "");
+  const [locating, setLocating] = useState(false);
+  const [geoErr, setGeoErr] = useState<string | null>(null);
   const setPinFromMap = (p: LatLon) => { setPin(p); setLatS(String(p.lat)); setLonS(String(p.lon)); };
   const typeCoord = (which: "lat" | "lon", v: string) => {
     const nl = which === "lat" ? v : latS, no = which === "lon" ? v : lonS;
@@ -157,15 +193,29 @@ function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT
   const choosePickup = () => { setType("pickup"); save.mutate({ type: "pickup" }); };
   return (
     <Surface>
-      <h2 className="mb-3 text-[length:var(--lt-fs-price)]">Получение</h2>
-      <div role="radiogroup" aria-label="Способ получения" className="mb-3 flex flex-wrap gap-2">
-        <Radio checked={type === "pickup"} onChange={choosePickup} label="Самовывоз" />
-        <Radio checked={type === "delivery"} onChange={() => setType("delivery")} label="Доставка" />
+      <StepTitle n={1}>Получение</StepTitle>
+      <div role="radiogroup" aria-label="Способ получения" className="mb-3 flex flex-col gap-2 sm:flex-row">
+        <Radio name="fulfillment" value="pickup" checked={type === "pickup"} onChange={choosePickup} label="Самовывоз" desc="Заберёте сами в ресторане" />
+        <Radio name="fulfillment" value="delivery" checked={type === "delivery"} onChange={() => setType("delivery")} label="Доставка"
+          desc={deliveryEnabled === false ? "Этот ресторан не доставляет — только самовывоз" : "Привезёт курьер"} disabled={deliveryEnabled === false} />
       </div>
       {type === "delivery" ? (
         <div className="grid gap-3">
           <Field label="Адрес" value={raw} maxLength={300} onChange={(e) => setRaw(e.target.value)} placeholder="улица, дом, квартира, подъезд, этаж"
             hint="Подъезд, этаж, домофон и комментарий курьеру пока пишите в эту же строку." error={err?.code === "ADDRESS_REQUIRED" ? errorText(err) : null} />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" disabled={locating} onClick={() => {
+              if (!navigator.geolocation) return setGeoErr("Браузер не поддерживает геолокацию.");
+              setGeoErr(null); setLocating(true);
+              navigator.geolocation.getCurrentPosition(
+                (p) => { setLocating(false); setPinFromMap({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6) }); },
+                () => { setLocating(false); setGeoErr("Не удалось определить местоположение. Поставьте точку на карте."); },
+                { timeout: 8000 },
+              );
+            }}>{locating ? "Определяем…" : "Моё местоположение"}</Button>
+            <span className="text-sm text-muted">или нажмите на карту</span>
+          </div>
+          {geoErr ? <Notice tone="info">{geoErr}</Notice> : null}
           <MapPicker label="Карта доставки. Нажмите, чтобы поставить точку" value={pin} onChange={setPinFromMap} />
           <div className="grid grid-cols-2 gap-3">
             <Field label="Широта" inputMode="decimal" value={latS} onChange={(e) => typeCoord("lat", e.target.value)} />
@@ -189,11 +239,24 @@ function FulfillmentSection({ cart, onSaved }: { cart: CartT; onSaved: (c: CartT
   );
 }
 
-function Radio({ checked, onChange, label }: { checked: boolean; onChange: () => void; label: string }) {
+function StepTitle({ n, children }: { n: number; children: React.ReactNode }) {
   return (
-    <label className={`inline-flex min-h-[var(--lt-tap)] cursor-pointer items-center gap-2 rounded-full border-2 border-ink px-5 font-semibold ${checked ? "bg-ink text-white" : ""}`}>
-      <input type="radio" className="sr-only" checked={checked} onChange={onChange} />
-      {label}
+    <h2 className="mb-3 flex items-center gap-3 text-[length:var(--lt-fs-price)]">
+      <span aria-hidden className="grid size-8 place-items-center rounded-full bg-ink text-sm text-white">{n}</span>{children}
+    </h2>
+  );
+}
+
+function Radio({ checked, onChange, label, desc, name, value, disabled }: { checked: boolean; onChange: () => void; label: string; desc?: string; name: string; value: string; disabled?: boolean }) {
+  const id = useId();
+  return (
+    <label className={`flex min-h-[var(--lt-tap)] flex-1 ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"} items-center gap-3 rounded-input border-2 px-4 py-2 has-[:focus-visible]:outline has-[:focus-visible]:outline-[3px] has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-ink ${checked ? "border-ink bg-lemon/30" : "border-ink/25 hover:border-ink"}`}>
+      <input type="radio" className="sr-only" name={name} value={value} disabled={disabled} checked={checked} onChange={onChange} aria-labelledby={`${id}-t`} aria-describedby={desc ? `${id}-d` : undefined} />
+      <span aria-hidden className={`grid size-6 shrink-0 place-items-center rounded-full border-2 border-ink ${checked ? "bg-ink" : "bg-white"}`}>{checked ? <span className="size-2 rounded-full bg-lemon" /> : null}</span>
+      <span>
+        <span id={`${id}-t`} className="block font-semibold">{label}</span>
+        {desc ? <span id={`${id}-d`} className="block text-sm text-muted">{desc}</span> : null}
+      </span>
     </label>
   );
 }
@@ -218,7 +281,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
   useEffect(() => { setMethod((m) => (m && allowed.includes(m) ? m : null)); }, [fType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const normPhone = normalizePhone(phone);
-  const phoneErr = phone && !isE164(normPhone) ? "Формат: +79991234567" : !phone && !isAuthed ? null : null;
+  const phoneErr = phone && !isE164(normPhone) ? "Формат: +79991234567" : null;
   const emailErr = email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? "Проверьте адрес почты" : null;
 
   /** Idempotency-Key живёт для одного и того же запроса; после любого 4xx или смены тела нужен новый (UC-ORD-08). */
@@ -231,7 +294,9 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
   const sig = JSON.stringify(body);
   const [dialog, setDialog] = useState<null | { kind: "price" | "total" | "items"; was?: number; items?: UnavailableItem[] }>(null);
 
+  const placeBusy = useRef(false); // серия быстрых кликов: isPending обновляется на следующем тике
   const place = useMutation({
+    onSettled: () => { placeBusy.current = false; },
     mutationFn: async () => {
       if (!keyRef.current || keyRef.current.sig !== sig) keyRef.current = { key: api.newIdempotencyKey(), sig };
       return api.orders.create(body, keyRef.current.key);
@@ -259,9 +324,9 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
   return (
     <>
       <Surface>
-        <h2 className="mb-3 text-[length:var(--lt-fs-price)]">Контакты</h2>
+        <StepTitle n={2}>Контакты</StepTitle>
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label={isAuthed ? "Телефон" : "Телефон (обязательно)"} type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+          <Field label={isAuthed ? "Телефон" : "Телефон (обязательно)"} type="tel" inputMode="tel" autoComplete="tel" aria-required={!isAuthed || undefined} value={phone} onChange={(e) => setPhone(e.target.value)}
             onBlur={() => setPhone(normalizePhone(phone))} error={phoneErr ?? (error?.code === "CONTACT_REQUIRED" ? errorText(error) : null)} placeholder="+7 999 123-45-67" />
           <Field label="Имя" autoComplete="name" maxLength={100} value={name} onChange={(e) => setName(e.target.value)} hint="Необязательно" />
           <Field label="Почта" type="email" autoComplete="email" maxLength={254} value={email} onChange={(e) => setEmail(e.target.value)} error={emailErr} hint="Необязательно. Письма пока не отправляем." className="md:col-span-2" />
@@ -269,20 +334,22 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
       </Surface>
 
       <Surface>
-        <h2 className="mb-3 text-[length:var(--lt-fs-price)]">Оплата</h2>
+        <StepTitle n={3}>Оплата</StepTitle>
         {!fType ? <p className="text-muted">Сначала выберите способ получения.</p> : (
-          <div role="radiogroup" aria-label="Способ оплаты" className="flex flex-wrap gap-2">
-            {allowed.map((m) => <Radio key={m} checked={method === m} onChange={() => setMethod(m)} label={PAY_LABEL[m]} />)}
+          <div role="radiogroup" aria-label="Способ оплаты" className="flex flex-col gap-2 sm:flex-row">
+            {allowed.map((m) => <Radio key={m} name="payment" value={m} checked={method === m} onChange={() => setMethod(m)} label={PAY_LABEL[m]} desc={PAY_DESC[m]} />)}
           </div>
         )}
         <p className="mt-2 text-xs text-muted">Способ оплаты нельзя изменить после оформления. Наличных курьеру нет.</p>
       </Surface>
 
       {error && !dialog ? <Notice>{errorText(error)}{error.code === "IDEMPOTENCY_IN_PROGRESS" ? " Нажмите ещё раз через пару секунд." : ""}</Notice> : null}
-      {missing ? <p className="text-sm text-muted" role="status">{missing}</p> : null}
-      <Button variant="accent" cta className="w-full" disabled={!ready || place.isPending} onClick={() => place.mutate()}>
-        {place.isPending ? "Оформляем…" : `Оформить заказ · ${formatMoney(cart.total.amount, cart.total.currency)}`}
-      </Button>
+      <div className="sticky bottom-[68px] z-20 -mx-4 grid gap-1 bg-paper/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
+        {missing ? <p className="text-center text-sm text-muted" role="status">{missing}</p> : null}
+        <Button variant="accent" cta className="w-full" disabled={!ready || place.isPending} onClick={() => { if (placeBusy.current) return; placeBusy.current = true; place.mutate(); }}>
+          {place.isPending ? "Оформляем…" : `Оформить заказ · ${formatMoney(cart.total.amount, cart.total.currency)}`}
+        </Button>
+      </div>
 
       {dialog?.kind === "price" || dialog?.kind === "total" ? (
         <Modal title={dialog.kind === "price" ? "Цены обновились" : "Итог изменился"} onClose={() => setDialog(null)}>
@@ -291,7 +358,7 @@ function Checkout({ cart, isAuthed, defaultPhone, onDone, onUnavailable }: {
             Новая сумма заказа — <strong>{formatMoney(cart.total.amount, cart.total.currency)}</strong>. Заказ ещё не создан.
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Button variant="accent" onClick={() => { setDialog(null); place.mutate(); }}>Подтвердить</Button>
+            <Button variant="accent" onClick={() => { setDialog(null); if (placeBusy.current) return; placeBusy.current = true; place.mutate(); }}>Подтвердить</Button>
             <Button variant="outline" onClick={() => setDialog(null)}>Вернуться</Button>
           </div>
         </Modal>

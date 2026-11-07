@@ -102,6 +102,11 @@ export interface components {
             distanceMeters?: number;
             /** Format: uuid */
             id: string;
+            /**
+             * Format: uri
+             * @description Фото ресторана (HTTPS, необязательно). Поле запланировано: пока сервис его не отдаёт, клиент рисует иллюстрацию по названию. Загрузка и хранение фото — отдельная задача.
+             */
+            imageUrl?: string;
             location: components["schemas"]["GeoPoint"];
             name: string;
             openNow: boolean;

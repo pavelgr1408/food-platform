@@ -19,9 +19,11 @@ export function Profile() {
     <div className="lt-rise grid max-w-xl gap-5">
       <PageTitle>Профиль</PageTitle>
       <Surface>
-        <dl className="grid gap-2">
-          <div className="flex justify-between gap-3"><dt className="text-muted">Телефон</dt><dd className="font-semibold">{p.phone}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-muted">Роли</dt><dd className="font-semibold">{p.roles.map((r) => ROLE[r] ?? r).join(", ")}</dd></div>
+        <div className="mb-4 flex items-center gap-4">
+          <span aria-hidden className="grid size-16 place-items-center rounded-full bg-lemon font-display text-2xl font-semibold">{p.phone.slice(-2)}</span>
+          <div><p className="font-display font-semibold">{p.phone}</p><p className="text-sm text-muted">{p.roles.map((r) => ROLE[r] ?? r).join(", ")}</p></div>
+        </div>
+        <dl className="grid gap-2 border-t border-dashed border-ink/20 pt-3">
           <div className="flex justify-between gap-3"><dt className="text-muted">Статус</dt><dd className="font-semibold">{p.status === "ACTIVE" ? "Активен" : p.status}</dd></div>
         </dl>
         {auth.isStaff ? <Notice tone="info" className="mt-4">Это рабочий аккаунт. Кассу, оформление по факсу и акции откроет отдельное приложение для сотрудников — оно будет следующим этапом.</Notice> : null}

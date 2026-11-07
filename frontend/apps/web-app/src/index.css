@@ -27,5 +27,5 @@ body { font-family: var(--lt-font-body); font-size: var(--lt-fs-body); min-heigh
 h1, h2, h3 { font-family: var(--lt-font-display); font-weight: 600; letter-spacing: -0.01em; }
 
 @keyframes lt-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-.lt-rise { animation: lt-rise var(--lt-dur) var(--lt-ease) both; }
+.lt-rise { animation: lt-rise var(--lt-dur) var(--lt-ease) backwards; }
 @media (prefers-reduced-motion: reduce) { .lt-rise { animation: none; } }
