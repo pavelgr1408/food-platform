@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/payment`, порт `8085`, БД `payment` (Postgres) |
-| Контракт | `contracts/openapi/payment.yaml` v1.4.0; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракт | `contracts/openapi/payment.yaml` v1.4.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | потребляет `orders.state`, `orders.status`; публикует `orders.payments.status`, `orders.payments.link` |
 | Внешние системы | платёжный шлюз (эквайринг), кассовая система (POS); в dev обе — `tools/mock-externals` |
 | Идемпотентность | `Idempotency-Key` на `POST /orders/{id}/payments` и `/payments/pos` (`pkg/idempotency`); вебхуки — по `eventId` |
@@ -79,7 +79,7 @@ flowchart LR
 
 **Тела**
 
-- `initiatePayment`: `{method: online_card|courier_card|pos, returnUrl?}`. `returnUrl` — абсолютный `http(s)`; по умолчанию `DEFAULT_RETURN_URL`.
+- `initiatePayment`: `{method: online_card|courier_card|pos, returnUrl?}`. `returnUrl` — абсолютный `http(s)` без userinfo, origin входит в `ALLOWED_RETURN_ORIGINS` (плюс origin `DEFAULT_RETURN_URL`), иначе `400 INVALID_PARAMETER`; по умолчанию `DEFAULT_RETURN_URL`.
 - `initiatePosPayment`: `{tender: card|cash}`.
 - `Payment` (ответ): `id, orderId, method, status, amount{amount,currency}, attempt, paymentUrl?, declineReason?, tender?, fiscalData?, refund{status,requestedAt,refundedAt,reason}?, paidAt?, createdAt, updatedAt`.
 - Вебхук (`PaymentStatusCallback`): `eventId, orderId, paymentId, status (paid|declined), externalRef?, reason?, amount{amount,currency}?, fiscalData?`.
@@ -103,7 +103,7 @@ flowchart LR
 
 ## 3. Контракты
 
-**OpenAPI** `payment.yaml` v1.4.0: все 6 операций помечены `x-status: implemented`. Схема `PaymentConflictProblem` расширяет problem+json полем `paymentId`.
+**OpenAPI** `payment.yaml` v1.4.1: все 6 операций помечены `x-status: implemented`. Схема `PaymentConflictProblem` расширяет problem+json полем `paymentId`.
 
 **Подпись вебхуков** (`pkg/webhook`): заголовок `X-Signature`, HMAC-SHA256 от тела с меткой времени; окно допустимого расхождения/replay — 5 минут (`DefaultTolerance`). Секреты раздельные: `GATEWAY_WEBHOOK_SECRET`, `POS_WEBHOOK_SECRET`. Пустой секрет отключает приём (`503 WEBHOOK_DISABLED`).
 
@@ -132,7 +132,8 @@ flowchart LR
 | `COURIER_PAYMENT_TTL` | 4h | то же для оплаты курьеру |
 | `RECONCILE_BACKOFF_MIN` / `_MAX` | 5s / 5m | backoff опроса и повтора возврата |
 | `RECONCILE_INTERVAL` | 2s | период циклов reconciler и возвратов |
-| `DEFAULT_RETURN_URL` | `http://localhost:3000/orders` | возврат со страницы шлюза |
+| `DEFAULT_RETURN_URL` | dev: `http://localhost:3000/orders`; вне dev обязателен, https | возврат со страницы шлюза |
+| `ALLOWED_RETURN_ORIGINS` | dev: `http://localhost:3000`; вне dev обязателен | список origin'ов (`https://host[:port]`, через запятую) для `returnUrl`; без путей и подстановок, вне dev только https, `DEFAULT_RETURN_URL` обязан входить |
 | `KAFKA_BROKERS`, `AUTH_MODE`, `AUTH_JWKS_URL`… | — | общие |
 
 Внутренние (не в env): `PollLease` 30 с, `ReconcileBatch` 20.

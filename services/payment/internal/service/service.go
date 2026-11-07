@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,7 @@ import (
 	"github.com/pavelgr1408/food-platform/pkg/httpx"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/domain"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/gateway"
+	"github.com/pavelgr1408/food-platform/services/payment/internal/returnurl"
 	"github.com/pavelgr1408/food-platform/services/payment/internal/store"
 )
 
@@ -35,6 +37,9 @@ type Config struct {
 	PollLease        time.Duration // «аренда» платежа reconciler-ом на время вызова шлюза
 	ReconcileBatch   int
 	DefaultReturnURL string
+	// AllowedReturnOrigins — origin'ы, на которые можно вернуть клиента после оплаты (scheme://host[:port]).
+	// Origin DefaultReturnURL разрешён всегда. Всё остальное → 400 INVALID_PARAMETER (ТД-QA-1, долг №91).
+	AllowedReturnOrigins []string
 }
 
 func (c *Config) defaults() {
@@ -81,6 +86,7 @@ type Service struct {
 	now   func() time.Time
 	m     *Metrics
 	cfg   Config
+	ret   returnurl.Allowed
 }
 
 // New создаёт сервис.
@@ -96,7 +102,28 @@ func New(d Deps) *Service {
 	if s.m == nil {
 		s.m = NewMetrics()
 	}
+	// Недопустимые origin'ы отбрасываются (множество только сужается — fail-closed); config.Load их отвергает при старте.
+	s.ret = returnurl.Allowed{}
+	for _, o := range append([]string{d.Config.DefaultReturnURL}, d.Config.AllowedReturnOrigins...) {
+		a, err := returnurl.NewAllowed(originOf(o))
+		if err != nil {
+			s.log.Warn("ignored invalid return origin", "origin", o, "error", err)
+			continue
+		}
+		for k := range a {
+			s.ret[k] = struct{}{}
+		}
+	}
 	return s
+}
+
+// originOf отбрасывает путь/запрос из полного URL, оставляя scheme://host[:port] (для DEFAULT_RETURN_URL).
+func originOf(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return raw
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // gwFor — шлюз способа оплаты: касса для pos, эквайринг для остальных. nil — не настроен.

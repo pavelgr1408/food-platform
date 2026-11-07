@@ -17,6 +17,9 @@ env:
   GATEWAY_TIMEOUT: 5s
   WEBHOOK_WAIT: 30s
   PENDING_EXPIRY: 10m
+  # Вне APP_ENV=dev обязательны (https): DEFAULT_RETURN_URL и ALLOWED_RETURN_ORIGINS — адреса фронтенда.
+  # DEFAULT_RETURN_URL: https://app.example.com/orders
+  # ALLOWED_RETURN_ORIGINS: https://app.example.com
 existingSecret: payment-secrets # ключи: DATABASE_URL, GATEWAY_API_KEY, GATEWAY_WEBHOOK_SECRET, POS_API_KEY, POS_WEBHOOK_SECRET
 migrations:
   enabled: true # Job `payment-service --migrate-only` (pre-install/pre-upgrade hook)

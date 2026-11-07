@@ -2401,6 +2401,116 @@
           ]
         },
         {
+          "name": "n: returnUrl чужого домена → 400 INVALID_PARAMETER (ТД-QA-1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\",\n  \"returnUrl\": \"https://evil.example/back\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_PARAMETER', () => pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "n: returnUrl с userinfo-обходом → 400 (ТД-QA-1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{payKey}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{nOrder}}/payments",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"method\": \"online_card\",\n  \"returnUrl\": \"https://localhost:3000@evil.example/\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('payKey', 'newman-' + Date.now() + '-' + Math.random().toString(36).slice(2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_PARAMETER', () => pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "n: битый JSON → 400",
           "request": {
             "method": "POST",

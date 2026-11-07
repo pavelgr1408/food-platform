@@ -4,10 +4,12 @@ package config
 import (
 	"errors"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pavelgr1408/food-platform/pkg/authclient"
 	"github.com/pavelgr1408/food-platform/pkg/config"
+	"github.com/pavelgr1408/food-platform/services/payment/internal/returnurl"
 )
 
 // Dev-значения секретов: только для APP_ENV=dev. В остальных окружениях секреты обязательны.
@@ -41,6 +43,8 @@ type Config struct {
 	PollMin, PollMax  time.Duration // backoff сверки
 	ReconcileInterval time.Duration
 	DefaultReturnURL  string
+	// AllowedReturnOrigins — origin'ы фронта, на которые можно вернуть клиента после оплаты (ТД-QA-1).
+	AllowedReturnOrigins []string
 }
 
 // Load читает окружение; возвращает все найденные ошибки разом.
@@ -58,9 +62,15 @@ func Load() (Config, error) {
 		PollMin:           r.Duration("RECONCILE_BACKOFF_MIN", 5*time.Second),
 		PollMax:           r.Duration("RECONCILE_BACKOFF_MAX", 5*time.Minute),
 		ReconcileInterval: r.Duration("RECONCILE_INTERVAL", 2*time.Second),
-		DefaultReturnURL:  r.String("DEFAULT_RETURN_URL", "http://localhost:3000/orders"),
 	}
 	dev := c.Env == "dev"
+	if dev {
+		c.DefaultReturnURL = r.String("DEFAULT_RETURN_URL", "http://localhost:3000/orders")
+		c.AllowedReturnOrigins = r.List("ALLOWED_RETURN_ORIGINS", []string{"http://localhost:3000"})
+	} else {
+		c.DefaultReturnURL = r.Required("DEFAULT_RETURN_URL")
+		c.AllowedReturnOrigins = r.List("ALLOWED_RETURN_ORIGINS", nil)
+	}
 	secret := func(key, devDefault string) string {
 		if dev {
 			return r.String(key, devDefault)
@@ -79,6 +89,7 @@ func Load() (Config, error) {
 			bad = append(bad, errors.New(k+" must be an http(s) URL"))
 		}
 	}
+	bad = append(bad, checkReturnURLs(c, dev)...)
 	if !dev {
 		for k, v := range map[string]string{"GATEWAY_API_KEY": c.GatewayAPIKey, "POS_API_KEY": c.POSAPIKey, "GATEWAY_WEBHOOK_SECRET": c.GatewayWebhookSecret,
 			"POS_WEBHOOK_SECRET": c.POSWebhookSecret} {
@@ -102,4 +113,30 @@ func Load() (Config, error) {
 	}
 	c.Auth = authclient.OptionsFromEnv(r, c.Env)
 	return c, errors.Join(append([]error{err}, bad...)...)
+}
+
+// checkReturnURLs: origin'ы возврата — точные, без подстановок; вне dev только https, список обязателен,
+// а DEFAULT_RETURN_URL обязан входить в него.
+func checkReturnURLs(c Config, dev bool) []error {
+	var bad []error
+	allowed, err := returnurl.NewAllowed(c.AllowedReturnOrigins...)
+	if err != nil {
+		return []error{errors.New("ALLOWED_RETURN_ORIGINS: " + err.Error())}
+	}
+	if !dev {
+		if len(c.AllowedReturnOrigins) == 0 {
+			bad = append(bad, errors.New("ALLOWED_RETURN_ORIGINS is required outside APP_ENV=dev"))
+		}
+		for o := range allowed {
+			if !strings.HasPrefix(o, "https://") {
+				bad = append(bad, errors.New("ALLOWED_RETURN_ORIGINS: "+o+" must be https outside APP_ENV=dev"))
+			}
+		}
+		if len(allowed) > 0 {
+			if err := allowed.Check(c.DefaultReturnURL); err != nil {
+				bad = append(bad, errors.New("DEFAULT_RETURN_URL: "+err.Error()))
+			}
+		}
+	}
+	return bad
 }
