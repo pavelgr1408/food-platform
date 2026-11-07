@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: api-gateway — единая точка входа
-  version: 1.4.0
+  version: 1.4.1
   description: |-
     Периметр платформы (S5). Gateway **не добавляет собственных бизнес-операций**: публичный API —
     это операции контрактов сервисов (`auth`, `restaurant`, `menu`, `orders`, `payment`, `delivery`, `loyalty`, `notification`), проксируемые
@@ -55,7 +55,8 @@ info:
     ## CORS
 
     Разрешённые источники — список `CORS_ALLOWED_ORIGINS` (точное совпадение, без `*` вместе с учётными
-    данными). Предзапрос `OPTIONS` обрабатывается gateway (`204`). Разрешены заголовки `Authorization`,
+    данными). Предзапрос `OPTIONS` обрабатывается gateway (`204`). Разрешены методы `GET`, `POST`, `PUT`,
+    `DELETE`, `OPTIONS` (`DELETE` нужен браузеру для `deleteDeviceToken`). Разрешены заголовки `Authorization`,
     `Content-Type`, `Idempotency-Key`, `If-None-Match`, `X-Request-Id`; открыты `ETag`, `Location`,
     `Retry-After`, `Idempotent-Replay`, `X-Request-Id`.
 

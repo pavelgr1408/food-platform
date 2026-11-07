@@ -484,7 +484,8 @@ func TestCORS(t *testing.T) {
 		"Origin": "https://web.example", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "idempotency-key"}})
 	if pre.Code != 204 || pre.Header().Get("Access-Control-Allow-Origin") != "https://web.example" ||
 		!strings.Contains(pre.Header().Get("Access-Control-Allow-Headers"), "Idempotency-Key") ||
-		!strings.Contains(pre.Header().Get("Access-Control-Allow-Methods"), "PUT") {
+		!strings.Contains(pre.Header().Get("Access-Control-Allow-Methods"), "PUT") ||
+		!strings.Contains(pre.Header().Get("Access-Control-Allow-Methods"), "DELETE") {
 		t.Fatalf("preflight: %d %v", pre.Code, pre.Header())
 	}
 	if rg.ups["orders"].count() != 0 {
