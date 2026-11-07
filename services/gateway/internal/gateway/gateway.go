@@ -341,7 +341,7 @@ func (g *gw) cors(next http.Handler) http.Handler {
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			h.Add("Vary", "Access-Control-Request-Method")
 			h.Add("Vary", "Access-Control-Request-Headers")
-			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			h.Set("Access-Control-Allow-Headers", corsAllowHeaders)
 			h.Set("Access-Control-Max-Age", "600")
 			w.WriteHeader(http.StatusNoContent)
