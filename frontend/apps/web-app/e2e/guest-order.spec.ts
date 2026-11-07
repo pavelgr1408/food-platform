@@ -27,7 +27,7 @@ test("гость: от поиска до оплаченного заказа", a
   await expect(page.getByText("Оплачено")).toBeVisible({ timeout: 15_000 });
 
   // заказ попал в локальную историю
-  await page.getByRole("link", { name: "Мои заказы" }).click();
+  await page.getByRole("link", { name: /заказы/i }).click();
   await expect(page.getByText(/R1-\d{6}-0001/)).toBeVisible();
 });
 
@@ -47,15 +47,28 @@ test("отказ банка: можно оплатить снова", async ({ p
   await expect(page.getByRole("button", { name: /Оплатить/ })).toBeEnabled();
 });
 
-test("мобильная вёрстка: нет горизонтального скролла, цели нажатия ≥ 44 px", async ({ page }) => {
+test("мобильная вёрстка: нет горизонтального скролла, цели нажатия ≥ 44 px на ключевых экранах", async ({ page }) => {
+  const check = async (label: string) => {
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow, `${label}: горизонтальный скролл`).toBeLessThanOrEqual(1);
+    const small = await page.evaluate(() =>
+      [...document.querySelectorAll("button, a, input:not([type=range]):not(.sr-only), select")].filter((e) => {
+        const el = e as HTMLElement;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && Math.round(r.height) < 44 && !el.closest("[hidden], .sr-only") && !el.classList.contains("sr-only") && getComputedStyle(el).display !== "inline";
+      }).map((e) => (e as HTMLElement).outerHTML.slice(0, 90)));
+    expect(small, `${label}: мелкие цели`).toEqual([]);
+  };
   await page.goto("/");
   await expect(page.getByRole("link", { name: /Лоток на Тверской/ })).toBeVisible();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
-  const small = await page.evaluate(() =>
-    [...document.querySelectorAll("button, a, input:not([type=range]), select")].filter((e) => {
-      const r = (e as HTMLElement).getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && r.height < 44 && !(e as HTMLElement).closest("[hidden]") && getComputedStyle(e).display !== "inline";
-    }).map((e) => (e as HTMLElement).outerHTML.slice(0, 80)));
-  expect(small).toEqual([]);
+  await check("главная");
+  await page.getByRole("link", { name: /Лоток на Тверской/ }).click();
+  await expect(page.getByRole("button", { name: "Выбрать «Бургер «Классика»»" })).toBeVisible();
+  await check("ресторан");
+  await page.getByRole("button", { name: "Добавить «Картофель фри»" }).or(page.getByRole("button", { name: "Выбрать «Картофель фри»" })).click();
+  await page.getByRole("dialog").getByRole("button", { name: /В корзину/ }).click();
+  await expect(page.getByRole("status").filter({ hasText: "в корзине" })).toBeVisible();
+  await page.getByRole("button", { name: "Корзина" }).click();
+  await expect(page.getByRole("heading", { name: "Корзина" })).toBeVisible();
+  await check("корзина");
 });

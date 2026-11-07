@@ -4,3 +4,4 @@ import { afterEach } from "vitest";
 
 // globals: false → автоочистка RTL не подключается сама
 afterEach(() => cleanup());
+window.scrollTo = () => undefined;

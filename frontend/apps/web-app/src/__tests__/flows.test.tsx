@@ -129,8 +129,7 @@ describe("оформление: коды ошибок → поведение э�
   it("DELIVERY_NOT_AVAILABLE для ресторана без доставки", async () => {
     const u = userEvent.setup();
     renderApp(`/r/${R2}`);
-    await u.click(await screen.findByRole("button", { name: "Выбрать «Сэндвич»" }));
-    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await u.click(await screen.findByRole("button", { name: "Добавить «Сэндвич»" }));
     await screen.findByText(/в корзине/);
     await u.click(screen.getByRole("button", { name: "Корзина" }));
     await u.click(await screen.findByRole("radio", { name: "Доставка" }));
@@ -158,8 +157,7 @@ describe("оформление: коды ошибок → поведение э�
   it("RESTAURANT_CLOSED (409): заказ не создан, корзина цела", async () => {
     const u = userEvent.setup();
     renderApp(`/r/${R2}`);
-    await u.click(await screen.findByRole("button", { name: "Выбрать «Сэндвич»" }));
-    await u.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /В корзину/ }));
+    await u.click(await screen.findByRole("button", { name: "Добавить «Сэндвич»" }));
     await screen.findByText(/в корзине/);
     await u.click(screen.getByRole("button", { name: "Корзина" }));
     await u.click(await screen.findByRole("radio", { name: "Самовывоз" }));

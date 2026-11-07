@@ -17,6 +17,16 @@ export const getLocalCart = () => snapshot;
 /** Для тестов: сбросить стор из localStorage. */
 export function resetCartStore() { snapshot = localCart.get(); listeners.forEach((l) => l()); }
 
+/* Все изменения корзины идут строго по очереди: PUT /items заменяет состав целиком,
+   поэтому параллельные клики «+» иначе теряли бы позиции, а гонка создания давала бы две корзины. */
+let chain: Promise<unknown> = Promise.resolve();
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = chain.then(task, task);
+  chain = run.catch(() => undefined);
+  return run;
+}
+const creating = new Map<string, Promise<string>>();
+
 export const lineKey = (l: Pick<CartItemInput, "menuItemId" | "modifierIds">) =>
   `${l.menuItemId}|${[...(l.modifierIds ?? [])].sort().join(",")}`;
 
@@ -44,13 +54,18 @@ export function useCart() {
   const put = useCallback((cart: Cart) => qc.setQueryData(["cart", cart.id], cart), [qc]);
 
   /** Гарантирует открытую корзину этого ресторана. Другой ресторан = новая корзина (подтверждение — на вызывающем). */
-  const ensure = useCallback(async (restaurantId: string, contact?: ContactInfo): Promise<string> => {
+  const ensure = useCallback((restaurantId: string, contact?: ContactInfo): Promise<string> => {
     const cur = snapshot;
-    if (cur && cur.restaurantId === restaurantId) return cur.cartId;
-    const cart = await api.carts.create(restaurantId, { guest: !has, contact });
-    setLocal({ cartId: cart.id, restaurantId });
-    put(cart);
-    return cart.id;
+    if (cur && cur.restaurantId === restaurantId) return Promise.resolve(cur.cartId);
+    const pending = creating.get(restaurantId);
+    if (pending) return pending;
+    const p = api.carts.create(restaurantId, { guest: !has, contact }).then((cart) => {
+      setLocal({ cartId: cart.id, restaurantId });
+      put(cart);
+      return cart.id;
+    }).finally(() => creating.delete(restaurantId));
+    creating.set(restaurantId, p);
+    return p;
   }, [api, has, put]);
 
   /** Замена полного состава. ITEMS_UNAVAILABLE: корзина уже сохранена без недоступных — перечитываем и пробрасываем. */
@@ -68,22 +83,40 @@ export function useCart() {
     }
   }, [api, put, qc]);
 
-  const addItem = useCallback(async (restaurantId: string, add: CartItemInput) => {
-    const cartId = await ensure(restaurantId);
-    const current = toInputs(qc.getQueryData<Cart>(["cart", cartId]));
-    const key = lineKey(add);
-    const merged = current.some((l) => lineKey(l) === key)
-      ? current.map((l) => (lineKey(l) === key ? { ...l, quantity: Math.min(99, l.quantity + add.quantity) } : l))
-      : [...current, add];
-    return setLines(cartId, merged);
-  }, [ensure, qc, setLines]);
+  /** Изменить состав: fn получает актуальные строки (с учётом предыдущих кликов) и возвращает новые. */
+  const update = useCallback((restaurantId: string, fn: (cur: CartItemInput[]) => CartItemInput[]) =>
+    enqueue(async () => {
+      const cartId = await ensure(restaurantId);
+      return setLines(cartId, fn(toInputs(qc.getQueryData<Cart>(["cart", cartId]))));
+    }), [ensure, qc, setLines]);
+
+  const addItem = useCallback((restaurantId: string, add: CartItemInput) =>
+    update(restaurantId, (current) => {
+      const key = lineKey(add);
+      return current.some((l) => lineKey(l) === key)
+        ? current.map((l) => (lineKey(l) === key ? { ...l, quantity: Math.min(99, l.quantity + add.quantity) } : l))
+        : [...current, add];
+    }), [update]);
+
+  /** Сдвиг количества позиции без добавок (+1/−1); ноль убирает строку. */
+  const bump = useCallback((restaurantId: string, menuItemId: string, delta: number) =>
+    update(restaurantId, (current) => {
+      const key = lineKey({ menuItemId, modifierIds: [] });
+      const exists = current.some((l) => lineKey(l) === key);
+      if (!exists) return delta > 0 ? [...current, { menuItemId, quantity: Math.min(99, delta), modifierIds: [] }] : current;
+      return current.flatMap((l) => {
+        if (lineKey(l) !== key) return [l];
+        const q = Math.min(99, l.quantity + delta);
+        return q > 0 ? [{ ...l, quantity: q }] : [];
+      });
+    }), [update]);
 
   const count = (q.data?.items ?? []).reduce((n, i) => n + i.quantity, 0);
 
   return {
     cartId: local?.cartId, restaurantId: local?.restaurantId,
     cart: q.data, isLoading: !!local && q.isLoading, error: q.error,
-    count, ensure, setLines, addItem,
+    count, ensure, setLines, addItem, update, bump,
     startNew: () => setLocal(null),
     forget: () => setLocal(null),
     refetch: q.refetch,

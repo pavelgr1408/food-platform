@@ -45,7 +45,11 @@ function AuthForm({ mode }: { mode: "login" | "register" }) {
 
   return (
     <div className="lt-rise mx-auto max-w-md">
-      <PageTitle>{mode === "login" ? "Вход" : "Регистрация"}</PageTitle>
+      <div role="tablist" aria-label="Вход или регистрация" className="mb-5 grid grid-cols-2 gap-1 rounded-full bg-ink/5 p-1">
+        <Link role="tab" aria-selected={mode === "login"} to={`/login?next=${encodeURIComponent(next)}`} replace className={`grid min-h-11 place-items-center rounded-full font-semibold ${mode === "login" ? "bg-ink text-white" : ""}`}>Вход</Link>
+        <Link role="tab" aria-selected={mode === "register"} to={`/register?next=${encodeURIComponent(next)}`} replace className={`grid min-h-11 place-items-center rounded-full font-semibold ${mode === "register" ? "bg-ink text-white" : ""}`}>Регистрация</Link>
+      </div>
+      <PageTitle sub={mode === "login" ? "Войдите, чтобы заказы и корзина были под рукой." : "Телефон и пароль — больше ничего не нужно."}>{mode === "login" ? "Вход" : "Регистрация"}</PageTitle>
       <Surface>
         <form noValidate className="grid gap-4" onSubmit={(e) => { e.preventDefault(); setTouched(true); if (isE164(phoneN) && !passwordProblem(password)) run.mutate(); else if (mode === "login" && isE164(phoneN) && password && passwordProblem(password) !== "long") run.mutate(); }}>
           <Field label="Телефон" type="tel" inputMode="tel" autoComplete="tel" placeholder="+7 999 123-45-67" value={phone} onChange={(e) => setPhone(e.target.value)} onBlur={() => setPhone(normalizePhone(phone))} error={phoneErr} />
