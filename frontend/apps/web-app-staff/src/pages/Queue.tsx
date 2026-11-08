@@ -57,7 +57,8 @@ export function Queue() {
     initialPageParam: 0,
     getNextPageParam: (last) => (last.offset + last.items.length < last.total ? last.offset + last.items.length : undefined),
     refetchInterval: POLL_MS,
-    placeholderData: (prev) => prev,
+    // держим прежний список только при смене фильтра внутри вкладки; при переходе на другую вкладку — скелет, а не чужое пустое состояние
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === tab ? prev : undefined),
   });
   const items: StaffOrder[] = list.data?.pages.flatMap((p) => p.items) ?? [];
   const total = list.data?.pages[0]?.total ?? 0;

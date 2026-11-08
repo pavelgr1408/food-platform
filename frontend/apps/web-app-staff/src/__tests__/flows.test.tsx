@@ -417,3 +417,16 @@ describe("акции (UC-PRM-01…13)", () => {
     expect(screen.getByRole("radio", { name: "Вся сеть" })).toBeDisabled(); // охват после создания не меняется
   }, 30_000);
 });
+
+describe("очередь: переключение вкладок", () => {
+  it("при переходе на другую вкладку не показывает пустое состояние от прошлой", async () => {
+    const cooking = await faxOrder({ item: "i-fries" });
+    db.orders.get(cooking.id)!.order.status = "ready";
+    const user = userEvent.setup();
+    await renderApp("/", PHONES.staff);
+    expect(await screen.findByText("Новых заказов нет.")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Готовы/ }));
+    expect(screen.queryByText("Готовых заказов нет.")).not.toBeInTheDocument();
+    expect(await screen.findByText(cooking.number)).toBeInTheDocument();
+  });
+});
