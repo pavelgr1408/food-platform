@@ -18,7 +18,9 @@
   "dependencies": {
     "@fp/api": "*",
     "@fp/design-tokens": "*",
+    "@fp/mocks": "*",
     "@fp/shared": "*",
+    "@fp/ui": "*",
     "@tanstack/react-query": "5.106.1",
     "leaflet": "^1.9.4",
     "react": "19.3.1",

@@ -66,9 +66,31 @@ export function createApi(cfg: ApiConfig) {
       http.request<T.MenuValidationResult>("POST", `/restaurants/${id}/menu/validation`, { body: { items }, auth: "optional" }).then((r) => r.data),
   };
 
+  /** Query-параметры с повторяющимся `status=a&status=b`: URLSearchParams ниже склеил бы массив через запятую. */
+  const withRepeated = (path: string, base: Record<string, string | number | boolean | undefined>, repeated: Record<string, string[] | undefined>) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(base)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    for (const [k, list] of Object.entries(repeated)) for (const v of list ?? []) qs.append(k, v);
+    const s = qs.toString();
+    return s ? `${path}?${s}` : path;
+  };
+
   const promotions = {
     /** UC-MNU-04: без restaurantId — только национальные. */
     list: (restaurantId?: string) => get<T.PromotionPublic[]>("/promotions", { restaurantId } as object),
+    /** UC-PRM-08: список для управления (владелец — свои local, HQ — все). */
+    manage: (p: T.ManagedPromotionsParams = {}) =>
+      http.request<T.PromotionPage>("GET", withRepeated("/promotions/manage", { scope: p.scope, restaurantId: p.restaurantId, limit: p.limit, offset: p.offset }, { status: p.status }), { auth: "required" }).then((r) => r.data),
+    get: (id: string) => http.request<T.Promotion>("GET", `/promotions/${id}`, { auth: "required" }).then((r) => r.data),
+    /** UC-PRM-07: ключ генерирует вызывающий на одно нажатие кнопки. */
+    create: (body: T.PromotionInput, idempotencyKey: string) =>
+      http.request<T.Promotion>("POST", "/promotions", { body, idempotencyKey, auth: "required" }).then((r) => r.data),
+    update: (id: string, body: T.PromotionInput) => http.request<T.Promotion>("PUT", `/promotions/${id}`, { body, auth: "required" }).then((r) => r.data),
+    /** Только черновик (409 PROMOTION_NOT_DRAFT). */
+    remove: (id: string) => http.request("DELETE", `/promotions/${id}`, { auth: "required" }).then(() => undefined),
+    activate: (id: string) => http.request<T.Promotion>("POST", `/promotions/${id}/activation`, { auth: "required" }).then((r) => r.data),
+    complete: (id: string) => http.request<T.Promotion>("POST", `/promotions/${id}/completion`, { auth: "required" }).then((r) => r.data),
+    history: (id: string) => http.request<T.PromotionRevision[]>("GET", `/promotions/${id}/history`, { auth: "required" }).then((r) => r.data),
   };
 
   const carts = {
@@ -90,6 +112,17 @@ export function createApi(cfg: ApiConfig) {
     eta: (id: string) => get<T.Eta>(`/orders/${id}/eta`),
     setPickupSlot: (id: string, slot: { from: string; to: string }) =>
       http.request<T.Eta>("PUT", `/orders/${id}/pickup-slot`, { body: slot }).then((r) => r.data),
+
+    /* ---- персонал (роли STAFF / FRANCHISE_OWNER / HQ_STAFF) ---- */
+    /** UC-STF-01: заказ с контактами клиента; чужой ресторан = 404 ORDER_NOT_FOUND. */
+    search: (number: string, signal?: AbortSignal) => get<T.StaffOrder>("/orders/search", { number }, "required", signal),
+    /** Очередь заказов ресторана (без status — все незавершённые). */
+    queue: (p: T.RestaurantQueueParams = {}, signal?: AbortSignal) =>
+      http.request<T.StaffOrderPage>("GET", withRepeated("/orders/queue", { restaurantId: p.restaurantId, fulfillment: p.fulfillment, sort: p.sort, limit: p.limit, offset: p.offset }, { status: p.status }), { auth: "required", signal }).then((r) => r.data),
+    /** UC-STF-07: ready → handed_over → closed одной операцией; повтор — 200 без эффекта. */
+    issue: (id: string) => http.request<T.Order>("POST", `/orders/${id}/issuance`, { auth: "required" }).then((r) => r.data),
+    /** UC-STF-08: допустимо в pending_payment/accepted. */
+    cancel: (id: string, reason: T.CancelReason) => http.request<T.Order>("POST", `/orders/${id}/cancellation`, { body: { reason }, auth: "required" }).then((r) => r.data),
   };
 
   const payments = {
@@ -97,6 +130,9 @@ export function createApi(cfg: ApiConfig) {
     initiate: (orderId: string, returnUrl: string | undefined, idempotencyKey: string) =>
       http.request<T.Payment_>("POST", `/orders/${orderId}/payments`, { body: { method: "online_card", returnUrl }, idempotencyKey }).then((r) => ({ payment: r.data, status: r.status })),
     get: (orderId: string, paymentId: string) => get<T.Payment_>(`/orders/${orderId}/payments/${paymentId}`),
+    /** UC-STF-06: оплата на кассе; 201 — pending, 202 — исход неизвестен. */
+    pos: (orderId: string, tender: T.PosTender, idempotencyKey: string) =>
+      http.request<T.Payment_>("POST", `/orders/${orderId}/payments/pos`, { body: { tender }, idempotencyKey, auth: "required" }).then((r) => ({ payment: r.data, status: r.status })),
   };
 
   const delivery = {
