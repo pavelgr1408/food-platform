@@ -268,3 +268,19 @@ func toOrderPage(p service.OrderPage) orderPageDTO {
 	}
 	return out
 }
+
+// staffOrderPageDTO — StaffOrderPage из orders.yaml.
+type staffOrderPageDTO struct {
+	Items  []staffOrderDTO `json:"items"`
+	Total  int             `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+}
+
+func toStaffOrderPage(p service.OrderPage) staffOrderPageDTO {
+	out := staffOrderPageDTO{Items: make([]staffOrderDTO, 0, len(p.Items)), Total: p.Total, Limit: p.Limit, Offset: p.Offset}
+	for _, o := range p.Items {
+		out.Items = append(out.Items, toStaffOrder(o))
+	}
+	return out
+}

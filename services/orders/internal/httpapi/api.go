@@ -34,6 +34,7 @@ type Orders interface {
 	SetPickupSlot(ctx context.Context, userID, id string, from, to time.Time) (domain.Order, error)
 	// Персонал (S6).
 	SearchOrder(ctx context.Context, a service.Actor, number string) (domain.Order, error)
+	ListRestaurantOrders(ctx context.Context, a service.Actor, in service.QueueInput) (service.OrderPage, error)
 	IssueOrder(ctx context.Context, a service.Actor, id string) (domain.Order, error)
 	CancelOrder(ctx context.Context, a service.Actor, id, reason string) (domain.Order, error)
 }
@@ -83,6 +84,7 @@ func New(d Deps) http.Handler {
 
 	// Персонал (S6): роль проверяется здесь (гость → 401, CUSTOMER → 403), привязка к ресторану — в сервисе (чужой → 404).
 	staff := authclient.RequireRole(authclient.RoleStaff, authclient.RoleFranchiseOwner, authclient.RoleHQStaff)
+	mux.Handle("GET /orders/queue", staff(http.HandlerFunc(h.listRestaurantOrders)))
 	mux.Handle("GET /orders/search", staff(http.HandlerFunc(h.searchOrder)))
 	mux.Handle("POST /orders/{orderId}/issuance", staff(http.HandlerFunc(h.issueOrder)))
 	mux.Handle("POST /orders/{orderId}/cancellation", staff(http.HandlerFunc(h.cancelOrder)))
@@ -302,6 +304,33 @@ func (h *handlers) listOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, toOrderPage(page))
+}
+
+func (h *handlers) listRestaurantOrders(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	in := service.QueueInput{RestaurantID: q.Get("restaurantId"), Statuses: q["status"],
+		Fulfillment: q.Get("fulfillment"), Sort: q.Get("sort")}
+	for _, p := range []struct {
+		name string
+		dst  **int
+	}{{"limit", &in.Limit}, {"offset", &in.Offset}} {
+		raw := q.Get(p.name)
+		if raw == "" && !q.Has(p.name) {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			h.fail(w, r, httpx.NewError(http.StatusBadRequest, "INVALID_PARAMETER", p.name+" must be an integer"))
+			return
+		}
+		*p.dst = &n
+	}
+	page, err := h.svc.ListRestaurantOrders(r.Context(), actor(r), in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toStaffOrderPage(page))
 }
 
 func (h *handlers) getEta(w http.ResponseWriter, r *http.Request) {

@@ -384,6 +384,74 @@ func (s *Store) ListOwnerOrders(ctx context.Context, db DBTX, ownerID string, st
 	return out, total, nil
 }
 
+// QueueFilter — условия выборки очереди ресторана (listRestaurantOrders).
+type QueueFilter struct {
+	RestaurantIDs []string        // nil — без ограничения по ресторану (HQ без restaurantId)
+	Statuses      []domain.Status // непустой список
+	Fulfillment   string          // "" — любой
+	NewestFirst   bool
+	Limit, Offset int
+}
+
+// ListRestaurantOrders возвращает страницу заказов ресторанов и общее число заказов с тем же фильтром.
+// Порядок по created_at с тайбрейком по id (страница стабильна при равных временах); позиции всей
+// страницы читаются одним запросом.
+func (s *Store) ListRestaurantOrders(ctx context.Context, db DBTX, f QueueFilter) ([]domain.Order, int, error) {
+	var rest []string // nil → без фильтра (в SQL: $1 IS NULL)
+	rest = append(rest, f.RestaurantIDs...)
+	st := make([]string, 0, len(f.Statuses))
+	for _, x := range f.Statuses {
+		st = append(st, string(x))
+	}
+	var ful any
+	if f.Fulfillment != "" {
+		ful = f.Fulfillment
+	}
+	const where = `WHERE ($1::uuid[] IS NULL OR restaurant_id = ANY($1)) AND status = ANY($2) AND ($3::text IS NULL OR fulfillment_type = $3)`
+	var total int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM orders `+where, rest, st, ful).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	dir := "ASC"
+	if f.NewestFirst {
+		dir = "DESC"
+	}
+	rows, err := db.Query(ctx, `SELECT `+orderCols+` FROM orders `+where+
+		` ORDER BY created_at `+dir+`, id `+dir+` LIMIT $4 OFFSET $5`, rest, st, ful, f.Limit, f.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.Order{}
+	ids := []string{}
+	for rows.Next() {
+		o, err := scanOrder(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, o)
+		ids = append(ids, o.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	rows.Close()
+	if len(out) == 0 {
+		return out, total, nil
+	}
+	lines, err := s.itemsByOrder(ctx, db, ids)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range out {
+		out[i].Items = lines[out[i].ID]
+		if out[i].Items == nil {
+			out[i].Items = []domain.Line{}
+		}
+	}
+	return out, total, nil
+}
+
 // itemsByOrder читает позиции нескольких заказов одним запросом (порядок строк — по position).
 func (s *Store) itemsByOrder(ctx context.Context, db DBTX, orderIDs []string) (map[string][]domain.Line, error) {
 	rows, err := db.Query(ctx, `SELECT order_id, menu_item_id, name, quantity, modifier_ids, modifiers, unit_price, line_total

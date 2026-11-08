@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.10.0
+  version: 1.10.1
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -508,7 +508,7 @@ paths:
     get:
       tags: [orders-service]
       operationId: listRestaurantOrders
-      x-status: planned
+      x-status: implemented
       summary: Очередь заказов ресторана (персонал)
       description: >-
         Список заказов ресторанов, к которым привязан сотрудник (долг №89): экран кассы
