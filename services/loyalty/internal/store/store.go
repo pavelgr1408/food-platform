@@ -140,6 +140,47 @@ func (s *Store) list(ctx context.Context, db DBTX, q string, args ...any) ([]dom
 	return out, rows.Err()
 }
 
+// ManagedFilter — условия выборки списка управления (listManagedPromotions).
+type ManagedFilter struct {
+	Statuses      []domain.Status // пусто — любые
+	Scope         string          // "" — любой
+	RestaurantIDs []string        // nil — без ограничения; иначе только local-акции этих ресторанов
+	Limit, Offset int
+}
+
+// ListManaged возвращает страницу акций (недавно изменённые первыми, тайбрейк по id) и общее число
+// акций с тем же фильтром.
+func (s *Store) ListManaged(ctx context.Context, db DBTX, f ManagedFilter) ([]domain.Promotion, int, error) {
+	var st []string // nil → без фильтра
+	for _, x := range f.Statuses {
+		st = append(st, string(x))
+	}
+	var rest []string // nil → без ограничения по ресторану
+	rest = append(rest, f.RestaurantIDs...)
+	var scope any
+	if f.Scope != "" {
+		scope = f.Scope
+	}
+	const where = `WHERE ($1::text[] IS NULL OR status = ANY($1)) AND ($2::text IS NULL OR scope = $2)
+		AND ($3::uuid[] IS NULL OR restaurant_id = ANY($3))`
+	var total int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM promotions `+where, st, scope, rest).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	ps, err := s.list(ctx, db, `SELECT `+cols+` FROM promotions `+where+` ORDER BY updated_at DESC, id LIMIT $4 OFFSET $5`,
+		st, scope, rest, f.Limit, f.Offset)
+	return ps, total, err
+}
+
+// Delete удаляет акцию вместе с историей (вызывается только для черновика, внутри транзакции с блокировкой строки).
+func (s *Store) Delete(ctx context.Context, db DBTX, id string) error {
+	if _, err := db.Exec(ctx, `DELETE FROM promotion_history WHERE promotion_id = $1`, id); err != nil {
+		return err
+	}
+	_, err := db.Exec(ctx, `DELETE FROM promotions WHERE id = $1`, id)
+	return err
+}
+
 // Revision — запись истории.
 type Revision struct {
 	Version    int

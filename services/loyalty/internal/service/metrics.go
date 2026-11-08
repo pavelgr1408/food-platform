@@ -4,7 +4,7 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics — бизнес-метрики loyalty-service.
 type Metrics struct {
-	Actions *prometheus.CounterVec // action (create|update|activate|complete), result (ok|noop|forbidden|conflict|invalid|error)
+	Actions *prometheus.CounterVec // action (create|update|activate|complete|delete), result (ok|noop|forbidden|conflict|invalid|error)
 	Authz   *prometheus.CounterVec // result (allowed|denied|unavailable)
 }
 

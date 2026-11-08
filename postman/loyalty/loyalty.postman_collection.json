@@ -32,6 +32,10 @@
     {
       "key": "promoN",
       "value": ""
+    },
+    {
+      "key": "promoD",
+      "value": ""
     }
   ],
   "event": [
@@ -996,6 +1000,603 @@
             "exec": [
               "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
               "pm.test('national visible', () => pm.expect(pm.response.json().map(p => p.id)).to.include(pm.collectionVariables.get('promoN')));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "управление: владелец создаёт черновик для списка и удаления → 201",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{runId}}-d"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"title\":\"Черновик на удаление\",\"scope\":\"local\",\"restaurantId\":\"a1000000-0000-4000-8000-000000000004\",\"priority\":7,\"startsAt\":\"{{startsAt}}\",\"endsAt\":\"{{endsAt}}\",\"discount\":{\"type\":\"percent\",\"value\":500},\"conditions\":{\"minSubtotal\":0,\"stackable\":true}}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 201', () => pm.response.to.have.status(201));",
+              "pm.collectionVariables.set('promoD', pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: гость → 401",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/promotions/manage"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: клиент → 403",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "c1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: владелец видит свои акции любого статуса, только local своего ресторана",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?limit=50"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json();",
+              "pm.test('PromotionPage: items, total, limit, offset', () => { pm.expect(p.items).to.be.an('array'); pm.expect(p.total).to.be.at.least(1); pm.expect(p.limit).to.eql(50); pm.expect(p.offset).to.eql(0); });",
+              "pm.test('черновик promoD в списке, статус draft', () => { const d = p.items.find(x => x.id === pm.collectionVariables.get('promoD')); pm.expect(d).to.exist; pm.expect(d.status).to.eql('draft'); pm.expect(d.version).to.eql(1); });",
+              "pm.test('встречаются завершённые и черновики — список не только действующие', () => { const s = new Set(p.items.map(x => x.status)); pm.expect(s.has('draft')).to.be.true; pm.expect(s.has('completed')).to.be.true; });",
+              "pm.test('только local-акции ресторана владельца', () => p.items.forEach(x => { pm.expect(x.scope).to.eql('local'); pm.expect(x.restaurantId).to.eql('a1000000-0000-4000-8000-000000000004'); }));",
+              "pm.test('недавно изменённые первыми', () => { for (let i = 1; i < p.items.length; i++) pm.expect(Date.parse(p.items[i - 1].updatedAt)).to.be.at.least(Date.parse(p.items[i].updatedAt)); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: фильтр status=draft",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?status=draft&limit=50"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json();",
+              "pm.test('только черновики, promoD среди них', () => { pm.expect(p.items.length).to.be.at.least(1); p.items.forEach(x => pm.expect(x.status).to.eql('draft')); pm.expect(p.items.map(x => x.id)).to.include(pm.collectionVariables.get('promoD')); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: страница limit=1, total не зависит от размера страницы",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?limit=1"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json();",
+              "pm.test('одна запись, total > 1', () => { pm.expect(p.items.length).to.eql(1); pm.expect(p.limit).to.eql(1); pm.expect(p.total).to.be.above(1); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: владелец и scope=national → 403 SCOPE_NOT_ALLOWED",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?scope=national"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('code SCOPE_NOT_ALLOWED', () => pm.expect(pm.response.json().code).to.eql('SCOPE_NOT_ALLOWED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: владелец и чужой restaurantId → 403 NOT_BOUND_TO_RESTAURANT",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?restaurantId=a1000000-0000-4000-8000-000000000001"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('code NOT_BOUND_TO_RESTAURANT', () => pm.expect(pm.response.json().code).to.eql('NOT_BOUND_TO_RESTAURANT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: HQ с scope=national&status=active видит национальную акцию promoN",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?scope=national&status=active&limit=50"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "const p = pm.response.json();",
+              "pm.test('promoN в списке, все national и active', () => { pm.expect(p.items.map(x => x.id)).to.include(pm.collectionVariables.get('promoN')); p.items.forEach(x => { pm.expect(x.scope).to.eql('national'); pm.expect(x.status).to.eql('active'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: неизвестный status → 400 INVALID_PARAMETER",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?status=scheduled"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('code INVALID_PARAMETER', () => pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: limit=51 → 400 INVALID_PARAMETER",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "hq"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "HQ_STAFF"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?limit=51"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('code INVALID_PARAMETER', () => pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: гость → 401",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 401', () => pm.response.to.have.status(401));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: клиент → 403",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "c1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: владелец чужого ресторана → 403 NOT_BOUND_TO_RESTAURANT",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000001"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('code NOT_BOUND_TO_RESTAURANT', () => pm.expect(pm.response.json().code).to.eql('NOT_BOUND_TO_RESTAURANT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: завершённую акцию не удалить → 409 PROMOTION_NOT_DRAFT",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoA}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 409', () => pm.response.to.have.status(409));",
+              "pm.test('code PROMOTION_NOT_DRAFT', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_NOT_DRAFT'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: черновик → 204 без тела",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 204', () => pm.response.to.have.status(204));",
+              "pm.test('тело пустое', () => pm.expect(pm.response.text()).to.eql(''));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: удалённый черновик недоступен (get → 404)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('code PROMOTION_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletePromotion: повтор → 404 PROMOTION_NOT_FOUND",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/{{promoD}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('code PROMOTION_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('PROMOTION_NOT_FOUND'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "listManagedPromotions: после удаления promoD в списке нет",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "owner4"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "FRANCHISE_OWNER"
+          },
+          {
+            "key": "X-Restaurant-Ids",
+            "value": "a1000000-0000-4000-8000-000000000004"
+          }
+        ],
+        "url": "{{baseUrl}}/promotions/manage?limit=50"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('promoD исчез', () => pm.expect(pm.response.json().items.map(x => x.id)).to.not.include(pm.collectionVariables.get('promoD')));"
             ]
           }
         }

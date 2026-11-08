@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/loyalty`, порт `8086`, БД `loyalty` (Postgres) |
-| Контракт | `contracts/openapi/loyalty.yaml` v1.2.0; событие — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракт | `contracts/openapi/loyalty.yaml` v1.3.1; событие — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | только публикует `promotions.discount` (компактный топик); ничего не потребляет |
 | Внешние зависимости | auth-service (`POST /auth/authorize`, действие `promotion.manage`) |
 | Идемпотентность | `Idempotency-Key` на `createPromotion`; активация и завершение идемпотентны по состоянию |
@@ -54,8 +54,10 @@ flowchart LR
 |---|---|---|---|---|---|
 | GET | `/promotions?restaurantId=` | `listActivePromotions` | публичный | — | `200` |
 | POST | `/promotions` | `createPromotion` | `FRANCHISE_OWNER`, `HQ_STAFF` + охват | `Idempotency-Key` обязателен | `201` + `Location` |
+| GET | `/promotions/manage` | `listManagedPromotions` | `FRANCHISE_OWNER`, `HQ_STAFF` + охват | — | `200` |
 | GET | `/promotions/{id}` | `getPromotion` | то же | — | `200` |
 | PUT | `/promotions/{id}` | `updatePromotion` | то же | — | `200` |
+| DELETE | `/promotions/{id}` | `deletePromotion` | то же | повтор → `404` | `204` |
 | GET | `/promotions/{id}/history` | `getPromotionHistory` | то же | — | `200` |
 | POST | `/promotions/{id}/activation` | `activatePromotion` | то же | по состоянию | `200` |
 | POST | `/promotions/{id}/completion` | `completePromotion` | то же | по состоянию | `200` |
@@ -71,11 +73,13 @@ flowchart LR
 
 | HTTP | `code` | Когда |
 |---|---|---|
+| 400 | `INVALID_PARAMETER` | `listManagedPromotions`: неизвестные `status`/`scope`, `restaurantId` не UUID, `limit`/`offset` вне границ |
 | 400 | `VALIDATION_FAILED` | нет обязательных полей / невалидный `restaurantId` в списке; `INVALID_JSON`, `IDEMPOTENCY_KEY_REQUIRED` |
 | 401 | `UNAUTHORIZED` | нет токена на управляющих методах |
 | 403 | `FORBIDDEN` или причина auth | `NOT_ACTIVE`, `ROLE_REQUIRED`, `NOT_BOUND_TO_RESTAURANT`, `SCOPE_NOT_ALLOWED` |
 | 404 | `PROMOTION_NOT_FOUND` | нет такой акции / не-UUID |
 | 409 | `PROMOTION_CONFLICT` | конфликт с действующими акциями; в ответе `conflictingPromotionIds[]` |
+| 409 | `PROMOTION_NOT_DRAFT` | удаление акции не в статусе `draft` |
 | 409 | `PROMOTION_COMPLETED` | изменение/активация завершённой акции |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | параллельный повтор |
 | 422 | `PROMOTION_INVALID` | семантическая ошибка параметров (§4.1) |
@@ -86,6 +90,16 @@ flowchart LR
 Порядок проверки в `updatePromotion`: тело → семантика (422) → право на **новый** охват (403) → право на существующую акцию (404/403) → блокировка и состояние (409/422).
 
 ---
+
+## 2.1. Список управления и удаление черновика (долг №89)
+
+**`GET /promotions/manage`** — все акции, которыми вправе управлять сотрудник, в любом статусе (черновики и завершённые тоже; их нельзя найти через публичную витрину и без знания `id`). Отдельный литеральный маршрут, а не параметр `listActivePromotions`: у витрины другой ответ (массив, гость, без страниц), у списка — роль, охват и страницы; `scope` у акции уже значит `local`/`national`, поэтому `scope=manage` путал бы смысл.
+
+- **Охват.** `HQ_STAFF` видит все акции (фильтры `scope`, `restaurantId` необязательны). `FRANCHISE_OWNER` — только `local` своих ресторанов: без `restaurantId` — каждый ресторан из токена, право на него подтверждает auth-service отдельным вызовом `promotion.manage` (до 20 ресторанов; актуальные данные БД, а не claims); с чужим `restaurantId` — `403 NOT_BOUND_TO_RESTAURANT`; с `scope=national` — `403 SCOPE_NOT_ALLOWED`. Кто перед нами (HQ или владелец), определяется пробным вызовом `promotion.manage` для `national`: разрешено — HQ, `SCOPE_NOT_ALLOWED` — владелец, остальные отказы возвращаются как есть. Auth недоступен — `503 AUTH_UNAVAILABLE` (fail-closed).
+- **Фильтры и страницы.** `status` (повторяемый, до 3), `scope`, `restaurantId`, `limit` 1…50 (по умолчанию 20), `offset`. Порядок — `updated_at DESC, id` (стабилен при равных временах). Ответ `PromotionPage {items: Promotion[], total, limit, offset}`; `total` и страница — два запроса без общей транзакции. «Запланирована»/«истекла» не хранятся, фильтра по ним нет.
+- Индекса под выборку нет: акций десятки, полный просмотр дешевле поддержки индекса; `EXPLAIN` на большой таблице не проверялся.
+
+**`DELETE /promotions/{id}`** — удаляет **только черновик** вместе с историей (`promotion_history`), одна транзакция. Право — как на изменение (по охвату акции, через auth). Статус проверяется под `FOR UPDATE` той же строки, которую берут активация и завершение, поэтому гонка «активировать/удалить» даёт ровно один исход: удаление выиграло (акции нет, активация — `404`, события нет) или активация выиграла (удаление — `409 PROMOTION_NOT_DRAFT`, событие одно). Активная и завершённая акции не удаляются (активную закрывают `completePromotion`; завершённая — след для заказов и аудита). Событие в `promotions.discount` не отправляется: черновик ни разу не публиковался. Успех — `204`; повтор — `404 PROMOTION_NOT_FOUND`. Метрика: действие `delete` в `loyalty_promotion_actions_total`.
 
 ## 3. Контракты
 
