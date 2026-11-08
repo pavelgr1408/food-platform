@@ -1,0 +1,35 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+@import "@fp/design-tokens/tokens.css";
+/* Классы Tailwind из общего пакета UI (рабочая область вне корня приложения не сканируется сама) */
+@source "../../../packages/ui/src";
+
+@theme {
+  --color-tomato: var(--lt-tomato);
+  --color-lemon: var(--lt-lemon);
+  --color-ink: var(--lt-ink);
+  --color-paper: var(--lt-paper);
+  --color-mint: var(--lt-mint);
+  --color-coral: var(--lt-coral);
+  --color-muted: var(--lt-text-muted);
+  --color-faint: var(--lt-text-disabled);
+  --font-display: var(--lt-font-display);
+  --font-sans: var(--lt-font-body);
+  --radius-card: var(--lt-r-card);
+  --radius-tile: var(--lt-r-tile);
+  --radius-input: var(--lt-r-input);
+  --breakpoint-sm: 480px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1280px;
+}
+
+html { background: var(--lt-bg); color: var(--lt-text); }
+body { font-family: var(--lt-font-body); font-size: var(--lt-fs-body); min-height: 100dvh; -webkit-font-smoothing: antialiased; }
+h1, h2, h3 { font-family: var(--lt-font-display); font-weight: 600; letter-spacing: -0.01em; }
+/* Номера заказов диктуют вслух и сверяют глазами: моноширинный, цифры одной ширины */
+.lt-num { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+
+@keyframes lt-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.lt-rise { animation: lt-rise var(--lt-dur) var(--lt-ease) backwards; }
+@media (prefers-reduced-motion: reduce) { .lt-rise { animation: none; } }
