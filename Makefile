@@ -54,17 +54,23 @@ build: ## Собрать все пакеты
 	go build $(GO_PKGS)
 
 ## ---------- frontend (web-app, S10) ----------
-.PHONY: web-install web-dev web-dev-mock web-check web-e2e web-gen
+.PHONY: web-install web-dev web-dev-mock web-staff-dev web-staff-dev-mock web-check web-e2e web-staff-e2e web-gen
 web-install: ## npm ci во frontend/
 	cd frontend && npm ci
 web-dev: ## web-app на :3000 против gateway :8080 (dev-proxy /api; бэкенд: см. frontend/README.md)
 	cd frontend && npm run dev
 web-dev-mock: ## web-app на :3000 с MSW-моками, бэкенд не нужен
 	cd frontend/apps/web-app && npm run dev:mock
+web-staff-dev: ## web-app-staff на :3001 против gateway :8080
+	cd frontend && npm run dev:staff
+web-staff-dev-mock: ## web-app-staff на :3001 с MSW-моками (вход: +79990000010 / secret1)
+	cd frontend/apps/web-app-staff && npm run dev:mock
 web-check: ## Типы из OpenAPI не разошлись + typecheck + lint + unit + build
 	cd frontend && npm run gen:check --workspace @fp/api && npm run typecheck && npm run lint && npm test && npm run build
 web-e2e: ## Playwright против сборки в режиме mock (нужны браузеры: npx playwright install chromium)
 	cd frontend/apps/web-app && npx playwright test
+web-staff-e2e: ## Playwright для web-app-staff (планшет и десктоп, режим mock)
+	cd frontend/apps/web-app-staff && npx playwright test
 web-gen: ## Перегенерировать TS-типы из contracts/openapi
 	cd frontend && npm run gen:api
 

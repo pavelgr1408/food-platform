@@ -161,6 +161,7 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run e2e --workspace web-app
+          npm run e2e --workspace web-app-staff
 
   secrets:
     runs-on: ubuntu-latest

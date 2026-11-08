@@ -1,0 +1,17 @@
+# Срез: web-app-staff (клиент персонала «Лоток») на :3001, /api/* → gateway. Вместе с бэкендом:
+#   AUTH_MODE=jwks make up SLICE="auth restaurant menu orders payment delivery loyalty notification mock-externals gateway web-app-staff"
+# Вход: телефон сотрудника из seed auth (роль STAFF/FRANCHISE_OWNER/HQ_STAFF с привязкой к ресторану).
+services:
+  web-app-staff:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        APP: web-app-staff
+        VITE_API_MODE: real
+    environment:
+      GATEWAY_UPSTREAM: http://gateway:8080
+      NGINX_RESOLVER: 127.0.0.11
+    ports:
+      - "3001:3000"
+    mem_limit: 32m
