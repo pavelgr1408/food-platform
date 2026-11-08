@@ -221,3 +221,74 @@ func TestInputValidation(t *testing.T) {
 		t.Errorf("bad restaurantId: %d", rec.Code)
 	}
 }
+
+// Долг №89: список управления и удаление черновика поверх HTTP.
+func TestManagedListAndDeleteOverHTTP(t *testing.T) {
+	h, _ := newHandler(t)
+	// роль проверяет HTTP-слой: гость 401, покупатель и кассир 403
+	for name, tc := range map[string]struct {
+		hdr  map[string]string
+		code int
+	}{"guest": {nil, 401}, "customer": {cust, 403}, "staff": {staff, 403}} {
+		if rec := do(h, "GET", "/promotions/manage", "", tc.hdr); rec.Code != tc.code {
+			t.Errorf("%s list: %d, want %d", name, rec.Code, tc.code)
+		}
+		if rec := do(h, "DELETE", "/promotions/"+r1, "", tc.hdr); rec.Code != tc.code {
+			t.Errorf("%s delete: %d, want %d", name, rec.Code, tc.code)
+		}
+	}
+
+	mine := decode(t, do(h, "POST", "/promotions", body("local", r4, 1, ""), owner, key("m1")))["id"].(string)
+	foreign := decode(t, do(h, "POST", "/promotions", body("local", r1, 1, ""), hq, key("m2")))["id"].(string)
+	nat := decode(t, do(h, "POST", "/promotions", body("national", "", 1, ""), hq, key("m3")))["id"].(string)
+
+	rec := do(h, "GET", "/promotions/manage", "", owner)
+	page := decode(t, rec)
+	items := page["items"].([]any)
+	if rec.Code != 200 || len(items) != 1 || page["total"].(float64) != 1 || page["limit"].(float64) != 20 || page["offset"].(float64) != 0 {
+		t.Fatalf("owner list: %d %s", rec.Code, rec.Body)
+	}
+	it := items[0].(map[string]any)
+	if it["id"] != mine || it["status"] != "draft" || it["version"].(float64) != 1 || it["createdBy"] != "owner4" {
+		t.Fatalf("item must be a full Promotion: %v", it)
+	}
+	page = decode(t, do(h, "GET", "/promotions/manage?status=draft&status=completed&limit=2", "", hq))
+	if len(page["items"].([]any)) != 2 || page["total"].(float64) != 3 || page["limit"].(float64) != 2 {
+		t.Fatalf("hq: %v", page)
+	}
+	if rec := do(h, "GET", "/promotions/manage?scope=national", "", owner); rec.Code != 403 || decode(t, rec)["code"] != "SCOPE_NOT_ALLOWED" {
+		t.Fatalf("owner national: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "GET", "/promotions/manage?restaurantId="+r1, "", owner); rec.Code != 403 || decode(t, rec)["code"] != "NOT_BOUND_TO_RESTAURANT" {
+		t.Fatalf("owner foreign: %d %s", rec.Code, rec.Body)
+	}
+	for _, q := range []string{"status=scheduled", "scope=global", "limit=abc", "limit=51", "offset=-1", "restaurantId=x"} {
+		if rec := do(h, "GET", "/promotions/manage?"+q, "", hq); rec.Code != 400 || decode(t, rec)["code"] != "INVALID_PARAMETER" && decode(t, rec)["code"] != "VALIDATION_FAILED" {
+			t.Errorf("%s: %d %s", q, rec.Code, rec.Body)
+		}
+	}
+
+	// удаление: чужое — 403, своё черновик — 204, повтор — 404, активное — 409
+	if rec := do(h, "DELETE", "/promotions/"+foreign, "", owner); rec.Code != 403 || decode(t, rec)["code"] != "NOT_BOUND_TO_RESTAURANT" {
+		t.Fatalf("delete foreign: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "DELETE", "/promotions/"+mine, "", owner); rec.Code != 204 || rec.Body.Len() != 0 {
+		t.Fatalf("delete draft: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "GET", "/promotions/"+mine, "", owner); rec.Code != 404 {
+		t.Fatalf("deleted draft is gone: %d", rec.Code)
+	}
+	if rec := do(h, "DELETE", "/promotions/"+mine, "", owner); rec.Code != 404 || decode(t, rec)["code"] != "PROMOTION_NOT_FOUND" {
+		t.Fatalf("repeat: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "POST", "/promotions/"+nat+"/activation", "", hq); rec.Code != 200 {
+		t.Fatalf("activate: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(h, "DELETE", "/promotions/"+nat, "", hq); rec.Code != 409 || decode(t, rec)["code"] != "PROMOTION_NOT_DRAFT" {
+		t.Fatalf("delete active: %d %s", rec.Code, rec.Body)
+	}
+	// литеральный /promotions/manage не перехватывается маршрутом {promotionId}
+	if rec := do(h, "GET", "/promotions/manage", "", hq); rec.Code != 200 {
+		t.Fatalf("manage route: %d %s", rec.Code, rec.Body)
+	}
+}

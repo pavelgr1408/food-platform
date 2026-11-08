@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/pavelgr1408/food-platform/pkg/authclient"
@@ -27,6 +28,8 @@ type Promotions interface {
 	Complete(ctx context.Context, a service.Actor, id string) (domain.Promotion, error)
 	History(ctx context.Context, a service.Actor, id string) ([]service.HistoryEntry, error)
 	ListActive(ctx context.Context, restaurantID string) ([]domain.Promotion, error)
+	ListManaged(ctx context.Context, a service.Actor, in service.ManagedInput) (service.ManagedPage, error)
+	Delete(ctx context.Context, a service.Actor, id string) error
 }
 
 // Deps — зависимости HTTP-слоя.
@@ -62,7 +65,9 @@ func New(d Deps) http.Handler {
 			Scope: func(r *http.Request) string { return authclient.FromContext(r.Context()).UserID }})(create)
 	}
 	mux.Handle("POST /promotions", manage(create))
+	mux.Handle("GET /promotions/manage", manage(http.HandlerFunc(h.listManaged)))
 	mux.Handle("GET /promotions/{promotionId}", manage(http.HandlerFunc(h.get)))
+	mux.Handle("DELETE /promotions/{promotionId}", manage(http.HandlerFunc(h.delete)))
 	mux.Handle("PUT /promotions/{promotionId}", manage(http.HandlerFunc(h.update)))
 	mux.Handle("GET /promotions/{promotionId}/history", manage(http.HandlerFunc(h.history)))
 	mux.Handle("POST /promotions/{promotionId}/activation", manage(http.HandlerFunc(h.activate)))
@@ -211,4 +216,50 @@ func (h *handlers) complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, dto.From(p))
+}
+
+// managedPage — PromotionPage из loyalty.yaml.
+type managedPage struct {
+	Items  []dto.Promotion `json:"items"`
+	Total  int             `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+}
+
+func (h *handlers) listManaged(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	in := service.ManagedInput{Statuses: q["status"], Scope: q.Get("scope"), RestaurantID: q.Get("restaurantId")}
+	for _, p := range []struct {
+		name string
+		dst  **int
+	}{{"limit", &in.Limit}, {"offset", &in.Offset}} {
+		raw := q.Get(p.name)
+		if raw == "" && !q.Has(p.name) {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			h.fail(w, r, httpx.NewError(http.StatusBadRequest, "INVALID_PARAMETER", p.name+" must be an integer"))
+			return
+		}
+		*p.dst = &n
+	}
+	page, err := h.svc.ListManaged(r.Context(), actor(r), in)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := managedPage{Items: make([]dto.Promotion, 0, len(page.Items)), Total: page.Total, Limit: page.Limit, Offset: page.Offset}
+	for _, p := range page.Items {
+		out.Items = append(out.Items, dto.From(p))
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+func (h *handlers) delete(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.Delete(r.Context(), actor(r), r.PathValue("promotionId")); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
