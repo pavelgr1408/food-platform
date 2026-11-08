@@ -2529,6 +2529,528 @@
       ]
     },
     {
+      "name": "6в. Очередь ресторана: GET /orders/queue (долг №89)",
+      "item": [
+        {
+          "name": "listRestaurantOrders: гость → 401 UNAUTHORIZED",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue",
+            "header": []
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('problem+json с кодом UNAUTHORIZED', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('UNAUTHORIZED'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: покупатель (CUSTOMER) → 403 FORBIDDEN",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "alice"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('problem+json с кодом FORBIDDEN', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('FORBIDDEN'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: сотрудник видит заказ ресторана, новые первыми (sort=newest), с контактом клиента",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?sort=newest&status=accepted&limit=50",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('StaffOrderPage: items, total, limit, offset', () => { pm.expect(p.items).to.be.an('array'); pm.expect(p.total).to.be.at.least(1); pm.expect(p.limit).to.eql(50); pm.expect(p.offset).to.eql(0); pm.expect(p.total).to.be.at.least(p.items.length); });",
+                  "pm.test('первым идёт самый новый принятый заказ — aliceOrder', () => pm.expect(p.items[0].id).to.eql(pm.collectionVariables.get('aliceOrder')));",
+                  "pm.test('все заказы — своего ресторана и в статусе accepted', () => p.items.forEach(o => { pm.expect(o.restaurantId).to.eql(pm.variables.get('restaurantId')); pm.expect(o.status).to.eql('accepted'); }));",
+                  "pm.test('от новых к старым по createdAt', () => { for (let i = 1; i < p.items.length; i++) pm.expect(Date.parse(p.items[i - 1].createdAt)).to.be.at.least(Date.parse(p.items[i].createdAt)); });",
+                  "pm.test('StaffOrder: номер, состав, деньги в копейках', () => { const o = p.items[0]; pm.expect(o.number).to.match(/^R\\d+-\\d{6}-\\d{4,}$/); pm.expect(o.items.length).to.be.at.least(1); pm.expect(Number.isInteger(o.total.amount)).to.be.true; pm.expect(o.fulfillment.type).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: по умолчанию старые первыми (очередь), закрытых и отменённых нет",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?limit=50",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('от старых к новым по createdAt', () => { for (let i = 1; i < p.items.length; i++) pm.expect(Date.parse(p.items[i - 1].createdAt)).to.be.at.most(Date.parse(p.items[i].createdAt)); });",
+                  "pm.test('без closed и cancelled', () => p.items.forEach(o => pm.expect(['closed', 'cancelled']).to.not.include(o.status)));",
+                  "pm.test('повторов нет', () => { const ids = p.items.map(o => o.id); pm.expect(new Set(ids).size).to.eql(ids.length); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: фильтры status (повторяется) и fulfillment",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?status=accepted&status=pending_payment&fulfillment=pickup&limit=50",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('только accepted/pending_payment и самовывоз', () => { pm.expect(p.total).to.be.at.least(1); p.items.forEach(o => { pm.expect(['accepted', 'pending_payment']).to.include(o.status); pm.expect(o.fulfillment.type).to.eql('pickup'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: status=cancelled — отменённые видны только по явному запросу",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?status=cancelled&limit=50",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('все — cancelled', () => p.items.forEach(o => pm.expect(o.status).to.eql('cancelled')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: страница limit=1, total не зависит от размера страницы",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?limit=1&offset=0",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('одна запись, total ≥ 1, limit=1', () => { pm.expect(p.items.length).to.eql(1); pm.expect(p.limit).to.eql(1); pm.expect(p.total).to.be.at.least(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: offset за концом — пустая страница с настоящим total",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?offset=100000",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('items пуст, total > 0', () => { pm.expect(p.items).to.eql([]); pm.expect(p.total).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: сотрудник другого ресторана видит свою (пустую) очередь, чужих заказов нет",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-other"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "a1000000-0000-4000-8000-0000000000ff"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('пусто', () => { pm.expect(p.items).to.eql([]); pm.expect(p.total).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: чужой restaurantId → 403 FORBIDDEN",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?restaurantId={{restaurantId}}",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-other"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "a1000000-0000-4000-8000-0000000000ff"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('problem+json с кодом FORBIDDEN', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('FORBIDDEN'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: сотрудник без привязки к ресторанам → 403, а не пустой список",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-unbound"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('problem+json с кодом FORBIDDEN', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('FORBIDDEN'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: HQ_STAFF с restaurantId видит очередь любого ресторана",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?restaurantId={{restaurantId}}&limit=5",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "hq-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "HQ_STAFF"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('заказы ресторана', () => { pm.expect(p.total).to.be.at.least(1); p.items.forEach(o => pm.expect(o.restaurantId).to.eql(pm.variables.get('restaurantId'))); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: неизвестный status → 400 INVALID_PARAMETER",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?status=shipped",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: неизвестный sort → 400 INVALID_PARAMETER",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?sort=random",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: limit > 50 → 400 INVALID_PARAMETER",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?limit=51",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "listRestaurantOrders: restaurantId не UUID → 400 INVALID_PARAMETER",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/orders/queue?restaurantId=abc",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "staff-q"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "STAFF"
+              },
+              {
+                "key": "X-Restaurant-Ids",
+                "value": "{{restaurantId}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json с кодом INVALID_PARAMETER', () => { pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'); pm.expect(pm.response.json().code).to.eql('INVALID_PARAMETER'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "7. Метрики после сценариев",
       "item": [
         {
