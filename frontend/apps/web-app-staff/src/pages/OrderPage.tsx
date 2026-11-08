@@ -43,7 +43,7 @@ export function OrderPage() {
   });
 
   const [dialog, setDialog] = useState<null | "pay" | "issue" | "cancel">(null);
-  const [flash, setFlash] = useState<string | null>(null);
+  const [flash, setFlash] = useState<{ text: string; untilPaid?: boolean } | null>(null);
   const apply = (next: StaffOrder | import("@fp/api").Order) => {
     // issue/cancel возвращают Order без контактов: не затираем StaffOrder, а сливаем
     qc.setQueryData<StaffOrder>(["staff-order", n], (prev) => (prev ? { ...prev, ...next } : (next as StaffOrder)));
@@ -86,7 +86,7 @@ export function OrderPage() {
           <p className="mt-2 text-muted">Оформлен {fmtDateTime(o.createdAt, tz)}{o.createdBy ? " сотрудником" : ""}{reasonText(o.statusReason) ? ` · ${reasonText(o.statusReason)}` : ""}</p>
         </header>
 
-        {flash ? <Notice tone="success">{flash}</Notice> : null}
+        {flash && !(flash.untilPaid && o.paymentStatus === "paid") ? <Notice tone="success">{flash.text}</Notice> : null}
         {o.refundStatus ? <RefundNotice status={o.refundStatus} /> : null}
         {o.status === "cancelled" && !o.refundStatus && o.paymentStatus === "paid" ? <Notice tone="info">Заказ оплачен — возврат запускается.</Notice> : null}
         {waitingPayment && o.paymentMethod === "pos" ? (
@@ -170,9 +170,9 @@ export function OrderPage() {
         </Surface>
       </aside>
 
-      {dialog === "pay" ? <PayDialog o={o} onClose={() => setDialog(null)} onDone={(msg) => { setDialog(null); setFlash(msg); void qc.invalidateQueries({ queryKey: ["staff-order", n] }); }} /> : null}
-      {dialog === "issue" ? <IssueDialog o={o} onClose={() => setDialog(null)} onPay={() => setDialog("pay")} onDone={(next) => { setDialog(null); setFlash(`Заказ ${o.number} выдан и закрыт.`); apply(next); }} /> : null}
-      {dialog === "cancel" ? <CancelDialog o={o} onClose={() => setDialog(null)} onDone={(next) => { setDialog(null); setFlash(`Заказ ${o.number} отменён.`); apply(next); }} /> : null}
+      {dialog === "pay" ? <PayDialog o={o} onClose={() => setDialog(null)} onDone={(msg, untilPaid) => { setDialog(null); setFlash({ text: msg, untilPaid }); void qc.invalidateQueries({ queryKey: ["staff-order", n] }); }} /> : null}
+      {dialog === "issue" ? <IssueDialog o={o} onClose={() => setDialog(null)} onPay={() => setDialog("pay")} onDone={(next) => { setDialog(null); setFlash({ text: `Заказ ${o.number} выдан и закрыт.` }); apply(next); }} /> : null}
+      {dialog === "cancel" ? <CancelDialog o={o} onClose={() => setDialog(null)} onDone={(next) => { setDialog(null); setFlash({ text: `Заказ ${o.number} отменён.` }); apply(next); }} /> : null}
     </div>
   );
 }
@@ -218,7 +218,7 @@ function PaymentDetails({ orderId, paymentId, tz }: { orderId: string; paymentId
 }
 
 /* ----------------------------- Оплата на кассе (UC-STF-06) ----------------------------- */
-function PayDialog({ o, onClose, onDone }: { o: StaffOrder; onClose: () => void; onDone: (msg: string) => void }) {
+function PayDialog({ o, onClose, onDone }: { o: StaffOrder; onClose: () => void; onDone: (msg: string, untilPaid?: boolean) => void }) {
   const api = useApi();
   const [tender, setTender] = useState<PosTender>("card");
   // один ключ на одну попытку; после любого 4xx (кроме «в процессе») нужен новый (4xx сохраняются под ключом)
@@ -233,7 +233,7 @@ function PayDialog({ o, onClose, onDone }: { o: StaffOrder; onClose: () => void;
     },
     onSuccess: ({ payment, status }) => {
       localPayments.set(o.id, payment.id);
-      onDone(status === 202 ? "Касса пока не подтвердила платёж. Не принимайте оплату повторно — исход появится здесь." : "Оплата отправлена на терминал. Ждём подтверждения кассы.");
+      onDone(status === 202 ? "Касса пока не подтвердила платёж. Не принимайте оплату повторно — исход появится здесь." : "Оплата отправлена на терминал. Ждём подтверждения кассы.", true);
     },
     onError: (e) => {
       if (!isApiError(e)) return;

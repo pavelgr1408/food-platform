@@ -134,6 +134,7 @@ describe("заказ по факсу (UC-STF-02…05) → оплата → вы�
     expect(await screen.findByText("Оплачен")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(await screen.findByText(/Платёж · Наличными/)).toBeInTheDocument(); // чек: paymentId запомнен на устройстве
+    expect(screen.queryByText(/Ждём подтверждения кассы/)).not.toBeInTheDocument(); // «в процессе» не висит после оплаты
 
     // готовка идёт на производстве: подтягиваем статус как это сделал бы mock-production
     stored.order.status = "ready";
