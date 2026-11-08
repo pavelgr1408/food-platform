@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: orders-service — REST API
-  version: 1.9.1
+  version: 1.10.0
   description: >-
     Корзина, оформление и жизненный цикл заказа: расчёт суммы с учётом акций,
     выбор способа получения, оценка времени готовности (ETA), поиск заказа и
@@ -504,6 +504,89 @@ paths:
               schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '422': { $ref: '_common.yaml#/components/responses/UnprocessableEntity' }
 
+  /orders/queue:
+    get:
+      tags: [orders-service]
+      operationId: listRestaurantOrders
+      x-status: planned
+      summary: Очередь заказов ресторана (персонал)
+      description: >-
+        Список заказов ресторанов, к которым привязан сотрудник (долг №89): экран кассы
+        «Входящие / В работе / Готовы». Отдельный маршрут, а не `listOrders` с параметром: у списка
+        покупателя и у очереди персонала разные права, порядок и состав ответа.
+
+
+        **Доступ.** Роль `STAFF`, `FRANCHISE_OWNER` или `HQ_STAFF` (гость — `401`, покупатель — `403`).
+        Без `restaurantId` выдаются заказы всех ресторанов, к которым привязан сотрудник (`HQ_STAFF` —
+        всех ресторанов; страница ограничена `limit`). С `restaurantId` ресторан должен быть доступен
+        сотруднику, иначе `403 FORBIDDEN`. Сотрудник без привязки к ресторанам и без `restaurantId` получает
+        `403 FORBIDDEN`, а не пустой список. Идентификатор ресторана не секретен, поэтому, в отличие от
+        `searchOrder`, чужой ресторан не маскируется под пустую выдачу.
+
+
+        **Состав.** Без `status` — незавершённые заказы (все статусы, кроме `closed` и `cancelled`);
+        чтобы увидеть историю, `status` указывается явно. Параметр можно повторять. `fulfillment`
+        сужает выдачу способом получения. Неизвестные значения, `limit` вне 1…50 и отрицательный `offset` —
+        `400 INVALID_PARAMETER`, а не молчаливое значение по умолчанию. Заказы онлайн-оплаты в статусе
+        `pending_payment` входят в очередь по умолчанию: сотрудник может принять оплату на кассе
+        (`initiatePosPayment`).
+
+
+        **Порядок.** `sort=oldest` (по умолчанию) — по `createdAt` по возрастанию, при равенстве по `id`
+        (очередь: старые заказы сверху); `sort=newest` — по убыванию. Тайбрейк по `id` делает страницу
+        стабильной. `total` — число заказов с тем же фильтром, независимо от `limit` и `offset`;
+        `total` и страница читаются без общей транзакции, поэтому при параллельном создании заказа
+        могут разойтись на единицу.
+
+
+        Элементы — `StaffOrder`: полный заказ с контактами клиента (для сверки при выдаче, как в
+        `searchOrder`), без ETA.
+      security:
+        - bearerAuth: [orders:staff]
+      parameters:
+        - name: restaurantId
+          in: query
+          required: false
+          description: Ограничить выдачу одним рестораном (должен быть доступен сотруднику).
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          required: false
+          description: >-
+            Фильтр по статусу; параметр можно повторять (`status=accepted&status=cooking`).
+            Без параметра — все незавершённые (кроме `closed` и `cancelled`).
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 10
+            items: { $ref: '#/components/schemas/OrderStatus' }
+        - name: fulfillment
+          in: query
+          required: false
+          description: Способ получения; без параметра — любой.
+          schema: { $ref: '#/components/schemas/FulfillmentType' }
+        - name: sort
+          in: query
+          required: false
+          description: '`oldest` — старые первыми (очередь), `newest` — новые первыми.'
+          schema: { type: string, enum: [oldest, newest], default: oldest }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Страница заказов (может быть пустой)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffOrderPage' }
+        '400':
+          description: '`INVALID_PARAMETER` — неизвестный статус/способ получения/сортировка, `limit`/`offset` вне границ, `restaurantId` не UUID'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '_common.yaml#/components/responses/Forbidden' }
+
   /orders/search:
     get:
       tags: [orders-service]
@@ -921,6 +1004,20 @@ components:
             createdBy:
               type: string
               description: Сотрудник, оформивший заказ (только `channel=staff_fax`).
+    StaffOrderPage:
+      type: object
+      required: [items, total, limit, offset]
+      description: Страница очереди ресторана — ответ `listRestaurantOrders`.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/StaffOrder' }
+        total:
+          type: integer
+          minimum: 0
+          description: Всего заказов с учётом фильтров, независимо от `limit` и `offset`.
+        limit: { type: integer }
+        offset: { type: integer }
     CancelOrderRequest:
       type: object
       required: [reason]

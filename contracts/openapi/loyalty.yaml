@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: loyalty-service — REST API
-  version: 1.2.0
+  version: 1.3.0
   description: >-
     Акции и скидки: просмотр действующих предложений клиентом и управление
     акциями персоналом (локальные для ресторана франшизы / общенациональные).
@@ -12,11 +12,13 @@ info:
 
 
     **Статус реализации** (`x-status`): `implemented` — есть в коде `services/loyalty`.
-    С S8 реализованы все операции.
+    С S8 реализованы все операции, кроме `listManagedPromotions` и `deletePromotion` (долг №89): `planned` до кода.
 
 
-    **Жизненный цикл.** `draft → active → completed`. Черновик можно править и
-    удалять из рассмотрения (`completePromotion` на черновике закрывает его без публикации).
+    **Жизненный цикл.** `draft → active → completed`. Черновик можно править,
+    закрыть без публикации (`completePromotion`) или удалить совсем (`deletePromotion`, только `draft`:
+    черновик ни разу не публиковался в `promotions.discount`, поэтому события не нужно; запись и её
+    история удаляются без следа). Найти черновики и завершённые акции помогает `listManagedPromotions`.
     `activatePromotion` публикует акцию в `promotions.discount`; акция с будущим `startsAt`
     публикуется сразу и начинает действовать сама («запланирована» — это `active` до `startsAt`,
     отдельного статуса нет). Акция, у которой прошёл `endsAt`, перестаёт действовать без
@@ -151,6 +153,78 @@ paths:
         '422': { $ref: '#/components/responses/PromotionInvalid' }
         '503': { $ref: '#/components/responses/AuthUnavailable' }
 
+  /promotions/manage:
+    get:
+      tags: [loyalty-service]
+      operationId: listManagedPromotions
+      x-status: planned
+      summary: Список акций для управления (персонал)
+      description: >-
+        Все акции, которыми вправе управлять сотрудник, в любом статусе — черновики и завершённые
+        тоже (долг №89, UC-PRM-08). Отдельный маршрут, а не параметр витрины `listActivePromotions`:
+        у витрины другой ответ (массив действующих акций), доступ гостю и без пагинации, а у списка
+        управления — роль, охват и страницы. Литеральный путь `/promotions/manage` не пересекается с
+        `/promotions/{promotionId}` (идентификатор — UUID).
+
+
+        **Охват.** `HQ_STAFF` видит все акции (`scope`, `restaurantId` — необязательные фильтры).
+        `FRANCHISE_OWNER` видит только `local` акции своих ресторанов: без `restaurantId` — всех своих,
+        с `restaurantId` чужого ресторана — `403 NOT_BOUND_TO_RESTAURANT`, с `scope=national` —
+        `403 SCOPE_NOT_ALLOWED`. Решение принимает auth-service (`promotion.manage`, как в остальных
+        операциях управления); auth недоступен — `503 AUTH_UNAVAILABLE` (fail-closed).
+
+
+        **Порядок и страницы.** Недавно изменённые первыми (`updatedAt` по убыванию, при равенстве —
+        по `id`); `limit` 1…50 (по умолчанию 20), `offset`. `total` — число акций с тем же фильтром.
+        Неизвестный `status`/`scope`, `restaurantId` не UUID, `limit`/`offset` вне границ —
+        `400 INVALID_PARAMETER`. Признаки «запланирована»/«истекла» в БД не хранятся, фильтра по ним нет —
+        клиент выводит их из `startsAt`/`endsAt` (см. «Жизненный цикл»).
+      security:
+        - bearerAuth: [promotions:read]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу; параметр можно повторять. Без параметра — все статусы.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 3
+            items: { $ref: '#/components/schemas/PromotionStatus' }
+        - name: scope
+          in: query
+          required: false
+          description: Фильтр по охвату (для владельца допустим только `local`).
+          schema: { $ref: '#/components/schemas/PromotionScope' }
+        - name: restaurantId
+          in: query
+          required: false
+          description: Только акции этого ресторана (должен быть доступен сотруднику).
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          description: Размер страницы.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: offset
+          in: query
+          description: Смещение от начала списка.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Страница акций (может быть пустой)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromotionPage' }
+        '400':
+          description: '`INVALID_PARAMETER` — неизвестный статус/охват, `restaurantId` не UUID, `limit`/`offset` вне границ'
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
+
   /promotions/{promotionId}:
     get:
       tags: [loyalty-service]
@@ -206,6 +280,37 @@ paths:
         '404': { $ref: '#/components/responses/PromotionNotFound' }
         '409': { $ref: '#/components/responses/PromotionConflict' }
         '422': { $ref: '#/components/responses/PromotionInvalid' }
+        '503': { $ref: '#/components/responses/AuthUnavailable' }
+
+    delete:
+      tags: [loyalty-service]
+      operationId: deletePromotion
+      x-status: planned
+      summary: Удалить черновик акции (персонал)
+      description: >-
+        Удаляет акцию в статусе `draft` вместе с историей (долг №59, №89). Право — то же, что на
+        изменение (`promotion.manage` для охвата акции). Акция `active` или `completed`
+        не удаляется: `409 PROMOTION_NOT_DRAFT` (действующую закрывают через `completePromotion`;
+        завершённая остаётся как след для заказов и аудита). Черновик не публиковался, поэтому событие в
+        `promotions.discount` не отправляется. Повтор удаления — `404 PROMOTION_NOT_FOUND`, как у любого
+        отсутствующего ресурса. Если акцию активируют одновременно, побеждает та операция, что взяла
+        блокировку строки первой: удаление не может затронуть уже активированную акцию.
+      security:
+        - bearerAuth: [promotions:write]
+      parameters:
+        - { $ref: '#/components/parameters/PromotionId' }
+      responses:
+        '204':
+          description: Черновик удалён
+        '400': { $ref: '_common.yaml#/components/responses/BadRequest' }
+        '401': { $ref: '_common.yaml#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/PromotionForbidden' }
+        '404': { $ref: '#/components/responses/PromotionNotFound' }
+        '409':
+          description: Акция не в статусе `draft` (`PROMOTION_NOT_DRAFT`)
+          content:
+            application/problem+json:
+              schema: { $ref: '_common.yaml#/components/schemas/Problem' }
         '503': { $ref: '#/components/responses/AuthUnavailable' }
 
   /promotions/{promotionId}/history:
@@ -426,6 +531,20 @@ components:
             createdBy: { type: string, description: Идентификатор автора (userId). }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
+    PromotionPage:
+      type: object
+      required: [items, total, limit, offset]
+      description: Страница списка управления — ответ `listManagedPromotions`.
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Promotion' }
+        total:
+          type: integer
+          minimum: 0
+          description: Всего акций с учётом фильтров, независимо от `limit` и `offset`.
+        limit: { type: integer }
+        offset: { type: integer }
     PromotionInput:
       type: object
       required: [title, scope, discount, startsAt, endsAt]
