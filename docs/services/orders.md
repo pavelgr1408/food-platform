@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Сервис | `services/orders`, порт `8084`, БД `orders` (Postgres) |
-| Контракты | `contracts/openapi/orders.yaml` v1.9.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
+| Контракты | `contracts/openapi/orders.yaml` v1.10.1; события — `contracts/asyncapi/kafka-events.yaml` v1.5.0 |
 | Kafka | публикует `orders.state`, `orders.status` (transactional outbox); потребляет 5 топиков в 4 группах |
 | Идемпотентность | `POST /orders` — обязательный `Idempotency-Key` |
 | Зависимости (синхронно) | `menu` (validateMenuItems), `restaurant` (getRestaurant) |
@@ -71,6 +71,7 @@ flowchart LR
 | 10 | `POST /orders/{orderId}/issuance` | markOrderIssued | персонал | 200 | Выдать заказ |
 | 11 | `POST /orders/{orderId}/cancellation` | cancelOrder | персонал | 200 | Отменить заказ |
 | 12 | `GET /orders?status=&limit=&offset=` | listOrders | любой вошедший пользователь (гость → 401) | 200 | Мои заказы: от новых к старым, фильтр `status`, страница |
+| 12а | `GET /orders/queue?restaurantId=&status=&fulfillment=&sort=&limit=&offset=` | listRestaurantOrders | STAFF, FRANCHISE_OWNER, HQ_STAFF | 200 | Очередь заказов ресторанов сотрудника (долг №89): старые первыми, контакты клиента видны |
 | 13 | `GET /health/`, `GET /actuator/health` (db, kafka), `GET /metrics` | — | служебные | | |
 
 Режим `--migrate-only` — применить миграции (сервиса, `kafka`, `idempotency`) и выйти.
@@ -159,6 +160,15 @@ flowchart LR
 - Ответ `OrderPage { items: Order[], total, limit, offset }`. Элемент — **тот же `Order`, что у `getOrder`** (со снимком модификаторов, суммами, доставкой), без ETA; `total` — число заказов пользователя с фильтром, не зависит от страницы. За страницей (`offset` больше `total`) — пустой `items` и настоящий `total`.
 - Позиции всей страницы читаются **одним запросом** (`order_id = ANY`), а не по запросу на заказ; заказ из списка не читает внешних сервисов и Kafka.
 - `total` и страница читаются двумя запросами без общей транзакции: между ними может появиться новый заказ, тогда `total` на единицу больше. Для списка истории это допустимо.
+
+### 3.1б. Очередь заказов ресторана (`listRestaurantOrders`, долг №89)
+
+`GET /orders/queue` — страница заказов ресторанов, к которым привязан сотрудник (claim `restaurants[]`; `HQ_STAFF` — всех). Отдельный маршрут, а не `listOrders` с параметром: у покупательского списка и у очереди разные права, сортировка и состав ответа (решение — PROJECT-STATE, часть 5).
+
+- Доступ: роль персонала проверяет HTTP-слой (гость → `401`, `CUSTOMER` → `403`). Без `restaurantId` — все рестораны сотрудника (`HQ_STAFF` — все рестораны); с `restaurantId` — один, он должен быть доступен, иначе `403 FORBIDDEN`. Сотрудник без привязки и без `restaurantId` → `403`, а не пустой список. В отличие от `searchOrder`, чужой ресторан не маскируется под `404`: идентификатор ресторана публичен, а пустая выдача скрыла бы ошибку клиента.
+- `status` можно повторять (максимум 10, повторы схлопываются); без параметра — все **незавершённые** (`pending_payment`, `accepted`, `cooking`, `ready`, `on_delivery`, `delivered`, `handed_over`, `not_received`), `closed` и `cancelled` — только по явному `status`. `pending_payment` входит в очередь по умолчанию: кассир принимает оплату на кассе. `fulfillment` — `pickup|delivery`. Неизвестные значения, `sort` вне `oldest|newest`, `limit` вне 1…50, `offset < 0`, `restaurantId` не UUID → `400 INVALID_PARAMETER`.
+- Порядок: `sort=oldest` (по умолчанию) — `created_at ASC, id ASC` (очередь: старые сверху), `newest` — `DESC`; тайбрейк по `id` делает страницы стабильными. Служит индекс `orders_restaurant_idx (restaurant_id, created_at DESC)` (обратный проход для `ASC`); `EXPLAIN` на большой истории не проверялся.
+- Ответ `StaffOrderPage { items: StaffOrder[], total, limit, offset }`: элемент — `Order` + `contact` (+ `createdBy` у заказа по факсу), как у `searchOrder`; позиции страницы читаются одним запросом. `total` и страница — два запроса без общей транзакции (как в `listOrders`).
 
 ### 3.2. Оформление заказа
 

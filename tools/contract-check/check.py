@@ -203,6 +203,16 @@ def orders(r, m, o):
     check(S, "GET", o, "/orders?status=accepted&status=pending_payment&limit=1&offset=0", 200, headers=alice, label="listOrders: фильтр, страница")
     check(S, "GET", o, "/orders?status=shipped", 400, headers=alice, label="listOrders: неизвестный status → 400")
     check(S, "GET", o, "/orders?limit=51", 400, headers=alice, label="listOrders: limit > 50 → 400")
+    # очередь ресторана (долг №89): StaffOrderPage валидируется по схеме, ошибки — Problem
+    staff = {"X-User-Id": "staff-cc", "X-User-Roles": "STAFF", "X-Restaurant-Ids": R4}
+    check(S, "GET", o, "/orders/queue", 401, label="listRestaurantOrders: гость → 401")
+    check(S, "GET", o, "/orders/queue", 403, headers=alice, label="listRestaurantOrders: покупатель → 403")
+    check(S, "GET", o, "/orders/queue", 200, headers=staff, label="listRestaurantOrders: очередь ресторана")
+    check(S, "GET", o, "/orders/queue?status=accepted&status=cooking&fulfillment=pickup&sort=newest&limit=1&offset=0", 200, headers=staff, label="listRestaurantOrders: фильтры, страница")
+    check(S, "GET", o, f"/orders/queue?restaurantId={R4}", 200, headers=staff, label="listRestaurantOrders: свой restaurantId")
+    check(S, "GET", o, "/orders/queue?restaurantId=a1000000-0000-4000-8000-0000000000ff", 403, headers=staff, label="listRestaurantOrders: чужой restaurantId → 403")
+    check(S, "GET", o, "/orders/queue?status=shipped", 400, headers=staff, label="listRestaurantOrders: неизвестный status → 400")
+    check(S, "GET", o, "/orders/queue?sort=random", 400, headers=staff, label="listRestaurantOrders: неизвестный sort → 400")
 
 
 def payment(r, m, o, p):

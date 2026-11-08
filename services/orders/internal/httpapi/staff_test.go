@@ -151,3 +151,50 @@ func TestSearchOrderValidationOverHTTP(t *testing.T) {
 	wantProblem(t, do(t, srv, "POST", "/orders/"+testkit.Restaurant1+"/cancellation", map[string]any{"reason": "bogus"}, staff), 400, "INVALID_PARAMETER")
 	wantProblem(t, do(t, srv, "POST", "/orders/"+testkit.Restaurant1+"/cancellation", `{"reason":"other","x":1}`, staff), 400, "INVALID_JSON")
 }
+
+// Долг №89: очередь ресторана — права, фильтры и форма ответа поверх HTTP.
+func TestRestaurantQueueOverHTTP(t *testing.T) {
+	srv, _, _, _ := newServer(t)
+	id, number := faxOrder(t, srv, "k-queue-0")
+
+	for _, s := range subjects() {
+		t.Run(s.name, func(t *testing.T) {
+			r := do(t, srv, "GET", "/orders/queue", nil, s.hdr)
+			switch s.name {
+			case "guest":
+				wantProblem(t, r, 401, "UNAUTHORIZED")
+				return
+			case "customer":
+				wantProblem(t, r, 403, "FORBIDDEN")
+				return
+			case "staff-other", "owner-other": // другой ресторан: своя (пустая) очередь, чужих заказов не видно
+				if b := r.json(t); r.Status != 200 || len(b["items"].([]any)) != 0 || b["total"].(float64) != 0 {
+					t.Fatalf("%d %s", r.Status, r.Body)
+				}
+				return
+			}
+			b := r.json(t)
+			items := b["items"].([]any)
+			if r.Status != 200 || len(items) != 1 || b["total"].(float64) != 1 || b["limit"].(float64) != 20 || b["offset"].(float64) != 0 {
+				t.Fatalf("%d %s", r.Status, r.Body)
+			}
+			it := items[0].(map[string]any)
+			if it["id"] != id || it["number"] != number || it["contact"].(map[string]any)["phone"] != "+79995550101" {
+				t.Fatalf("%s", r.Body)
+			}
+		})
+	}
+	staff := map[string]string{"X-User-Id": "s-1", "X-User-Roles": "STAFF", "X-Restaurant-Ids": testkit.Restaurant1}
+	wantProblem(t, do(t, srv, "GET", "/orders/queue?restaurantId="+testkit.Restaurant2, nil, staff), 403, "FORBIDDEN")
+	wantProblem(t, do(t, srv, "GET", "/orders/queue?limit=abc", nil, staff), 400, "INVALID_PARAMETER")
+	wantProblem(t, do(t, srv, "GET", "/orders/queue?status=shipped", nil, staff), 400, "INVALID_PARAMETER")
+	wantProblem(t, do(t, srv, "GET", "/orders/queue?sort=random", nil, staff), 400, "INVALID_PARAMETER")
+	r := do(t, srv, "GET", "/orders/queue?status=cancelled&status=closed", nil, staff)
+	if r.Status != 200 || len(r.json(t)["items"].([]any)) != 0 {
+		t.Fatalf("%d %s", r.Status, r.Body)
+	}
+	// не путается с /orders/{orderId}: queue — литеральный маршрут
+	if r := do(t, srv, "GET", "/orders/queue", nil, nil); r.Status != 401 {
+		t.Fatalf("guest: %d %s", r.Status, r.Body)
+	}
+}
