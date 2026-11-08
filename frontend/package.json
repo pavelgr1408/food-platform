@@ -12,5 +12,5 @@
     "dev": "npm run dev --workspace web-app",
     "dev:staff": "npm run dev --workspace web-app-staff"
   },
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=22 <25" }
 }

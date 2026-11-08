@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => {
     preview: { port: 3000, strictPort: true },
     test: {
       environment: "jsdom",
+      // тесты не зависят от локального .env.local (там обычно poll для стенда с mock-externals)
+      env: { VITE_PAYMENT_MODE: "redirect" },
       setupFiles: ["./src/test-setup.ts"],
       globals: false,
       exclude: ["e2e/**", "node_modules/**"],
