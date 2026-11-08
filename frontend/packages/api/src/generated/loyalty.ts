@@ -42,7 +42,11 @@ export interface paths {
          */
         put: operations["updatePromotion"];
         post?: never;
-        delete?: never;
+        /**
+         * Удалить черновик акции (персонал)
+         * @description Удаляет акцию в статусе `draft` вместе с историей (долг №59, №89). Право — то же, что на изменение (`promotion.manage` для охвата акции). Акция `active` или `completed` не удаляется: `409 PROMOTION_NOT_DRAFT` (действующую закрывают через `completePromotion`; завершённая остаётся как след для заказов и аудита). Черновик не публиковался, поэтому событие в `promotions.discount` не отправляется. Повтор удаления — `404 PROMOTION_NOT_FOUND`, как у любого отсутствующего ресурса. Если акцию активируют одновременно, побеждает та операция, что взяла блокировку строки первой: удаление не может затронуть уже активированную акцию.
+         */
+        delete: operations["deletePromotion"];
         options?: never;
         head?: never;
         patch?: never;
@@ -100,6 +104,30 @@ export interface paths {
          * @description Журнал версий акции от создания: действие, автор, время и снимок параметров. Новые записи — в конце. (UC-PRM-03: изменение фиксируется в истории)
          */
         get: operations["getPromotionHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/promotions/manage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Список акций для управления (персонал)
+         * @description Все акции, которыми вправе управлять сотрудник, в любом статусе — черновики и завершённые тоже (долг №89, UC-PRM-08). Отдельный маршрут, а не параметр витрины `listActivePromotions`: у витрины другой ответ (массив действующих акций), доступ гостю и без пагинации, а у списка управления — роль, охват и страницы. Литеральный путь `/promotions/manage` не пересекается с `/promotions/{promotionId}` (идентификатор — UUID).
+         *
+         *     **Охват.** `HQ_STAFF` видит все акции (`scope`, `restaurantId` — необязательные фильтры). `FRANCHISE_OWNER` видит только `local` акции своих ресторанов: без `restaurantId` — всех своих, с `restaurantId` чужого ресторана — `403 NOT_BOUND_TO_RESTAURANT`, с `scope=national` — `403 SCOPE_NOT_ALLOWED`. Решение принимает auth-service (`promotion.manage`, как в остальных операциях управления); auth недоступен — `503 AUTH_UNAVAILABLE` (fail-closed).
+         *
+         *     **Порядок и страницы.** Недавно изменённые первыми (`updatedAt` по убыванию, при равенстве — по `id`); `limit` 1…50 (по умолчанию 20), `offset`. `total` — число акций с тем же фильтром. Неизвестный `status`/`scope`, `restaurantId` не UUID, `limit`/`offset` вне границ — `400 INVALID_PARAMETER`. Признаки «запланирована»/«истекла» в БД не хранятся, фильтра по ним нет — клиент выводит их из `startsAt`/`endsAt` (см. «Жизненный цикл»).
+         */
+        get: operations["listManagedPromotions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -201,6 +229,14 @@ export interface components {
             /** Format: date-time */
             startsAt: string;
             title: string;
+        };
+        /** @description Страница списка управления — ответ `listManagedPromotions`. */
+        PromotionPage: {
+            items: components["schemas"]["Promotion"][];
+            limit: number;
+            offset: number;
+            /** @description Всего акций с учётом фильтров, независимо от `limit` и `offset`. */
+            total: number;
         };
         PromotionPublic: {
             conditions?: components["schemas"]["PromotionConditions"];
@@ -465,6 +501,40 @@ export interface operations {
             503: components["responses"]["AuthUnavailable"];
         };
     };
+    deletePromotion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                promotionId: components["parameters"]["PromotionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Черновик удалён */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["PromotionForbidden"];
+            404: components["responses"]["PromotionNotFound"];
+            /** @description Акция не в статусе `draft` (`PROMOTION_NOT_DRAFT`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            503: components["responses"]["AuthUnavailable"];
+        };
+    };
     activatePromotion: {
         parameters: {
             query?: never;
@@ -545,6 +615,49 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["PromotionForbidden"];
             404: components["responses"]["PromotionNotFound"];
+            503: components["responses"]["AuthUnavailable"];
+        };
+    };
+    listManagedPromotions: {
+        parameters: {
+            query?: {
+                /** @description Размер страницы. */
+                limit?: number;
+                /** @description Смещение от начала списка. */
+                offset?: number;
+                /** @description Только акции этого ресторана (должен быть доступен сотруднику). */
+                restaurantId?: string;
+                /** @description Фильтр по охвату (для владельца допустим только `local`). */
+                scope?: components["schemas"]["PromotionScope"];
+                /** @description Фильтр по статусу; параметр можно повторять. Без параметра — все статусы. */
+                status?: components["schemas"]["PromotionStatus"][];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница акций (может быть пустой) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromotionPage"];
+                };
+            };
+            /** @description `INVALID_PARAMETER` — неизвестный статус/охват, `restaurantId` не UUID, `limit`/`offset` вне границ */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["PromotionForbidden"];
             503: components["responses"]["AuthUnavailable"];
         };
     };

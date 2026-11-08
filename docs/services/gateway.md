@@ -63,7 +63,7 @@ flowchart LR
 | `OPTIONS *` | 8080 | CORS-preflight (только для разрешённых origin) → `204` |
 | `*` вне таблицы | 8080 | `404 ROUTE_NOT_FOUND` |
 
-### 2.1. Таблица маршрутов (38)
+### 2.1. Таблица маршрутов (41)
 
 Источник истины — `internal/routes/routes.json` (встроен в образ); синхронность с `x-routes` в `gateway.yaml` и с контрактами сервисов проверяет `make check-routes`.
 
@@ -87,28 +87,31 @@ flowchart LR
 | 14 | `PUT /carts/{cartId}/fulfillment` | orders | O | — | | default |
 | 15 | `POST /orders` | orders | O | — | **S** | default |
 | 16 | `GET /orders` | orders | R | любая | | default |
-| 17 | `GET /orders/search` | orders | R | STF, FO, HQ | | default |
-| 18 | `GET /orders/{orderId}` | orders | O | — | | default |
-| 19 | `GET /orders/{orderId}/eta` | orders | O | — | | default |
-| 20 | `PUT /orders/{orderId}/pickup-slot` | orders | O | — | | default |
-| 21 | `POST /orders/{orderId}/issuance` | orders | R | STF, FO, HQ | | default |
-| 22 | `POST /orders/{orderId}/cancellation` | orders | R | STF, FO, HQ | **S** | default |
-| 23 | `GET /orders/{orderId}/payment-methods` | payment | O | — | | default |
-| 24 | `POST /orders/{orderId}/payments` | payment | O | — | **S** | default |
-| 25 | `POST /orders/{orderId}/payments/pos` | payment | R | STF, FO, HQ | **S** | default |
-| 26 | `GET /orders/{orderId}/payments/{paymentId}` | payment | O | — | | default |
-| 27 | `GET /orders/{orderId}/delivery` | delivery | O | — | | default |
-| 28 | `GET /orders/{orderId}/delivery/courier-location` | delivery | O | — | | default |
-| 29 | `GET /promotions` | loyalty | O | — | | default |
-| 30 | `POST /promotions` | loyalty | R | FO, HQ | **S** | default |
-| 31 | `GET /promotions/{promotionId}` | loyalty | R | FO, HQ | | default |
-| 32 | `PUT /promotions/{promotionId}` | loyalty | R | FO, HQ | **S** | default |
-| 33 | `GET /promotions/{promotionId}/history` | loyalty | R | FO, HQ | | default |
-| 34 | `POST /promotions/{promotionId}/activation` | loyalty | R | FO, HQ | **S** | default |
-| 35 | `POST /promotions/{promotionId}/completion` | loyalty | R | FO, HQ | **S** | default |
-| 36 | `POST /notifications/device-tokens` | notification | R | любая | | default |
-| 37 | `GET /notifications/device-tokens` | notification | R | любая | | default |
-| 38 | `DELETE /notifications/device-tokens/{tokenId}` | notification | R | любая | | default |
+| 17 | `GET /orders/queue` | orders | R | STF, FO, HQ | | default
+| 18 | `GET /orders/search` | orders | R | STF, FO, HQ | | default |
+| 19 | `GET /orders/{orderId}` | orders | O | — | | default |
+| 20 | `GET /orders/{orderId}/eta` | orders | O | — | | default |
+| 21 | `PUT /orders/{orderId}/pickup-slot` | orders | O | — | | default |
+| 22 | `POST /orders/{orderId}/issuance` | orders | R | STF, FO, HQ | | default |
+| 23 | `POST /orders/{orderId}/cancellation` | orders | R | STF, FO, HQ | **S** | default |
+| 24 | `GET /orders/{orderId}/payment-methods` | payment | O | — | | default |
+| 25 | `POST /orders/{orderId}/payments` | payment | O | — | **S** | default |
+| 26 | `POST /orders/{orderId}/payments/pos` | payment | R | STF, FO, HQ | **S** | default |
+| 27 | `GET /orders/{orderId}/payments/{paymentId}` | payment | O | — | | default |
+| 28 | `GET /orders/{orderId}/delivery` | delivery | O | — | | default |
+| 29 | `GET /orders/{orderId}/delivery/courier-location` | delivery | O | — | | default |
+| 30 | `GET /promotions` | loyalty | O | — | | default |
+| 31 | `POST /promotions` | loyalty | R | FO, HQ | **S** | default |
+| 32 | `GET /promotions/manage` | loyalty | R | FO, HQ | | default
+| 33 | `GET /promotions/{promotionId}` | loyalty | R | FO, HQ | | default |
+| 34 | `DELETE /promotions/{promotionId}` | loyalty | R | FO, HQ | **S** | default
+| 35 | `PUT /promotions/{promotionId}` | loyalty | R | FO, HQ | **S** | default |
+| 36 | `GET /promotions/{promotionId}/history` | loyalty | R | FO, HQ | | default |
+| 37 | `POST /promotions/{promotionId}/activation` | loyalty | R | FO, HQ | **S** | default |
+| 38 | `POST /promotions/{promotionId}/completion` | loyalty | R | FO, HQ | **S** | default |
+| 39 | `POST /notifications/device-tokens` | notification | R | любая | | default |
+| 40 | `GET /notifications/device-tokens` | notification | R | любая | | default |
+| 41 | `DELETE /notifications/device-tokens/{tokenId}` | notification | R | любая | | default |
 
 Намеренно **вне таблицы** (→ `404 ROUTE_NOT_FOUND`): `POST /auth/introspect`, `POST /auth/authorize`, `/metrics` и `/actuator/*` любого сервиса, `/webhooks/*`. Загрузчик таблицы при старте отвергает любую строку с `/webhooks`, `/metrics`, `/auth/introspect`, `/auth/authorize` — случайно опубликовать внутреннее нельзя.
 

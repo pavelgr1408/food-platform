@@ -204,6 +204,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orders/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Очередь заказов ресторана (персонал)
+         * @description Список заказов ресторанов, к которым привязан сотрудник (долг №89): экран кассы «Входящие / В работе / Готовы». Отдельный маршрут, а не `listOrders` с параметром: у списка покупателя и у очереди персонала разные права, порядок и состав ответа.
+         *
+         *     **Доступ.** Роль `STAFF`, `FRANCHISE_OWNER` или `HQ_STAFF` (гость — `401`, покупатель — `403`). Без `restaurantId` выдаются заказы всех ресторанов, к которым привязан сотрудник (`HQ_STAFF` — всех ресторанов; страница ограничена `limit`). С `restaurantId` ресторан должен быть доступен сотруднику, иначе `403 FORBIDDEN`. Сотрудник без привязки к ресторанам и без `restaurantId` получает `403 FORBIDDEN`, а не пустой список. Идентификатор ресторана не секретен, поэтому, в отличие от `searchOrder`, чужой ресторан не маскируется под пустую выдачу.
+         *
+         *     **Состав.** Без `status` — незавершённые заказы (все статусы, кроме `closed` и `cancelled`); чтобы увидеть историю, `status` указывается явно. Параметр можно повторять. `fulfillment` сужает выдачу способом получения. Неизвестные значения, `limit` вне 1…50 и отрицательный `offset` — `400 INVALID_PARAMETER`, а не молчаливое значение по умолчанию. Заказы онлайн-оплаты в статусе `pending_payment` входят в очередь по умолчанию: сотрудник может принять оплату на кассе (`initiatePosPayment`).
+         *
+         *     **Порядок.** `sort=oldest` (по умолчанию) — по `createdAt` по возрастанию, при равенстве по `id` (очередь: старые заказы сверху); `sort=newest` — по убыванию. Тайбрейк по `id` делает страницу стабильной. `total` — число заказов с тем же фильтром, независимо от `limit` и `offset`; `total` и страница читаются без общей транзакции, поэтому при параллельном создании заказа могут разойтись на единицу.
+         *
+         *     Элементы — `StaffOrder`: полный заказ с контактами клиента (для сверки при выдаче, как в `searchOrder`), без ETA.
+         */
+        get: operations["listRestaurantOrders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orders/search": {
         parameters: {
             query?: never;
@@ -489,6 +517,14 @@ export interface components {
             contact?: components["schemas"]["ContactInfo"];
             /** @description Сотрудник, оформивший заказ (только `channel=staff_fax`). */
             createdBy?: string;
+        };
+        /** @description Страница очереди ресторана — ответ `listRestaurantOrders`. */
+        StaffOrderPage: {
+            items: components["schemas"]["StaffOrder"][];
+            limit: number;
+            offset: number;
+            /** @description Всего заказов с учётом фильтров, независимо от `limit` и `offset`. */
+            total: number;
         };
         UnavailableItem: {
             /** Format: uuid */
@@ -1019,6 +1055,50 @@ export interface operations {
                 };
             };
             422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    listRestaurantOrders: {
+        parameters: {
+            query?: {
+                /** @description Способ получения; без параметра — любой. */
+                fulfillment?: components["schemas"]["FulfillmentType"];
+                /** @description Размер страницы. */
+                limit?: components["parameters"]["Limit"];
+                /** @description Смещение от начала списка. */
+                offset?: components["parameters"]["Offset"];
+                /** @description Ограничить выдачу одним рестораном (должен быть доступен сотруднику). */
+                restaurantId?: string;
+                /** @description `oldest` — старые первыми (очередь), `newest` — новые первыми. */
+                sort?: "oldest" | "newest";
+                /** @description Фильтр по статусу; параметр можно повторять (`status=accepted&status=cooking`). Без параметра — все незавершённые (кроме `closed` и `cancelled`). */
+                status?: components["schemas"]["OrderStatus"][];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Страница заказов (может быть пустой) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StaffOrderPage"];
+                };
+            };
+            /** @description `INVALID_PARAMETER` — неизвестный статус/способ получения/сортировка, `limit`/`offset` вне границ, `restaurantId` не UUID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     searchOrder: {
