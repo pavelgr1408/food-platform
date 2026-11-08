@@ -134,6 +134,7 @@ describe("заказ по факсу (UC-STF-02…05) → оплата → вы�
     expect(await screen.findByText("Оплачен")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(await screen.findByText(/Платёж · Наличными/)).toBeInTheDocument(); // чек: paymentId запомнен на устройстве
+    expect(screen.queryByText(/Ждём подтверждения кассы/)).not.toBeInTheDocument(); // «в процессе» не висит после оплаты
 
     // готовка идёт на производстве: подтягиваем статус как это сделал бы mock-production
     stored.order.status = "ready";
@@ -416,4 +417,17 @@ describe("акции (UC-PRM-01…13)", () => {
     expect(p.restaurantId).toBeUndefined();
     expect(screen.getByRole("radio", { name: "Вся сеть" })).toBeDisabled(); // охват после создания не меняется
   }, 30_000);
+});
+
+describe("очередь: переключение вкладок", () => {
+  it("при переходе на другую вкладку не показывает пустое состояние от прошлой", async () => {
+    const cooking = await faxOrder({ item: "i-fries" });
+    db.orders.get(cooking.id)!.order.status = "ready";
+    const user = userEvent.setup();
+    await renderApp("/", PHONES.staff);
+    expect(await screen.findByText("Новых заказов нет.")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Готовы/ }));
+    expect(screen.queryByText("Готовых заказов нет.")).not.toBeInTheDocument();
+    expect(await screen.findByText(cooking.number)).toBeInTheDocument();
+  });
 });
