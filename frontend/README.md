@@ -5,11 +5,15 @@
 | Путь | Что |
 |---|---|
 | `apps/web-app` | SPA гостя и покупателя (React 19 + TS + Vite + Tailwind v4 + TanStack Query + React Router) |
+| `apps/web-app-staff` | клиент персонала (:3001): касса (очередь, поиск по номеру, оплата на кассе, выдача, отмена), заказ по факсу, управление акциями |
+| `packages/ui` | общие компоненты, форматирование, тексты ошибок, карта (`@fp/ui`, `@fp/ui/map`) |
+| `packages/mocks` | мок-бэкенд MSW на `contracts/openapi`: гость/покупатель и персонал (`@fp/mocks`, `@fp/mocks/browser`) |
 | `packages/api` | типы из OpenAPI (`src/generated`, **не править**), клиент: `problem+json`, single-flight refresh, `Idempotency-Key` |
 | `packages/shared` | деньги (int64 копейки → «549,90 ₽», одна функция), телефон E.164, пароль по байтам |
 | `packages/design-tokens` | `tokens.css` / `tokens.json` («Лоток», `--lt-*`) |
 
-`web-app-staff` (касса, факс, акции) — следующий чат этапа S10.
+Вход в `web-app-staff`. Режим mock: `+79990000010` STAFF (касса, факс) · `+79990000011` FRANCHISE_OWNER (+ акции своего ресторана) · `+79990000012` HQ_STAFF (вся сеть), пароль `secret1`. Режим real (seed auth, `SEED_ON_START`): `+79993333333` / `staff123` (STAFF, Невский), `+79994444444` / `staff2123` (STAFF, Тверская), `+79995555555` / `owner123` (FRANCHISE_OWNER, Невский), `+79991111111` / `admin123` (HQ_STAFF).
+Запуск: `make web-staff-dev-mock` (моки) или `make web-staff-dev` (gateway :8080); e2e — `make web-staff-e2e`; срез — `make up SLICE="… gateway web-app-staff"` (порт 3001).
 
 ## Быстрый старт
 

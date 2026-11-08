@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 @import "@fp/design-tokens/tokens.css";
+/* Классы Tailwind из общего пакета UI (рабочая область вне корня приложения не сканируется сама) */
+@source "../../../packages/ui/src";
 
 @theme {
   --color-tomato: var(--lt-tomato);

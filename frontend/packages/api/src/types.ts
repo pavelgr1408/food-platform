@@ -32,6 +32,14 @@ export type MenuValidationResult = Menu["schemas"]["MenuValidationResult"];
 export type MenuValidationLine = Menu["schemas"]["MenuValidationLine"];
 
 export type PromotionPublic = Loyalty["schemas"]["PromotionPublic"];
+export type Promotion = Loyalty["schemas"]["Promotion"];
+export type PromotionInput = Loyalty["schemas"]["PromotionInput"];
+export type PromotionPage = Loyalty["schemas"]["PromotionPage"];
+export type PromotionRevision = Loyalty["schemas"]["PromotionRevision"];
+export type PromotionStatus = Loyalty["schemas"]["PromotionStatus"];
+export type PromotionScope = Loyalty["schemas"]["PromotionScope"];
+export type PromotionConditions = Loyalty["schemas"]["PromotionConditions"];
+export type ManagedPromotionsParams = { status?: PromotionStatus[]; scope?: PromotionScope; restaurantId?: string; limit?: number; offset?: number };
 
 export type Cart = Orders["schemas"]["Cart"];
 export type CartItem = Orders["schemas"]["CartItem"];
@@ -47,9 +55,15 @@ export type UnavailableItem = Orders["schemas"]["UnavailableItem"];
 export type PaymentMethodType = Orders["schemas"]["PaymentMethodType"];
 export type PaymentStatus = Orders["schemas"]["PaymentStatus"];
 export type AppliedPromotion = Orders["schemas"]["AppliedPromotion"];
+export type ItemModifier = Orders["schemas"]["ItemModifier"];
+export type StaffOrder = Orders["schemas"]["StaffOrder"];
+export type StaffOrderPage = Orders["schemas"]["StaffOrderPage"];
+export type CancelReason = Orders["schemas"]["CancelOrderRequest"]["reason"];
+export type RestaurantQueueParams = { restaurantId?: string; status?: OrderStatus[]; fulfillment?: FulfillmentType; sort?: "oldest" | "newest"; limit?: number; offset?: number };
 
 export type PaymentMethod = Payment["schemas"]["PaymentMethod"];
 export type Payment_ = Payment["schemas"]["Payment"];
+export type PosTender = Payment["schemas"]["PosPaymentInitRequest"]["tender"];
 
 export type DeliveryInfo = Delivery["schemas"]["DeliveryInfo"];
 export type CourierLocation = Delivery["schemas"]["CourierLocation"];

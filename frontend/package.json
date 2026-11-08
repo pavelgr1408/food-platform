@@ -8,8 +8,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build --workspace web-app",
-    "dev": "npm run dev --workspace web-app"
+    "build": "npm run build --workspace web-app && npm run build --workspace web-app-staff",
+    "dev": "npm run dev --workspace web-app",
+    "dev:staff": "npm run dev --workspace web-app-staff"
   },
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=22 <25" }
 }
